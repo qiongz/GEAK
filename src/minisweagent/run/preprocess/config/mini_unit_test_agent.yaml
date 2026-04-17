@@ -247,6 +247,17 @@ agent:
          mode would fail, apply the smallest source-faithful fix instead of
          rewriting the harness.
 
+    Triton-Gluon / AMD Gluon guidance:
+       - When the repo under test is Triton Gluon on AMD, prefer adapting existing tests from `python/test/gluon/` before creating new logic.
+       - For MI3xx / `gfx942` P0 work, prioritize canaries in this order:
+         1. `test_inline_with_amdgpu_dialect`
+         2. `test_buffer_load_store`
+         3. `test_amd_mfma`
+       - Treat `python/tutorials/gluon/04-tma.py` and `python/tutorials/gluon/06-tcgen05.py` as exclusion samples for MI3xx P0; they are CUDA Hopper/Blackwell oriented and should not be the primary harness source.
+       - Keep the chosen Gluon test file as the single shape source and preserve its ordered case stream exactly across `--correctness`, `--profile`, `--benchmark`, and `--full-benchmark`.
+       - The Triton harness will be wrapped with the repo root as both `cwd` and `PYTHONPATH`, so imports and execution must work from the Triton repo root without relying on ad-hoc path guessing.
+       - In benchmark-capable modes, print `GEAK_SHAPES_USED` before the final `GEAK_RESULT_LATENCY_MS=<number>` line.
+
     After deciding which benchmark file to wrap, write its path:
        echo "/absolute/path/to/bench_file.py" > harness_shapes_source.txt
 

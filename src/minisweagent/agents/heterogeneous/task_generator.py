@@ -356,6 +356,7 @@ def write_task_files(
     output_dir: Path,
     *,
     kernel_path: str = "",
+    kernel_type: str = "",
     repo_root: str = "",
     commandment: str = "",
     baseline_metrics: str = "",
@@ -388,6 +389,7 @@ def write_task_files(
             "agent_type": class_to_type.get(t.agent_class, "strategy_agent"),
             "kernel_language": t.kernel_language,
             "kernel_path": kernel_path,
+            "kernel_type": kernel_type,
             "repo_root": repo_root,
             "commandment": commandment,
             "baseline_metrics": baseline_metrics,
@@ -399,6 +401,7 @@ def write_task_files(
             "num_gpus": t.num_gpus,
             "test_command": test_command,
             "round": round_num,
+            "use_skills": _should_enable_skills(kernel_type),
         }
         body = f"# {t.label}\n\n{t.task}\n"
         write_task_file(task_path, metadata, body)
@@ -427,6 +430,11 @@ def _find_knowledge_base(workspace: Path) -> Path | None:
         if p.exists():
             return p
     return None
+
+
+def _should_enable_skills(kernel_type: str) -> bool:
+    """Enable skills only on the Triton planning/execution path."""
+    return kernel_type.strip().lower() == "triton"
 
 
 def _run_task_agent(
@@ -604,6 +612,7 @@ def _run_task_agent(
             _rag_section = ""
         system_prompt = _SYSTEM_PROMPT.replace("__RAG_TOOLS_SECTION__", _rag_section)
         system_prompt = system_prompt + _build_agent_restriction_addendum()
+        use_skills = _should_enable_skills(kernel_type)
 
         agent = DefaultAgent(
             model,
@@ -612,6 +621,7 @@ def _run_task_agent(
             instance_template=_INSTANCE_TEMPLATE,
             step_limit=tg_step_limit,
             cost_limit=tg_cost_limit,
+            use_skills=use_skills,
         )
 
         # Write per-turn conversation log for debugging
@@ -957,6 +967,7 @@ def main():
             tasks,
             out_dir,
             kernel_path=str(kernel_path),
+            kernel_type=kernel_meta["kernel_type"],
             repo_root=args.repo_root or "",
             commandment=args.commandment or "",
             baseline_metrics=args.baseline_metrics or "",

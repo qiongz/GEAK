@@ -155,6 +155,7 @@ def tool_generate_tasks(
         tasks,
         output_dir,
         kernel_path=str(ctx.get("kernel_path", "")),
+        kernel_type=kernel_meta.get("kernel_type", "unknown"),
         repo_root=str(ctx.get("repo_root", "")),
         commandment=str(kwargs.get("commandment_path", "")),
         baseline_metrics=str(kwargs.get("baseline_metrics_path", "")),
