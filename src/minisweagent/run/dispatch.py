@@ -158,6 +158,16 @@ def _commandment_test_command(commandment_path: str) -> str | None:
     return str(script_path)
 
 
+def _task_uses_skills(meta: dict[str, Any]) -> bool:
+    """Return whether a task should enable the skill runtime."""
+    if "use_skills" in meta:
+        raw = meta.get("use_skills")
+        if isinstance(raw, str):
+            return raw.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(raw)
+    return str(meta.get("kernel_type", "")).strip().lower() == "triton"
+
+
 def task_file_to_agent_task(task_file: Path):
     """Read a task markdown file and convert it to an AgentTask.
 
@@ -193,6 +203,7 @@ def task_file_to_agent_task(task_file: Path):
         "cost_limit": 0.0,
         "mode": "yolo",
         "use_strategy_manager": True,
+        "use_skills": _task_uses_skills(meta),
     }
 
     # COMMANDMENT is the single source of truth for test commands.

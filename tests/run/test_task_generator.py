@@ -1,5 +1,6 @@
 """Tests for the agent-based task generator."""
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -9,14 +10,27 @@ from minisweagent.agents.heterogeneous.task_generator import (
     _SYSTEM_PROMPT,
     _build_workload_guidance,
     _parse_llm_response,
+    _run_task_agent,
     generate_tasks,
+    write_task_files,
 )
+from minisweagent.run.task_file import read_task_file
 
 
 class FakeAgentClass:
     """Stand-in for an agent class in tests."""
 
     pass
+
+
+class FakePlanningModel:
+    """Minimal model stub for task-generator unit tests."""
+
+    def __init__(self) -> None:
+        self.tools: list[dict[str, str]] = []
+
+    def set_tools(self, tools) -> None:
+        self.tools = list(tools)
 
 
 def _make_kernel_kwargs(
@@ -85,6 +99,56 @@ def test_agent_failure_propagates(mock_agent):
             model=model,
             **_make_kernel_kwargs("triton"),
         )
+
+
+@patch("minisweagent.tools.tools_runtime.get_tools_list", return_value=[{"name": "str_replace_editor"}, {"name": "submit"}])
+@patch("minisweagent.agents.default.DefaultAgent")
+def test_run_task_agent_enables_skills_for_triton(mock_default_agent, _mock_tools, tmp_path: Path):
+    model = FakePlanningModel()
+    mock_default_agent.return_value.run.return_value = ("Submitted", "[]")
+
+    submitted = _run_task_agent(
+        kernel_path=str(tmp_path / "kernel.py"),
+        kernel_name="test_kernel",
+        kernel_type="triton",
+        kernel_language="python",
+        function_names=["kernel_fwd"],
+        workspace_path=str(tmp_path),
+        base_task_context="ctx",
+        model=model,
+        profiling_path=None,
+        commandment_path=None,
+        baseline_metrics_path=None,
+        deep_search_path=None,
+        previous_results_dir=None,
+        discovery_path=None,
+        codebase_context_path=None,
+        previous_tasks_dir=None,
+        round_evaluations=None,
+        current_round=1,
+        num_gpus=1,
+    )
+
+    assert submitted == "[]"
+    assert mock_default_agent.call_args.kwargs["use_skills"] is True
+
+
+def test_write_task_files_marks_triton_tasks_with_skill_usage(tmp_path: Path):
+    tasks = _parse_llm_response(
+        '[{"label": "opt", "priority": 5, "agent_type": "strategy_agent", "task_prompt": "Do it"}]',
+        FakeAgentClass,
+    )
+
+    paths = write_task_files(
+        tasks,
+        tmp_path,
+        kernel_path=str(tmp_path / "kernel.py"),
+        kernel_type="triton",
+    )
+
+    meta, _body = read_task_file(paths[0])
+    assert meta["kernel_type"] == "triton"
+    assert meta["use_skills"] is True
 
 
 # ---- No kernels -> empty ----
