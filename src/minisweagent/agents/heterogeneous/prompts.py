@@ -91,6 +91,8 @@ Output directory: {output_dir}
 ### Profiling Summary
 {profiling_summary}
 
+{feature_context}
+
 ### COMMANDMENT (rules for sub-agents)
 {commandment_excerpt}
 
@@ -132,9 +134,10 @@ GPU_AND_PROFILER_RULES = """
 
 TASKGEN_SYSTEM_PROMPT = textwrap.dedent("""\
 You are an expert GPU kernel optimization planner for AMD GPUs. You have
-access to profiling data, kernel metadata, and a knowledge base of
-optimization strategies via file paths. Read the files you need using
-the `str_replace_editor` tool (command: "view"), reason about the best
+access to profiling data, kernel metadata, and file-based reference
+material (general optimization knowledge plus optional benchmark-safe
+feature knowledge). Read the files you need using the
+`str_replace_editor` tool (command: "view"), reason about the best
 optimization approach, then submit your task list as JSON via the
 `submit` tool.
 
@@ -201,7 +204,8 @@ them priority 15 behind kernel-body algorithmic work.
    kernel's overall latency. Note which functions are imported from each
    dependency to identify what to optimize.
 3. Read the discovery file for kernel metadata (language, inner kernel, etc.).
-4. Read the knowledge base for applicable optimization strategies.
+4. Read the knowledge base for applicable optimization strategies, plus
+   any benchmark-safe Gluon knowledge file if one is provided.
 5. Optionally read baseline metrics, COMMANDMENT.md, deep search findings,
    or prior results if the paths are provided.
 6. Group related kernels (e.g., multiple Tensile GEMMs with different tile
@@ -296,6 +300,7 @@ Generate optimization tasks for the kernel at {{ kernel_path }}.
 {% endif %}{% if baseline_metrics_path %}- **Baseline metrics**: {{ baseline_metrics_path }}
 {% endif %}{% if commandment_path %}- **COMMANDMENT.md** (evaluation contract): {{ commandment_path }}
 {% endif %}{% if knowledge_base_path %}- **Knowledge base** (optimization strategies): {{ knowledge_base_path }}
+{% endif %}{% if gluon_benchmark_safe_knowledge_path %}- **Benchmark-safe Gluon knowledge**: {{ gluon_benchmark_safe_knowledge_path }}
 {% endif %}{% if deep_search_path %}- **Deep search findings**: {{ deep_search_path }}
 {% endif %}{% if previous_results_path %}- **Prior round results** (what actually happened): {{ previous_results_path }}
 {% endif %}{% if previous_tasks_path %}- **Prior tasks planned** (avoid repeating): {{ previous_tasks_path }}
@@ -309,6 +314,9 @@ before generating tasks.  If the past kernel's bottleneck was in a different
 code path than yours, skip those strategies and generate tasks based on YOUR
 profiling data instead.
 {{ memory_context }}
+{% endif %}
+{% if gluon_feature_context %}
+{{ gluon_feature_context }}
 {% endif %}
 {% if workload_guidance %}
 ## Workload / Backend Guidance
@@ -343,8 +351,9 @@ Read the profiling file first to understand the sub-kernel landscape. Then
 read the codebase context file for the kernel dependency tree -- every
 dependency listed is in-repo code that could be an optimization target.
 Read the discovery file for additional kernel metadata, and consult the
-knowledge base for applicable strategies. Finally, submit your task list
-as JSON via the `submit` tool.
+knowledge base plus any benchmark-safe Gluon knowledge file for
+applicable strategies. Finally, submit your task list as JSON via the
+`submit` tool.
 """)
 
 

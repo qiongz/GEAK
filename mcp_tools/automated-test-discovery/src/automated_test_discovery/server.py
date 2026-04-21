@@ -274,9 +274,15 @@ def _expand_workspace(kernel_path: Path) -> Path:
 
 
 def _get_kernel_type(content: str, suffix: str = "", file_path: Path | None = None) -> str:
-    if "@triton" in content or "tl." in content:
+    if (
+        "@triton" in content
+        or "tl." in content
+        or "@gluon.jit" in content
+        or "triton.experimental.gluon" in content
+        or "from triton.experimental import gluon" in content
+    ):
         return "triton"
-    if "import triton" in content:
+    if "import triton" in content or "triton.experimental.gluon" in content:
         if file_path is not None:
             if _imports_triton_kernels(content, file_path):
                 return "triton"
@@ -325,9 +331,15 @@ def _imports_triton_kernels(content: str, file_path: Path, _depth: int = 0) -> b
                 imported_content = candidate.read_text(errors="ignore")[:8192]
             except OSError:
                 continue
-            if "@triton.jit" in imported_content or "@triton.autotune" in imported_content:
+            if (
+                "@triton.jit" in imported_content
+                or "@triton.autotune" in imported_content
+                or "@gluon.jit" in imported_content
+            ):
                 return True
-            if _depth < 2 and "import triton" in imported_content:
+            if _depth < 2 and (
+                "import triton" in imported_content or "triton.experimental.gluon" in imported_content
+            ):
                 if _imports_triton_kernels(imported_content, candidate, _depth + 1):
                     return True
             break

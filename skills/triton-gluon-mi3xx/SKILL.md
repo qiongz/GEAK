@@ -1,6 +1,7 @@
 ---
 name: triton-gluon-mi3xx
 description: Use when writing, reviewing, adapting, or evaluating Triton-Gluon kernels, especially when the task needs a concise guide to Gluon syntax, explicit layouts, shared memory, synchronization, and architecture-specific APIs across AMD and NVIDIA.
+tier: authoring_safe
 ---
 
 # Triton-Gluon Writing Guide
@@ -10,6 +11,7 @@ description: Use when writing, reviewing, adapting, or evaluating Triton-Gluon k
 - You need to decide which parts of a kernel are common Gluon syntax vs target-specific APIs.
 - You are reviewing AMD/NVIDIA Gluon code and need a compact architecture map.
 - You are wrapping an existing Gluon test into a GEAK harness and want the code shape to stay close to upstream Gluon style.
+- You are lifting a plain Triton kernel into an AMD Gluon implementation.
 
 ## Mental model
 - Gluon shares Triton's host-side launcher model: `@gluon.jit`, `kernel[grid](...)`, `triton.cdiv`, `program_id`, and `constexpr` arguments still matter.
@@ -191,6 +193,20 @@ acc = ttgl.amd.gfx1250.wmma(a, b, acc)
 4. Keep one kernel path target-specific. Do not mix AMD and NVIDIA layout families in the same code path.
 5. If the code is compile-only or IR-only, do not present it as profiler-ready.
 
+## Layer 3 direct-lift notes
+- When the source is plain Triton, preserve the launcher shape, indexing, masks,
+  correctness oracle, and benchmark intent before changing lower-level details.
+- Plain Triton leaves layout and memory decisions implicit more often than
+  Gluon. Recover those decisions explicitly before replacing `tl.load` /
+  `tl.store`.
+- On `gfx942`, prefer wave64-valid layouts. For simple first-sample paths,
+  prefer common Gluon indexing plus `ttgl.amd.cdna3.buffer_load` /
+  `ttgl.amd.cdna3.buffer_store`.
+- Keep demo prints, plots, and notebook-style presentation logic out of the AMD
+  example when the harness can own them instead.
+- If a direct lift drops or weakens a source path, record it as a deliberate
+  non-parity rather than renaming APIs and implying full equivalence.
+
 ## Anti-patterns
 - Do not assume NVIDIA tutorial code ports 1:1 to AMD.
 - Do not treat `tma` and `tdm` as the same API with renamed symbols.
@@ -201,5 +217,9 @@ acc = ttgl.amd.gfx1250.wmma(a, b, acc)
 ## Current repo-specific defaults
 - For the current `/apps/qiongzhu/triton` MI3xx baseline workflow, see `docs/triton_gluon_mi3xx_baseline.md`.
 - For what the current Layer 1 scope has already proven, see `docs/triton_gluon_layer1_scope.md`.
+- For the bounded NV→AMD translation layer, see `docs/triton_gluon_layer2_scope.md`.
+- For the Layer 2 playbook, see `docs/triton_gluon_translation_rules.md`.
+- For the bounded plain-Triton→AMD direct-lift layer, see `docs/triton_gluon_layer3_scope.md`.
+- For the Layer 3 direct-lift playbook, see `docs/triton_gluon_lift_rules.md`.
 - For a compact API and architecture cheat sheet, see `docs/triton_gluon_api_quick_reference.md`.
 - For a longer architecture-and-writing reference, see `docs/triton_gluon_writing_guide.md`.

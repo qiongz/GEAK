@@ -462,6 +462,10 @@ def main(
         model_factory=lambda: get_model(model_name, config.get("model", {})),
         console=console,
         target_language=_target_language,
+        input_dialect=parsed_config.get("input_dialect"),
+        gluon_feature_mode=parsed_config.get("gluon_feature_mode"),
+        gluon_baseline_profile=parsed_config.get("gluon_baseline_profile"),
+        target_backend=parsed_config.get("target_backend"),
     )
     logger.debug("Preprocess kwargs: %s", _preprocess_kwargs)
 

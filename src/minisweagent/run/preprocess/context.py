@@ -33,6 +33,11 @@ class PreprocessContext:
     codebase_context_path: str | None = None
     baseline_metrics_path: str | None = None
     profiling_result_path: str | None = None
+    input_dialect: str | None = None
+    gluon_feature_mode: str | None = None
+    gluon_baseline_profile: str | None = None
+    allowed_output_dialects: list[str] | None = None
+    target_backend: str | None = None
 
     # Inline data (kept in memory, not just a path)
     test_command: str | None = None
@@ -101,6 +106,11 @@ class PreprocessContext:
             if (out / "baseline_metrics.json").exists()
             else None,
             profiling_result_path=str(out / "profile.json") if (out / "profile.json").exists() else None,
+            input_dialect=ctx.get("input_dialect"),
+            gluon_feature_mode=ctx.get("gluon_feature_mode"),
+            gluon_baseline_profile=ctx.get("gluon_baseline_profile"),
+            allowed_output_dialects=ctx.get("allowed_output_dialects"),
+            target_backend=ctx.get("target_backend"),
             test_command=ctx.get("test_command"),
             discovery=ctx.get("discovery"),
             harness_results=ctx.get("harness_results"),

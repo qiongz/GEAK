@@ -19,6 +19,10 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 from minisweagent.debug_runtime import emit_debug_log
+from minisweagent.run.preprocess.discovery_types import (
+    allowed_skill_tiers_for_feature,
+    build_gluon_feature_metadata,
+)
 
 # ── model ensemble support ───────────────────────────────────────────
 
@@ -168,6 +172,35 @@ def _task_uses_skills(meta: dict[str, Any]) -> bool:
     return str(meta.get("kernel_type", "")).strip().lower() == "triton"
 
 
+def _task_feature_metadata(meta: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild the normalized Gluon feature metadata from task frontmatter."""
+    kernel_path = Path(str(meta.get("kernel_path") or "unknown.py"))
+    return build_gluon_feature_metadata(
+        kernel_path,
+        str(meta.get("kernel_type") or "unknown"),
+        input_dialect=meta.get("input_dialect"),
+        gluon_feature_mode=meta.get("gluon_feature_mode"),
+        gluon_baseline_profile=meta.get("gluon_baseline_profile"),
+        allowed_output_dialects=meta.get("allowed_output_dialects"),
+        target_backend=meta.get("target_backend"),
+    )
+
+
+def _task_allowed_skill_tiers(meta: dict[str, Any]) -> list[str]:
+    """Return the skill tiers visible to this dispatched task."""
+    explicit = meta.get("allowed_skill_tiers")
+    if explicit:
+        if isinstance(explicit, str):
+            return [explicit]
+        return [str(item) for item in explicit]
+    feature_meta = _task_feature_metadata(meta)
+    return allowed_skill_tiers_for_feature(
+        str(meta.get("kernel_type") or "unknown"),
+        gluon_feature_mode=feature_meta["gluon_feature_mode"],
+        gluon_baseline_profile=feature_meta["gluon_baseline_profile"],
+    )
+
+
 def task_file_to_agent_task(task_file: Path):
     """Read a task markdown file and convert it to an AgentTask.
 
@@ -250,6 +283,8 @@ def task_file_to_agent_task(task_file: Path):
     if _bb_path and Path(_bb_path).exists():
         benchmark_baseline_text = Path(_bb_path).read_text().strip()
 
+    feature_meta = _task_feature_metadata(meta)
+
     body, cfg = inject_pipeline_context(
         body,
         cfg,
@@ -261,6 +296,8 @@ def task_file_to_agent_task(task_file: Path):
         test_command=cfg.get("test_command"),
         codebase_context=codebase_ctx_text,
         benchmark_baseline=benchmark_baseline_text,
+        feature_metadata=feature_meta,
+        gluon_benchmark_safe_knowledge_path=meta.get("gluon_benchmark_safe_knowledge_path"),
     )
 
     try:
@@ -284,6 +321,7 @@ def task_file_to_agent_task(task_file: Path):
     for _passthrough_key in ("baseline_metrics", "benchmark_baseline"):
         if meta.get(_passthrough_key):
             cfg[_passthrough_key] = meta[_passthrough_key]
+    cfg["allowed_skill_tiers"] = _task_allowed_skill_tiers(meta)
 
     return AgentTask(
         agent_class=agent_class,

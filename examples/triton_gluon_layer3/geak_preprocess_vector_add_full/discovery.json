@@ -1,0 +1,34 @@
+{
+  "kernel": {
+    "name": "01_vector_add_amd",
+    "type": "triton",
+    "file": "/apps/qiongzhu/GEAK/examples/triton_gluon_layer3/01_vector_add_amd.py",
+    "functions": []
+  },
+  "workspace": "/apps/qiongzhu/GEAK",
+  "tests": [
+    {
+      "file": "/apps/qiongzhu/GEAK/examples/triton_gluon_layer3/test_vector_add_layer3.py",
+      "name": "test_vector_add_layer3.py",
+      "confidence": 10.0,
+      "command": "python /apps/qiongzhu/GEAK/examples/triton_gluon_layer3/test_vector_add_layer3.py --correctness"
+    }
+  ],
+  "benchmarks": [
+    {
+      "file": "/apps/qiongzhu/GEAK/examples/triton_gluon_layer3/test_vector_add_layer3.py",
+      "name": "test_vector_add_layer3.py",
+      "confidence": 10.0,
+      "command": "python /apps/qiongzhu/GEAK/examples/triton_gluon_layer3/test_vector_add_layer3.py --benchmark"
+    }
+  ],
+  "total_tests_found": 1,
+  "total_benchmarks_found": 1,
+  "summary": "Discovery skipped (harness provided: test_vector_add_layer3.py)",
+  "focused_test": {
+    "focused_test_file": "/apps/qiongzhu/GEAK/examples/triton_gluon_layer3/test_vector_add_layer3.py",
+    "focused_command": "python /apps/qiongzhu/GEAK/examples/triton_gluon_layer3/test_vector_add_layer3.py --correctness",
+    "top_test_is_relevant": true,
+    "reason": "User-provided harness"
+  }
+}

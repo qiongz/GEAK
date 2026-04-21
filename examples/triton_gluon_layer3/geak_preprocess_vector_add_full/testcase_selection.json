@@ -1,0 +1,14 @@
+{
+  "cache_key": "01-vector-add-amd-378707b38342",
+  "cache_dir": null,
+  "reused_cache": false,
+  "selected_source": "harness",
+  "saved_cache_manifest": null,
+  "harness": "/apps/qiongzhu/GEAK/examples/triton_gluon_layer3/test_vector_add_layer3.py",
+  "deterministic_resolution": {
+    "source": "local_path",
+    "path": "/apps/qiongzhu/GEAK/examples/triton_gluon_layer3/test_vector_add_layer3.py"
+  },
+  "test_command": "/opt/venv/bin/python /apps/qiongzhu/GEAK/examples/triton_gluon_layer3/test_vector_add_layer3.py --correctness",
+  "harness_path": "/apps/qiongzhu/GEAK/examples/triton_gluon_layer3/test_vector_add_layer3.py"
+}

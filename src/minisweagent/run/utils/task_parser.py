@@ -6,6 +6,11 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+from minisweagent.run.preprocess.discovery_types import (
+    _normalize_gluon_baseline_profile,
+    _normalize_gluon_feature_mode,
+    _normalize_input_dialect,
+)
 from minisweagent.run.utils.prompts import (
     EXTRACT_USER_CONSTRAINTS_TEMPLATE,
     JSON_EXTRACTION_SYSTEM_PROMPT,
@@ -27,6 +32,10 @@ _EMPTY_TASK_INFO: dict = {
     "output_dir": None,
     "model": None,
     "config": None,
+    "input_dialect": None,
+    "gluon_feature_mode": None,
+    "gluon_baseline_profile": None,
+    "target_backend": None,
 }
 
 _EMPTY_PIPELINE_PARAMS: dict = {
@@ -111,6 +120,9 @@ def _normalize_parsed_task_info(parsed: dict) -> dict:
                 raw_kernel_type,
             )
         kernel_type = "other"
+    input_dialect = _normalize_input_dialect(parsed.get("input_dialect"))
+    raw_feature_mode = parsed.get("gluon_feature_mode")
+    raw_baseline_profile = parsed.get("gluon_baseline_profile")
     result = {
         "kernel_name": parsed.get("kernel_name"),
         "kernel_url": parsed.get("kernel_url"),
@@ -123,6 +135,16 @@ def _normalize_parsed_task_info(parsed: dict) -> dict:
         "output_dir": parsed.get("output_dir"),
         "model": parsed.get("model"),
         "config": parsed.get("config"),
+        "input_dialect": input_dialect,
+        "gluon_feature_mode": (
+            None
+            if raw_feature_mode in (None, "")
+            else _normalize_gluon_feature_mode(raw_feature_mode, input_dialect=input_dialect or "plain_triton")
+        ),
+        "gluon_baseline_profile": (
+            None if raw_baseline_profile in (None, "") else _normalize_gluon_baseline_profile(raw_baseline_profile)
+        ),
+        "target_backend": parsed.get("target_backend"),
     }
 
     # Normalize repo path and preserve filesystem case (LLM often returns lowercase)
@@ -200,6 +222,10 @@ def parse_task_info(task_content: str, model) -> dict:
     - output_dir: Output directory for logs/artifacts
     - model: Model name/identifier to use
     - config: Path to a config YAML file
+    - input_dialect: plain_triton / nv_gluon / amd_gluon
+    - gluon_feature_mode: off / auto / force
+    - gluon_baseline_profile: raw / mi3xx
+    - target_backend: target backend string such as hip/gfx942
 
     Returns dict with extracted values (None if not found).
     """
@@ -394,6 +420,10 @@ def display_parsed_config(parsed_info: dict, patch_output_dir: str) -> str:
         ("gpu_ids", parsed_info["gpu_ids"] or "Not detected. Default to 0."),
         ("model", parsed_info.get("model") or "Not detected. Using default."),
         ("config", parsed_info.get("config") or "Not detected. Using default."),
+        ("input_dialect", parsed_info.get("input_dialect") or "Not detected."),
+        ("gluon_feature_mode", parsed_info.get("gluon_feature_mode") or "Not detected."),
+        ("gluon_baseline_profile", parsed_info.get("gluon_baseline_profile") or "Not detected."),
+        ("target_backend", parsed_info.get("target_backend") or "Not detected."),
         ("patch_output_dir", patch_output_dir),
     ]
     key_width = max(len(k) for k, _ in fields)

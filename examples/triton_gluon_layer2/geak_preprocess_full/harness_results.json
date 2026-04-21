@@ -1,0 +1,34 @@
+[
+  {
+    "mode": "correctness",
+    "success": true,
+    "returncode": 0,
+    "stdout": "COMPILE_OK=1\nCOMPILE_TARGET=GPUTarget(backend='hip', arch='gfx942', warp_size=64)\nCOMPILE_SHAPE=[64, 128]\nCORRECTNESS_CASE_OK=[65, 129]\nCORRECTNESS_CASE_OK=[1000, 2000]\nCORRECTNESS_OK=1\n",
+    "stderr": "",
+    "duration_s": 2.35
+  },
+  {
+    "mode": "profile",
+    "success": true,
+    "returncode": 0,
+    "stdout": "PROFILE_OK=1\nGEAK_SHAPES_USED=[[128, 256]]\n",
+    "stderr": "",
+    "duration_s": 1.98
+  },
+  {
+    "mode": "benchmark",
+    "success": true,
+    "returncode": 0,
+    "stdout": "BENCHMARK_OK=1\nGEAK_SHAPES_USED=[[2048, 4096]]\nBENCHMARK_CASE shape=[2048, 4096] latency_ms=0.1392 gbps=723.3273\nGEAK_RESULT_GBPS=723.3273\nGEAK_RESULT_LATENCY_MS=0.1392\n",
+    "stderr": "",
+    "duration_s": 2.09
+  },
+  {
+    "mode": "full-benchmark",
+    "success": true,
+    "returncode": 0,
+    "stdout": "FULL_BENCHMARK_OK=1\nGEAK_SHAPES_USED=[[512, 1024], [1024, 2048], [2048, 4096]]\nFULL_BENCHMARK_CASE shape=[512, 1024] latency_ms=0.0416 gbps=151.2297\nFULL_BENCHMARK_CASE shape=[1024, 2048] latency_ms=0.0734 gbps=342.6314\nFULL_BENCHMARK_CASE shape=[2048, 4096] latency_ms=0.1358 gbps=741.5087\nGEAK_RESULT_GBPS=411.7899\nGEAK_RESULT_LATENCY_MS=0.0836\n",
+    "stderr": "",
+    "duration_s": 2.14
+  }
+]

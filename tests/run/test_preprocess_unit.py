@@ -160,6 +160,11 @@ class TestKernelMetaContract:
         assert meta.kernel_language == "python"
         assert meta.function_names == []
         assert meta.workspace_path == ""
+        assert meta.input_dialect == "plain_triton"
+        assert meta.gluon_feature_mode == "off"
+        assert meta.gluon_baseline_profile == "raw"
+        assert meta.allowed_output_dialects == ["plain_triton"]
+        assert meta.target_backend == "hip/gfx942"
 
     def test_discovery_result_populates_kernel_meta_fields(self):
         from minisweagent.run.preprocess.discovery_types import DiscoveryResult, KernelMeta
@@ -192,6 +197,40 @@ class TestKernelMetaContract:
             assert meta.kernel_language == "python"
             assert meta.function_names == ["topk_kernel"]
             assert meta.workspace_path == str(tmp_path.resolve())
+            assert meta.input_dialect == "plain_triton"
+            assert meta.gluon_feature_mode == "off"
+
+    def test_discovery_result_reinfers_unknown_gluon_kernel_type(self):
+        from minisweagent.run.preprocess.discovery_types import DiscoveryResult
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            kernel = tmp_path / "topk.py"
+            kernel.write_text(
+                "from triton.experimental import gluon\n"
+                "@gluon.jit\n"
+                "def topk_kernel(x):\n"
+                "    return x\n"
+            )
+
+            disc = {
+                "kernel": {
+                    "file": str(kernel),
+                    "name": "topk",
+                    "type": "unknown",
+                    "functions": ["topk_kernel"],
+                },
+                "workspace": str(tmp_path),
+                "tests": [],
+                "benchmarks": [],
+            }
+
+            result = DiscoveryResult.from_dict(disc, kernel)
+
+            meta = result.kernels[0]
+            assert meta.kernel_type == "triton"
+            assert meta.input_dialect == "amd_gluon"
+            assert meta.gluon_feature_mode == "auto"
 
 # ===================================================================
 # Test 3: Harness validation

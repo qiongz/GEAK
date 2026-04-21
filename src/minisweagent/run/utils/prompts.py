@@ -23,6 +23,10 @@ Extract the following information (return null if not found):
 9. output_dir: Directory path where output logs and artifacts should be saved (e.g., "outputs/topk_run", "/workspace/results")
 10. model: Model name or identifier to use (e.g., "claude-sonnet-4-20250514", "gpt-4o")
 11. config: Path to a YAML configuration file (e.g., "configs/my_setup.yaml", "/path/to/config.yaml")
+12. input_dialect: Triton-family input dialect, strictly one of "plain_triton", "nv_gluon", or "amd_gluon"
+13. gluon_feature_mode: Gluon feature mode, strictly one of "off", "auto", or "force"
+14. gluon_baseline_profile: Gluon baseline profile, strictly one of "raw" or "mi3xx"
+15. target_backend: Target backend string if explicitly mentioned (e.g., "hip/gfx942")
 
 Return ONLY a valid JSON object with these keys. Example:
 {{
@@ -36,7 +40,11 @@ Return ONLY a valid JSON object with these keys. Example:
   "gpu_ids": "0,1,2,3",
   "output_dir": "outputs/matmul_run",
   "model": null,
-  "config": null
+  "config": null,
+  "input_dialect": null,
+  "gluon_feature_mode": null,
+  "gluon_baseline_profile": null,
+  "target_backend": null
 }}
 
 If any field cannot be determined from the task, set it to null.

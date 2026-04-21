@@ -1,0 +1,28 @@
+{
+  "duration_us": 16.1,
+  "kernel_name": "matmul_kernel",
+  "kernel_names": [
+    "matmul_kernel"
+  ],
+  "metrics": {
+    "duration_us": 10.842999999999998,
+    "duration_us_min": 10.816,
+    "duration_us_max": 10.857,
+    "memory.hbm_bandwidth_utilization": 0.12859114191112458,
+    "memory.l2_hit_rate": 48.513792312982346
+  },
+  "bottleneck": "latency",
+  "observations": [
+    "Classified as latency-bound (HBM util: 0.1%, severely under-utilized)"
+  ],
+  "top_kernels": [
+    {
+      "name": "matmul_kernel",
+      "duration_us": 10.843,
+      "pct_of_total": 100.0,
+      "bottleneck": "latency"
+    }
+  ],
+  "benchmark_duration_us": 16.1,
+  "profiler_duration_us": 10.816
+}

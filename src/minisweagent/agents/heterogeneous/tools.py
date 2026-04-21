@@ -62,6 +62,11 @@ def tool_generate_tasks(
         "kernel_language": kernel_meta.get("kernel_language", "python"),
         "function_names": kernel_meta.get("function_names", []),
         "workspace_path": kernel_meta.get("workspace_path", str(ctx.get("repo_root", ""))),
+        "input_dialect": kernel_meta.get("input_dialect", "plain_triton"),
+        "gluon_feature_mode": kernel_meta.get("gluon_feature_mode", "off"),
+        "gluon_baseline_profile": kernel_meta.get("gluon_baseline_profile", "raw"),
+        "allowed_output_dialects": kernel_meta.get("allowed_output_dialects"),
+        "target_backend": kernel_meta.get("target_backend", ""),
         "num_gpus": len(ctx.get("gpu_ids", [0])),
     }
 
@@ -155,6 +160,11 @@ def tool_generate_tasks(
         output_dir,
         kernel_path=str(ctx.get("kernel_path", "")),
         kernel_type=kernel_meta.get("kernel_type", "unknown"),
+        input_dialect=kernel_meta.get("input_dialect", "plain_triton"),
+        gluon_feature_mode=kernel_meta.get("gluon_feature_mode", "off"),
+        gluon_baseline_profile=kernel_meta.get("gluon_baseline_profile", "raw"),
+        allowed_output_dialects=kernel_meta.get("allowed_output_dialects"),
+        target_backend=kernel_meta.get("target_backend", ""),
         repo_root=str(ctx.get("repo_root", "")),
         commandment=str(kwargs.get("commandment_path", "")),
         baseline_metrics=str(kwargs.get("baseline_metrics_path", "")),

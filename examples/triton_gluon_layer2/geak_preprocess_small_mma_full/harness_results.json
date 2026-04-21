@@ -1,0 +1,34 @@
+[
+  {
+    "mode": "correctness",
+    "success": true,
+    "returncode": 0,
+    "stdout": "COMPILE_OK=1\nCOMPILE_TARGET=GPUTarget(backend='hip', arch='gfx942', warp_size=64)\nCOMPILE_SHAPE=[64, 32, 32]\nCORRECTNESS_CASE_OK=[64, 32, 32, False, 16, 4]\nCORRECTNESS_CASE_OK=[64, 256, 128, True, 64, 8]\nCORRECTNESS_OK=1\n",
+    "stderr": "",
+    "duration_s": 4.58
+  },
+  {
+    "mode": "profile",
+    "success": true,
+    "returncode": 0,
+    "stdout": "PROFILE_OK=1\nGEAK_SHAPES_USED=[[64, 32, 32, False, 16, 4]]\n",
+    "stderr": "",
+    "duration_s": 2.27
+  },
+  {
+    "mode": "benchmark",
+    "success": true,
+    "returncode": 0,
+    "stdout": "BENCHMARK_OK=1\nGEAK_SHAPES_USED=[[64, 256, 128, False, 64, 4]]\nBENCHMARK_CASE shape=[64, 256, 128, False, 64, 4] latency_ms=0.0181 tflops=0.2328\nGEAK_RESULT_TFLOPS=0.2328\nGEAK_RESULT_LATENCY_MS=0.0181\n",
+    "stderr": "",
+    "duration_s": 2.34
+  },
+  {
+    "mode": "full-benchmark",
+    "success": true,
+    "returncode": 0,
+    "stdout": "FULL_BENCHMARK_OK=1\nGEAK_SHAPES_USED=[[64, 32, 32, False, 16, 4], [64, 256, 128, False, 64, 4]]\nFULL_BENCHMARK_CASE shape=[64, 32, 32, False, 16, 4] latency_ms=0.0099 tflops=0.0135\nFULL_BENCHMARK_CASE shape=[64, 256, 128, False, 64, 4] latency_ms=0.0154 tflops=0.2737\nGEAK_RESULT_TFLOPS=0.1436\nGEAK_RESULT_LATENCY_MS=0.0126\n",
+    "stderr": "",
+    "duration_s": 2.33
+  }
+]

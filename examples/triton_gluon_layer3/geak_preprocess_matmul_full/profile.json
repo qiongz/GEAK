@@ -1,0 +1,30 @@
+{
+  "success": true,
+  "backend": "metrix",
+  "results": [
+    {
+      "gpu_info": {
+        "detected": false,
+        "device_id": "0"
+      },
+      "kernels": [
+        {
+          "name": "matmul_kernel",
+          "duration_us": 10.842999999999998,
+          "bottleneck": "latency",
+          "observations": [
+            "Classified as latency-bound (HBM util: 0.1%, severely under-utilized)"
+          ],
+          "metrics": {
+            "duration_us": 10.842999999999998,
+            "duration_us_min": 10.816,
+            "duration_us_max": 10.857,
+            "memory.hbm_bandwidth_utilization": 0.12859114191112458,
+            "memory.l2_hit_rate": 48.513792312982346
+          }
+        }
+      ],
+      "device_id": "0"
+    }
+  ]
+}

@@ -7,6 +7,7 @@ from pathlib import Path
 import yaml
 
 from minisweagent import get_repo_root
+from minisweagent.run.preprocess.discovery_types import GENERAL_SKILL_TIER
 
 logger = logging.getLogger(__name__)
 
@@ -16,12 +17,18 @@ class SkillDescriptor:
     name: str
     description: str
     path: Path
+    tier: str = GENERAL_SKILL_TIER
     loaded: bool = False  # runtime state
 
 
 class SkillRuntime:
-    def __init__(self):
+    def __init__(self, allowed_skill_tiers: list[str] | None = None):
         skills_dir = get_repo_root() / "skills"
+        self.allowed_skill_tiers = (
+            [str(tier).strip() for tier in allowed_skill_tiers if str(tier).strip()]
+            if allowed_skill_tiers is not None
+            else None
+        )
         self.skills = self._discover_skills(skills_dir)
 
     def _extract_yaml_frontmatter(self, markdown: str) -> dict:
@@ -38,7 +45,13 @@ class SkillRuntime:
 
         fm = self._extract_yaml_frontmatter(content)
 
-        return SkillDescriptor(name=fm["name"], description=fm["description"], path=skill_path, loaded=False)
+        return SkillDescriptor(
+            name=fm["name"],
+            description=fm["description"],
+            path=skill_path,
+            tier=str(fm.get("tier") or GENERAL_SKILL_TIER).strip() or GENERAL_SKILL_TIER,
+            loaded=False,
+        )
 
     def _discover_skills(self, skills_root: Path) -> dict:
         if not skills_root.is_dir():
@@ -53,10 +66,18 @@ class SkillRuntime:
                     print(f"Get skills fail: {e}")
         return {s.name: s for s in skills}
 
+    def _is_skill_allowed(self, skill: SkillDescriptor) -> bool:
+        allowed_tiers = getattr(self, "allowed_skill_tiers", None)
+        if allowed_tiers is None:
+            return True
+        return skill.tier in allowed_tiers
+
     def build_system_prompt(self) -> str:
         blocks = ["\n<available_skills>"]
 
         for _name, s in self.skills.items():
+            if not self._is_skill_allowed(s):
+                continue
             blocks.append(
                 f"""  <skill>
         <name>{s.name}</name>
@@ -124,6 +145,9 @@ Otherwise, respond normally.
                         results["output"] = f"The skill {kill_action['skill']} is not exist."
                         return results
                     skill = self.skills[kill_action["skill"]]
+                    if not self._is_skill_allowed(skill):
+                        results["output"] = f"The skill {kill_action['skill']} is not available in this run."
+                        return results
                     if skill.loaded:
                         return results
                     skill_md = skill.path / "SKILL.md"

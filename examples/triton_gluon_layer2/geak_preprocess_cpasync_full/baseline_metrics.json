@@ -1,0 +1,28 @@
+{
+  "duration_us": 152.9,
+  "kernel_name": "elementwise_add_cpasync_kernel",
+  "kernel_names": [
+    "elementwise_add_cpasync_kernel"
+  ],
+  "metrics": {
+    "duration_us": 21.018333333333334,
+    "duration_us_min": 20.951,
+    "duration_us_max": 21.072,
+    "memory.hbm_bandwidth_utilization": 0.06382265198743697,
+    "memory.l2_hit_rate": 27.744165946413133
+  },
+  "bottleneck": "latency",
+  "observations": [
+    "Classified as latency-bound (HBM util: 0.1%, severely under-utilized)"
+  ],
+  "top_kernels": [
+    {
+      "name": "elementwise_add_cpasync_kernel",
+      "duration_us": 21.018,
+      "pct_of_total": 100.0,
+      "bottleneck": "latency"
+    }
+  ],
+  "benchmark_duration_us": 152.9,
+  "profiler_duration_us": 20.951
+}

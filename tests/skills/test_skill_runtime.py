@@ -6,9 +6,10 @@ import pytest
 from minisweagent.skills.skill_runtime import SkillDescriptor, SkillRuntime
 
 
-def _make_runtime(skills: dict) -> SkillRuntime:
+def _make_runtime(skills: dict, *, allowed_skill_tiers: list[str] | None = None) -> SkillRuntime:
     rt = SkillRuntime.__new__(SkillRuntime)
     rt.skills = skills
+    rt.allowed_skill_tiers = allowed_skill_tiers
     return rt
 
 
@@ -43,6 +44,7 @@ class TestParseMetadata:
         assert desc.name == "alpha"
         assert desc.description == "Do alpha tasks."
         assert desc.path == skill_dir
+        assert desc.tier == "general"
         assert desc.loaded is False
 
 
@@ -106,6 +108,26 @@ class TestBuildSystemPrompt:
         assert "<available_skills>" in prompt
         assert "</available_skills>" in prompt
 
+    def test_filters_skills_by_allowed_tier(self):
+        skills = {
+            "general-demo": SkillDescriptor(
+                name="general-demo",
+                description="General.",
+                path=Path("/tmp/general"),
+                tier="general",
+            ),
+            "benchmark-demo": SkillDescriptor(
+                name="benchmark-demo",
+                description="Benchmark safe.",
+                path=Path("/tmp/benchmark"),
+                tier="benchmark_safe",
+            ),
+        }
+        rt = _make_runtime(skills, allowed_skill_tiers=["benchmark_safe"])
+        prompt = rt.build_system_prompt()
+        assert "<name>benchmark-demo</name>" in prompt
+        assert "<name>general-demo</name>" not in prompt
+
 
 class TestLoadSkill:
     def _skill_block(self, skill_name: str) -> str:
@@ -165,11 +187,21 @@ class TestLoadSkill:
         assert result["output"] == ""
         assert desc.loaded is False
 
+    def test_filtered_skill_cannot_be_loaded(self, tmp_path: Path):
+        skill_dir = tmp_path / "s"
+        _write_skill(skill_dir, "x", "d")
+        desc = SkillDescriptor(name="x", description="d", path=skill_dir, tier="authoring_safe")
+        rt = _make_runtime({"x": desc}, allowed_skill_tiers=["general"])
+        result = rt.load_skill({"content": self._skill_block("x")})
+        assert "not available" in result["output"]
+        assert desc.loaded is False
+
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXAMPLE_SILU = _REPO_ROOT / "examples" / "skills" / "silu-optimization" / "SKILL.md"
 _USER_SKILLS_SILU = _REPO_ROOT / "skills" / "silu-optimization" / "SKILL.md"
 _USER_TRITON_GLUON = _REPO_ROOT / "skills" / "triton-gluon-mi3xx" / "SKILL.md"
+_USER_TRITON_GLUON_BENCH = _REPO_ROOT / "skills" / "triton-gluon-mi3xx-benchmark-safe" / "SKILL.md"
 
 
 @pytest.mark.skipif(not _EXAMPLE_SILU.is_file(), reason="example skill examples/skills/silu-optimization not present")
@@ -193,3 +225,9 @@ class TestSkillRuntimeIntegration:
             s = runtime.skills["triton-gluon-mi3xx"]
             assert s.path == _USER_TRITON_GLUON.parent
             assert "triton-gluon" in s.description.lower()
+            assert s.tier == "authoring_safe"
+        if _USER_TRITON_GLUON_BENCH.is_file():
+            assert "triton-gluon-mi3xx-benchmark-safe" in runtime.skills
+            s = runtime.skills["triton-gluon-mi3xx-benchmark-safe"]
+            assert s.path == _USER_TRITON_GLUON_BENCH.parent
+            assert s.tier == "benchmark_safe"

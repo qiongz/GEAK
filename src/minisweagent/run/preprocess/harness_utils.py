@@ -1538,6 +1538,7 @@ def inject_pipeline_context(
     test_command: str | None = None,
     codebase_context: str | None = None,
     benchmark_baseline: str | None = None,
+    feature_metadata: dict[str, Any] | None = None,
 ) -> tuple[str, dict]:
     """Prepend pipeline context to *task_body* and augment *config*.
 
@@ -1562,6 +1563,17 @@ def inject_pipeline_context(
     if test_command:
         ctx.append(f"TEST COMMAND: {test_command}")
     ctx.append("")
+
+    if feature_metadata:
+        from minisweagent.run.preprocess.discovery_types import build_gluon_feature_prompt_block
+
+        ctx.append(
+            build_gluon_feature_prompt_block(
+                feature_metadata,
+                heading="## Gluon Feature Context (auto-injected from task metadata)",
+            )
+        )
+        ctx.append("")
 
     ctx.append(
         "IMPORTANT: Only edit files within your REPO ROOT directory. "

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from minisweagent import get_repo_root
+from minisweagent.run.preprocess.discovery_types import build_gluon_feature_prompt_block
 from minisweagent.run.utils.gpu_arch import (
     detect_gpu_arch,
     is_wmma_capable,
@@ -790,6 +791,8 @@ def inject_pipeline_context(
     test_command: str | None = None,
     codebase_context: str | None = None,
     benchmark_baseline: str | None = None,
+    feature_metadata: dict[str, Any] | None = None,
+    gluon_benchmark_safe_knowledge_path: str | None = None,
 ) -> tuple[str, dict]:
     """Prepend pipeline context to *task_body* and augment *config*.
 
@@ -814,6 +817,24 @@ def inject_pipeline_context(
     if test_command:
         ctx.append(f"TEST COMMAND: {test_command}")
     ctx.append("")
+
+    if feature_metadata:
+        ctx.append(
+            build_gluon_feature_prompt_block(
+                feature_metadata,
+                heading="## Gluon Feature Context (auto-injected from task metadata)",
+            )
+        )
+        ctx.append("")
+
+    if gluon_benchmark_safe_knowledge_path and Path(gluon_benchmark_safe_knowledge_path).exists():
+        ctx.append("## Benchmark-safe Gluon Knowledge")
+        ctx.append(f"BENCHMARK-SAFE GLUON KNOWLEDGE: {gluon_benchmark_safe_knowledge_path}")
+        ctx.append(
+            "Read this reference only if you need Gluon-specific guidance. "
+            "It is benchmark-safe MI3xx context, not authoring truth or a fixed recipe."
+        )
+        ctx.append("")
 
     ctx.append(
         "IMPORTANT: Only edit files within your REPO ROOT directory. "
