@@ -1,0 +1,28 @@
+{
+  "duration_us": 20.7,
+  "kernel_name": "softmax_kernel",
+  "kernel_names": [
+    "softmax_kernel"
+  ],
+  "metrics": {
+    "duration_us": 13.620666666666667,
+    "duration_us_min": 13.14,
+    "duration_us_max": 13.901,
+    "memory.hbm_bandwidth_utilization": 1.30923158800963,
+    "memory.l2_hit_rate": 62.81866923157503
+  },
+  "bottleneck": "latency",
+  "observations": [
+    "Classified as latency-bound (HBM util: 1.3%, severely under-utilized)"
+  ],
+  "top_kernels": [
+    {
+      "name": "softmax_kernel",
+      "duration_us": 13.621,
+      "pct_of_total": 100.0,
+      "bottleneck": "latency"
+    }
+  ],
+  "benchmark_duration_us": 20.7,
+  "profiler_duration_us": 13.14
+}

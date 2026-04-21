@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from minisweagent.agents.heterogeneous.orchestrator import run_heterogeneous_orchestrator
 from minisweagent.run.orchestrator import _probe_preprocess_dir, run_orchestrator
 
 
@@ -154,10 +155,62 @@ class TestProbePreprocessDir:
     def test_discovery_json_loaded(self, tmp_path: Path) -> None:
         pp = tmp_path / "pp"
         pp.mkdir()
-        (pp / "discovery.json").write_text(json.dumps({"kernel": {"type": "triton"}}))
+        (pp / "discovery.json").write_text(
+            json.dumps(
+                {
+                    "kernel": {
+                        "type": "triton",
+                        "input_dialect": "amd_gluon",
+                        "gluon_feature_mode": "auto",
+                        "gluon_baseline_profile": "mi3xx",
+                        "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+                    }
+                }
+            )
+        )
 
         pc = _probe_preprocess_dir(pp)
-        assert pc.discovery == {"kernel": {"type": "triton"}}
+        assert pc.discovery["kernel"]["type"] == "triton"
+        assert pc.input_dialect == "amd_gluon"
+        assert pc.gluon_feature_mode == "auto"
+        assert pc.gluon_baseline_profile == "mi3xx"
+
+    def test_discovery_unknown_type_still_inferrs_gluon_feature_metadata(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        kernel = repo / "kernel.py"
+        kernel.write_text(
+            "from triton.experimental import gluon\n"
+            "@gluon.jit\n"
+            "def kernel_fwd(x):\n"
+            "    return x\n"
+        )
+
+        pp = tmp_path / "pp"
+        pp.mkdir()
+        (pp / "resolved.json").write_text(
+            json.dumps(
+                {
+                    "local_file_path": str(kernel.resolve()),
+                    "local_repo_path": str(repo.resolve()),
+                }
+            )
+        )
+        (pp / "discovery.json").write_text(
+            json.dumps(
+                {
+                    "kernel": {
+                        "file": str(kernel.resolve()),
+                        "type": "unknown",
+                    }
+                }
+            )
+        )
+
+        pc = _probe_preprocess_dir(pp)
+        assert pc.input_dialect == "amd_gluon"
+        assert pc.gluon_feature_mode == "auto"
+        assert pc.allowed_output_dialects == ["plain_triton", "amd_gluon"]
 
     def test_optional_artifact_paths(self, tmp_path: Path) -> None:
         pp = tmp_path / "pp"
@@ -172,3 +225,59 @@ class TestProbePreprocessDir:
         assert pc.codebase_context_path == str(pp / "CODEBASE_CONTEXT.md")
         assert pc.baseline_metrics_path == str(pp / "baseline_metrics.json")
         assert pc.profiling_result_path == str(pp / "profile.json")
+
+
+class _DummyModel:
+    def __init__(self) -> None:
+        self.tools = []
+
+
+@patch("minisweagent.tools.tools_runtime.ToolRuntime", return_value=MagicMock())
+@patch("minisweagent.agents.heterogeneous.orchestrator.build_tools_schema", return_value=[])
+@patch("minisweagent.agents.heterogeneous.orchestrator.run_llm_steps", return_value={"status": "done"})
+def test_run_heterogeneous_orchestrator_prefers_explicit_feature_context(
+    mock_run_llm_steps,
+    _mock_tools_schema,
+    _mock_toolruntime,
+    tmp_path: Path,
+) -> None:
+    kernel = tmp_path / "kernel.py"
+    kernel.write_text("import triton\n")
+
+    report = run_heterogeneous_orchestrator(
+        preprocess_ctx={
+            "kernel_path": str(kernel),
+            "repo_root": str(tmp_path),
+            "commandment": "Keep correctness first.",
+            "input_dialect": "amd_gluon",
+            "gluon_feature_mode": "auto",
+            "gluon_baseline_profile": "mi3xx",
+            "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+            "target_backend": "hip/gfx942",
+            "discovery": {
+                "workspace": str(tmp_path),
+                "kernel": {
+                    "file": str(kernel),
+                    "name": "kernel",
+                    "type": "triton",
+                    "input_dialect": "plain_triton",
+                    "gluon_feature_mode": "off",
+                    "gluon_baseline_profile": "raw",
+                    "allowed_output_dialects": ["plain_triton"],
+                },
+            },
+        },
+        gpu_ids=[0],
+        model=_DummyModel(),
+        model_factory=MagicMock(),
+        output_dir=tmp_path,
+        max_rounds=1,
+        start_round=1,
+    )
+
+    assert report == {"status": "done"}
+    messages = mock_run_llm_steps.call_args.args[1]
+    instance_msg = messages[1]["content"]
+    assert "Input dialect: amd_gluon" in instance_msg
+    assert "Gluon feature mode: auto" in instance_msg
+    assert "Gluon baseline profile: mi3xx" in instance_msg

@@ -59,7 +59,7 @@ class AgentConfig:
     disabled_tools: list[str] = field(default_factory=list)
     source_file_paths: list[str] | None = None
     use_skills: bool = False
-    tool_profile: str = "full"
+    allowed_skill_tiers: list[str] | None = None
 
 
 # Unified observation truncation for both bash output and tool call results (head + tail).
@@ -167,6 +167,8 @@ class DefaultAgent:
                     "patch_output_dir": self.config.patch_output_dir,
                     "metric": self.config.metric,
                     "save_patch": self.config.save_patch,
+                    "use_skills": self.config.use_skills,
+                    "allowed_skill_tiers": self.config.allowed_skill_tiers,
                     "use_strategy_manager": self.config.use_strategy_manager,
                     "strategy_file_path": self.config.strategy_file_path,
                     "profiling_type": self.config.profiling_type,
@@ -182,7 +184,7 @@ class DefaultAgent:
             impl = getattr(self.model, "_impl", None)
             if impl is not None and hasattr(impl, "set_tools"):
                 impl.set_tools(self.toolruntime.get_tools_list())
-        self.skillruntime = SkillRuntime()
+        self.skillruntime = SkillRuntime(allowed_skill_tiers=self.config.allowed_skill_tiers)
 
     def _get_strategy_file(self) -> str:
         """Get the strategy file path.

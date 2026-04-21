@@ -62,11 +62,18 @@ class TestParseTaskInfo:
             "output_dir": None,
             "model": "m",
             "config": None,
+            "input_dialect": "amd_gluon",
+            "gluon_feature_mode": "auto",
+            "gluon_baseline_profile": "mi3xx",
+            "target_backend": "hip/gfx942",
         }
         out = tp.parse_task_info("task", self._Model(json.dumps(payload)))
         assert out["kernel_name"] == "gemm"
         assert out["kernel_type"] == "triton"
         assert out["num_parallel"] == 2
+        assert out["input_dialect"] == "amd_gluon"
+        assert out["gluon_feature_mode"] == "auto"
+        assert out["gluon_baseline_profile"] == "mi3xx"
 
     def test_strips_json_from_markdown_fence(self) -> None:
         inner = json.dumps(

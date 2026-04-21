@@ -132,6 +132,7 @@ def _probe_preprocess_dir(pp_dir: Path):
     a CLI flow anymore.
     """
     from minisweagent.run.pipeline_types import PreprocessContext
+    from minisweagent.run.preprocess.discovery_types import build_gluon_feature_metadata
 
     logger.debug("_probe_preprocess_dir: probing %s for preprocessor artefacts.", pp_dir)
     kernel_path = ""
@@ -179,6 +180,16 @@ def _probe_preprocess_dir(pp_dir: Path):
         except (json.JSONDecodeError, OSError) as exc:
             logger.debug("_probe_preprocess_dir: failed to read discovery.json: %s", exc)
 
+    feature_meta = build_gluon_feature_metadata(
+        Path(kernel_path) if kernel_path else Path("unknown.py"),
+        ((discovery or {}).get("kernel") or {}).get("type", "unknown"),
+        input_dialect=((discovery or {}).get("kernel") or {}).get("input_dialect"),
+        gluon_feature_mode=((discovery or {}).get("kernel") or {}).get("gluon_feature_mode"),
+        gluon_baseline_profile=((discovery or {}).get("kernel") or {}).get("gluon_baseline_profile"),
+        allowed_output_dialects=((discovery or {}).get("kernel") or {}).get("allowed_output_dialects"),
+        target_backend=((discovery or {}).get("kernel") or {}).get("target_backend"),
+    )
+
     return PreprocessContext(
         kernel_path=kernel_path,
         repo_root=repo_root,
@@ -190,5 +201,10 @@ def _probe_preprocess_dir(pp_dir: Path):
         if (pp_dir / "baseline_metrics.json").exists()
         else "",
         profiling_result_path=str(pp_dir / "profile.json") if (pp_dir / "profile.json").exists() else "",
+        input_dialect=feature_meta["input_dialect"],
+        gluon_feature_mode=feature_meta["gluon_feature_mode"],
+        gluon_baseline_profile=feature_meta["gluon_baseline_profile"],
+        allowed_output_dialects=feature_meta["allowed_output_dialects"],
+        target_backend=feature_meta["target_backend"],
         discovery=discovery,
     )

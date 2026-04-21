@@ -5,14 +5,19 @@ This document records the GEAK-side integration points for the `triton-gluon` MI
 ## Repo assets
 - Skill: `skills/triton-gluon-mi3xx/SKILL.md`
 - Layer 1 scope: `docs/triton_gluon_layer1_scope.md`
+- Layer 2 scope: `docs/triton_gluon_layer2_scope.md`
+- Layer 2 translation rules: `docs/triton_gluon_translation_rules.md`
 - API quick reference: `docs/triton_gluon_api_quick_reference.md`
 - Writing guide: `docs/triton_gluon_writing_guide.md`
+- Docker/runtime notes: `docs/docker_env.md`
 - Examples: `examples/triton_gluon_mi3xx/`
+- Layer2 examples: `examples/triton_gluon_layer2/`
 - Manifest template: `examples/triton_gluon_mi3xx/run_manifest_template.md`
 
 ## Document split
 - `skills/triton-gluon-mi3xx/SKILL.md` now focuses on reusable Gluon syntax, architecture mapping, and anti-patterns.
 - This document keeps the current-repo defaults for the `/apps/qiongzhu/triton` MI3xx baseline flow.
+- `docs/triton_gluon_layer2_scope.md` and `docs/triton_gluon_translation_rules.md` define the next-step translation layer from NVIDIA Gluon to AMD Gluon.
 
 ## GEAK integration points
 - Harness prompt guidance lives in `src/minisweagent/run/preprocess/config/mini_unit_test_agent.yaml`.

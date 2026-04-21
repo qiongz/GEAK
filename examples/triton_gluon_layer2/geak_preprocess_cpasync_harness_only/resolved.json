@@ -1,0 +1,14 @@
+{
+  "is_weblink": false,
+  "local_repo_path": "/apps/qiongzhu/GEAK",
+  "local_file_path": "/apps/qiongzhu/GEAK/examples/triton_gluon_layer2/03_elementwise_add_cpasync_amd.py",
+  "original_spec": "/apps/qiongzhu/GEAK/examples/triton_gluon_layer2/03_elementwise_add_cpasync_amd.py",
+  "line_number": null,
+  "line_end": null,
+  "error": null,
+  "github_owner": null,
+  "github_repo": null,
+  "github_ref": null,
+  "github_file_path": null,
+  "remote_clone_url": null
+}

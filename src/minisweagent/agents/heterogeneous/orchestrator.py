@@ -26,6 +26,10 @@ from minisweagent.agents.heterogeneous.prompts import INSTANCE_TEMPLATE, SYSTEM_
 from minisweagent.agents.heterogeneous.schemas import build_tools_schema
 from minisweagent.agents.heterogeneous.tools import dispatch_tool_call
 from minisweagent.debug_runtime import emit_debug_log, model_tools_snapshot
+from minisweagent.run.preprocess.discovery_types import (
+    build_gluon_feature_metadata,
+    build_gluon_feature_prompt_block,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +265,19 @@ def run_heterogeneous_orchestrator(
     disc_dict = preprocess_ctx.get("discovery") or {}
     kernel_path = str(preprocess_ctx.get("kernel_path", ""))
     kernel_meta = _extract_kernel_meta(disc_dict, kernel_path)
+    kernel_meta.update(
+        build_gluon_feature_metadata(
+            Path(kernel_meta.get("kernel_path") or kernel_path or "unknown.py"),
+            kernel_meta.get("kernel_type", "unknown"),
+            input_dialect=preprocess_ctx.get("input_dialect") or kernel_meta.get("input_dialect"),
+            gluon_feature_mode=preprocess_ctx.get("gluon_feature_mode") or kernel_meta.get("gluon_feature_mode"),
+            gluon_baseline_profile=preprocess_ctx.get("gluon_baseline_profile")
+            or kernel_meta.get("gluon_baseline_profile"),
+            allowed_output_dialects=preprocess_ctx.get("allowed_output_dialects")
+            or kernel_meta.get("allowed_output_dialects"),
+            target_backend=preprocess_ctx.get("target_backend") or kernel_meta.get("target_backend"),
+        )
+    )
 
     preprocess_dir = output_dir
     for candidate in ("resolved.json", "discovery.json", "profile.json"):
@@ -385,6 +402,10 @@ def run_heterogeneous_orchestrator(
         codebase_context=codebase_ctx or "Not available",
         baseline_metrics_summary=bm_summary,
         profiling_summary=prof_summary,
+        feature_context=build_gluon_feature_prompt_block(
+            kernel_meta,
+            heading="### Gluon Feature Context",
+        ),
         commandment_excerpt=cmd_excerpt,
         memory_context=_memory_context,
     )

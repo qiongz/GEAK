@@ -42,6 +42,11 @@ class PreprocessContext:
     codebase_context_path: str
     baseline_metrics_path: str
     profiling_result_path: str
+    input_dialect: str | None = None
+    gluon_feature_mode: str | None = None
+    gluon_baseline_profile: str | None = None
+    allowed_output_dialects: list[str] | None = None
+    target_backend: str | None = None
     discovery: dict | None = None
     # Translation metadata (populated when translation preprocessing runs)
     translation_source_language: str | None = None
@@ -65,6 +70,11 @@ class PreprocessContext:
             codebase_context_path=d.get("codebase_context_path", ""),
             baseline_metrics_path=d.get("baseline_metrics_path", ""),
             profiling_result_path=d.get("profiling_result_path", ""),
+            input_dialect=d.get("input_dialect"),
+            gluon_feature_mode=d.get("gluon_feature_mode"),
+            gluon_baseline_profile=d.get("gluon_baseline_profile"),
+            allowed_output_dialects=d.get("allowed_output_dialects"),
+            target_backend=d.get("target_backend"),
             discovery=d.get("discovery"),
             translation_source_language=d.get("translation_source_language"),
             translation_target_language=d.get("translation_target_language"),

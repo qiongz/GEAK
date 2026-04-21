@@ -1,0 +1,14 @@
+{
+  "cache_key": "03-elementwise-add-amd-b6b3327e37b3",
+  "cache_dir": null,
+  "reused_cache": false,
+  "selected_source": "harness",
+  "saved_cache_manifest": null,
+  "harness": "/apps/qiongzhu/GEAK/examples/triton_gluon_layer2/test_elementwise_add_layer2.py",
+  "deterministic_resolution": {
+    "source": "local_path",
+    "path": "/apps/qiongzhu/GEAK/examples/triton_gluon_layer2/test_elementwise_add_layer2.py"
+  },
+  "test_command": "/opt/venv/bin/python3 /apps/qiongzhu/GEAK/examples/triton_gluon_layer2/test_elementwise_add_layer2.py --correctness",
+  "harness_path": "/apps/qiongzhu/GEAK/examples/triton_gluon_layer2/test_elementwise_add_layer2.py"
+}

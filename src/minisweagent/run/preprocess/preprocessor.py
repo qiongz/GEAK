@@ -37,6 +37,7 @@ def _ensure_mcp_importable() -> None:
 
 
 from minisweagent.run.preprocess.benchmark_parsing import extract_latency_ms
+from minisweagent.run.preprocess.discovery_types import build_gluon_feature_metadata
 from minisweagent.run.preprocess.harness_utils import (
     DEFAULT_EVAL_BENCHMARK_ITERATIONS,
     DEFAULT_PIPELINE_OUTPUT_DIR,
@@ -472,6 +473,10 @@ def run_preprocessor(
     eval_command: str | None = None,
     correctness_command: str | list[str] | None = None,
     performance_command: str | list[str] | None = None,
+    input_dialect: str | None = None,
+    gluon_feature_mode: str | None = None,
+    gluon_baseline_profile: str | None = None,
+    target_backend: str | None = None,
     benchmark_timeout: int = 3600,
     target_language: str | None = None,
     budget=None,
@@ -510,6 +515,8 @@ def run_preprocessor(
     performance_command:
         Benchmark/performance command(s), e.g. ``"./benchmark"``.  Used
         directly for profiling and baseline capture — no ``&&`` guessing.
+    input_dialect / gluon_feature_mode / gluon_baseline_profile / target_backend:
+        Optional Gluon feature metadata overrides for Triton-family kernels.
     benchmark_timeout:
         Timeout in seconds for the benchmark baseline subprocess.
         Defaults to 3600s. Increase for kernels with long runtimes.
@@ -553,6 +560,16 @@ def run_preprocessor(
             state.output_dir = output_dir
 
     ctx: dict[str, Any] = {}
+
+    def _persist_preprocess_context() -> None:
+        """Write preprocess_context.json best-effort for downstream reuse."""
+        try:
+            from minisweagent.run.preprocess.context import PreprocessContext
+
+            pc = PreprocessContext.from_preprocessor_output(ctx, output_dir)
+            pc.to_json(output_dir / "preprocess_context.json")
+        except Exception as exc:
+            logger.debug("Could not persist preprocess_context.json: %s", exc)
 
     # ── Normalise structured commands ────────────────────────────────
     def _join(cmd: str | list[str] | None) -> str | None:
@@ -614,6 +631,22 @@ def run_preprocessor(
             if _split_valid:
                 harness = _new_harness
 
+    try:
+        from minisweagent.agents.heterogeneous.task_generator import _infer_kernel_type as _infer_task_kernel_type
+
+        inferred_kernel_type = _infer_task_kernel_type(Path(kernel_path))
+    except Exception:
+        inferred_kernel_type = "unknown"
+    feature_meta = build_gluon_feature_metadata(
+        Path(kernel_path),
+        inferred_kernel_type,
+        input_dialect=input_dialect or os.getenv("GEAK_INPUT_DIALECT"),
+        gluon_feature_mode=gluon_feature_mode or os.getenv("GEAK_GLUON_FEATURE_MODE"),
+        gluon_baseline_profile=gluon_baseline_profile or os.getenv("GEAK_GLUON_BASELINE_PROFILE"),
+        target_backend=target_backend or os.getenv("GEAK_TARGET_BACKEND"),
+    )
+    ctx.update(feature_meta)
+
     logger.info("  Kernel: %s", kernel_path)
 
     def _print(msg: str) -> None:
@@ -626,7 +659,14 @@ def run_preprocessor(
     if eval_command:
         logger.info("  [eval_command mode] Skipping Steps 2-4 (codebase context, discovery, baseline collection)")
         ctx["codebase_context_path"] = None
-        ctx["discovery"] = {}
+        ctx["discovery"] = {
+            "kernel": {
+                "file": str(Path(kernel_path).resolve()),
+                "name": Path(kernel_path).stem,
+                "type": inferred_kernel_type,
+                **feature_meta,
+            }
+        }
         ctx["test_command"] = eval_command
         ctx["harness_results"] = None
         ctx["testcase_selection"] = {"selected_source": "eval_command"}
@@ -691,6 +731,28 @@ def run_preprocessor(
         if _filtered != disc_dict:
             disc_dict = _filtered
 
+        kernel_info = dict((disc_dict or {}).get("kernel") or {})
+        raw_detected_kernel_type = str(kernel_info.get("type") or "").strip().lower()
+        detected_kernel_type = inferred_kernel_type if raw_detected_kernel_type in {"", "unknown"} else raw_detected_kernel_type
+        feature_meta = build_gluon_feature_metadata(
+            Path(kernel_path),
+            detected_kernel_type,
+            input_dialect=input_dialect or kernel_info.get("input_dialect") or os.getenv("GEAK_INPUT_DIALECT"),
+            gluon_feature_mode=gluon_feature_mode
+            or kernel_info.get("gluon_feature_mode")
+            or os.getenv("GEAK_GLUON_FEATURE_MODE"),
+            gluon_baseline_profile=gluon_baseline_profile
+            or kernel_info.get("gluon_baseline_profile")
+            or os.getenv("GEAK_GLUON_BASELINE_PROFILE"),
+            allowed_output_dialects=kernel_info.get("allowed_output_dialects"),
+            target_backend=target_backend or kernel_info.get("target_backend") or os.getenv("GEAK_TARGET_BACKEND"),
+        )
+        kernel_info.setdefault("file", str(Path(kernel_path).resolve()))
+        kernel_info.setdefault("name", Path(kernel_path).stem)
+        kernel_info["type"] = detected_kernel_type
+        kernel_info.update(feature_meta)
+        disc_dict["kernel"] = kernel_info
+        ctx.update(feature_meta)
         ctx["discovery"] = disc_dict
         (output_dir / "discovery.json").write_text(json.dumps(disc_dict, indent=2, default=str))
 
@@ -1123,6 +1185,7 @@ def run_preprocessor(
         _harness_only = os.environ.get("GEAK_HARNESS_ONLY", "").strip() == "1"
         if _harness_only:
             logger.info("GEAK_HARNESS_ONLY=1 -- skipping profiling, baseline, commandment")
+            _persist_preprocess_context()
             logger.info("Preprocessing complete (harness only). Artefacts written to: %s", output_dir)
             return ctx
 
@@ -1485,6 +1548,7 @@ def run_preprocessor(
     # endregion
 
     _preprocess_elapsed = time.monotonic() - _preprocess_t0
+    _persist_preprocess_context()
     state.mark_done()
     if state.in_borrow_mode:
         logger.warning(
@@ -1557,6 +1621,29 @@ def main() -> None:
         default=None,
         help="Kernel type (e.g. pytorch2flydsl). Triggers translation when applicable.",
     )
+    parser.add_argument(
+        "--input-dialect",
+        default=None,
+        choices=("plain_triton", "nv_gluon", "amd_gluon"),
+        help="Optional Triton-family input dialect override.",
+    )
+    parser.add_argument(
+        "--gluon-feature-mode",
+        default=None,
+        choices=("off", "auto", "force"),
+        help="Optional Gluon feature gate override.",
+    )
+    parser.add_argument(
+        "--gluon-baseline-profile",
+        default=None,
+        choices=("raw", "mi3xx"),
+        help="Optional Gluon baseline profile override.",
+    )
+    parser.add_argument(
+        "--target-backend",
+        default=None,
+        help="Optional target backend override (default: hip/gfx942).",
+    )
     args = parser.parse_args()
 
     try:
@@ -1584,6 +1671,10 @@ def main() -> None:
     print(f"  correctness_command:  {args.correctness_command}")
     print(f"  performance_command:  {args.performance_command}")
     print(f"  kernel_type:          {args.kernel_type}")
+    print(f"  input_dialect:        {args.input_dialect}")
+    print(f"  gluon_feature_mode:   {args.gluon_feature_mode}")
+    print(f"  baseline_profile:     {args.gluon_baseline_profile}")
+    print(f"  target_backend:       {args.target_backend}")
     print("-" * 60)
     print(f"  GEAK_MODEL:                 {os.environ.get('GEAK_MODEL', '<not set>')}")
     print(f"  GEAK_MODEL_ENSEMBLE:        {os.environ.get('GEAK_MODEL_ENSEMBLE', '<not set>')}")
@@ -1605,6 +1696,10 @@ def main() -> None:
         correctness_command=args.correctness_command,
         performance_command=args.performance_command,
         target_language="flydsl" if args.kernel_type == "pytorch2flydsl" else None,
+        input_dialect=args.input_dialect,
+        gluon_feature_mode=args.gluon_feature_mode,
+        gluon_baseline_profile=args.gluon_baseline_profile,
+        target_backend=args.target_backend,
     )
 
     print(json.dumps(ctx, indent=2, default=str))

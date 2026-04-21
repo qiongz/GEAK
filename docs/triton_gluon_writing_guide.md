@@ -13,6 +13,10 @@ For adjacent summaries:
 
 - `docs/triton_gluon_layer1_scope.md` explains what the current Layer 1 work
   has already proven.
+- `docs/triton_gluon_layer2_scope.md` defines the bounded NV-Gluon to AMD-Gluon translation layer.
+- `docs/triton_gluon_translation_rules.md` contains the Layer 2 playbook and first-sample constraints.
+- `docs/triton_gluon_layer3_scope.md` defines the bounded plain-Triton to AMD-Gluon direct-lift layer.
+- `docs/triton_gluon_lift_rules.md` contains the Layer 3 direct-lift playbook and first-sample constraints.
 - `docs/triton_gluon_api_quick_reference.md` provides a compact syntax and
   architecture cheat sheet.
 
@@ -43,6 +47,11 @@ In practice, this means you should design a Gluon kernel from:
 4. instruction path
 
 not from a copied high-level Triton loop body.
+
+When the input is plain Triton rather than Gluon, the rule is stricter: keep
+the source kernel's launcher, indexing, and correctness intent, but recover the
+target/layout/memory decisions explicitly instead of transliterating `tl.*`
+syntax line by line.
 
 ## 2. Stable syntax patterns
 
@@ -298,7 +307,55 @@ Both ecosystems expose barrier/cluster-like building blocks, but:
 - supporting ops differ
 - mbarrier stories are not 1:1 portable
 
-## 5. What is stable enough for a skill
+## 5. Direct lift from plain Triton
+
+Layer 3 starts from plain Triton rather than Gluon. That changes the job from
+"retarget an existing Gluon program" to "recover the implicit decisions that
+plain Triton left to the compiler, then make them explicit for AMD Gluon."
+
+### 5.1 What to preserve first
+
+When lifting plain Triton, preserve these semantics first:
+
+- host launcher shape
+- `program_id` usage
+- pointer arithmetic
+- offset generation
+- mask semantics
+- correctness oracle
+- benchmark intent
+
+### 5.2 What must become explicit
+
+Before lowering `tl.load` / `tl.store`, choose:
+
+1. target family
+2. wave / warp assumptions
+3. `BlockedLayout`
+4. any derived `SliceLayout`
+5. memory path
+
+On `gfx942`, prefer wave64-valid layouts. For simple first-sample memory paths,
+prefer common Gluon indexing plus `ttgl.amd.cdna3.buffer_load` /
+`ttgl.amd.cdna3.buffer_store` rather than guessed AMD-only rewrites.
+
+### 5.3 What should move out of the example file
+
+Plain Triton tutorials often include demo prints, plots, or notebook-style
+execution. Keep the benchmark intent, but move those presentation details into
+the harness or run manifest when they are not part of the kernel contract.
+
+### 5.4 What to document explicitly
+
+Each direct lift should record:
+
+- what Triton semantics were kept
+- what layout decisions were added
+- what AMD-specific memory or instruction path was chosen
+- what plain Triton pieces were intentionally not carried over verbatim
+- what remains non-parity
+
+## 6. What is stable enough for a skill
 
 The following belongs in a reusable Gluon skill:
 
@@ -324,7 +381,7 @@ Those belong in:
 - run manifests
 - execution runbooks
 
-## 6. Known non-equivalences and current caution points
+## 7. Known non-equivalences and current caution points
 
 1. NVIDIA tutorial code does not port 1:1 to AMD.
 2. `tma` and `tdm` are conceptually related, but not drop-in equivalents.
@@ -336,7 +393,7 @@ Those belong in:
    optimization rather than a finished 1:1 parity story with mature NV paths:
    [RFC #8281](https://github.com/triton-lang/triton/issues/8281)
 
-## 7. Current repo-specific defaults
+## 8. Current repo-specific defaults
 
 For the current `/apps/qiongzhu/triton` MI3xx baseline workflow, see:
 

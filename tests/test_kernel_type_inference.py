@@ -55,6 +55,20 @@ class TestDirectDetection:
         f = _write(tmpdir / "k.py", "import triton\nimport triton.language as tl\ndef wrapper(): pass\n")
         assert _infer_kernel_type(f) == "triton"
 
+    def test_gluon_jit_decorator(self, tmpdir):
+        f = _write(
+            tmpdir / "k.py",
+            "from triton.experimental import gluon\n@gluon.jit\ndef my_kernel(): pass\n",
+        )
+        assert _infer_kernel_type(f) == "triton"
+
+    def test_gluon_language_import(self, tmpdir):
+        f = _write(
+            tmpdir / "k.py",
+            "from triton.experimental.gluon import language as ttgl\nx = ttgl.program_id(0)\n",
+        )
+        assert _infer_kernel_type(f) == "triton"
+
     def test_plain_python(self, tmpdir):
         f = _write(tmpdir / "k.py", "import torch\ndef foo(): return 1\n")
         assert _infer_kernel_type(f) == "unknown"
@@ -163,6 +177,14 @@ class TestCheckImportedTriton:
 
     def test_finds_autotune_in_imported_module(self, tmpdir):
         _write(tmpdir / "kernels.py", "@triton.autotune(configs=[])\ndef k(): pass\n")
+        wrapper = _write(tmpdir / "w.py", "from kernels import k\n")
+        assert _check_imported_triton(wrapper.read_text(), wrapper) is True
+
+    def test_finds_gluon_kernel_in_imported_module(self, tmpdir):
+        _write(
+            tmpdir / "kernels.py",
+            "from triton.experimental import gluon\n@gluon.jit\ndef k(): pass\n",
+        )
         wrapper = _write(tmpdir / "w.py", "from kernels import k\n")
         assert _check_imported_triton(wrapper.read_text(), wrapper) is True
 

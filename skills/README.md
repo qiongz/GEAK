@@ -22,11 +22,16 @@ The file **must** start with YAML between `---` delimiters. The runtime parses t
 ---
 name: my-skill-id
 description: One line explaining when this skill should be used (shown in the agent’s skill list).
+tier: general
 ---
 ```
 
 - **`name`**: Stable identifier for the skill. It must be **unique** among all skills in this folder. The agent selects a skill by this string (see below). Use lowercase, hyphens, and short words (for example `silu-optimization`).
 - **`description`**: Written for the **model**. It should say *when* to use the skill (task type, domain, hardware, library, etc.). This text is injected into the system prompt inside `<available_skills>`.
+- **`tier`**: Optional visibility tier used by benchmark pipelines to filter skills. If omitted, it defaults to `general`. Current conventions are:
+  - `general`: safe to advertise broadly
+  - `benchmark_safe`: safe to expose in benchmark / blind-eval paths
+  - `authoring_safe`: useful for sample construction or review, but should be filtered out of benchmark-safe runs
 
 If frontmatter is missing or invalid, that skill folder may be skipped during discovery.
 

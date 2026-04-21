@@ -9,6 +9,7 @@ import pytest
 from minisweagent.agents.heterogeneous.task_generator import (
     _SYSTEM_PROMPT,
     _build_workload_guidance,
+    _extract_kernel_meta,
     _parse_llm_response,
     _run_task_agent,
     generate_tasks,
@@ -44,6 +45,16 @@ def _make_kernel_kwargs(
         "function_names": ["kernel_fwd"],
         "workspace_path": "/workspace",
     }
+
+
+def _write_knowledge_files(workspace: Path) -> tuple[Path, Path]:
+    kb_dir = workspace / "knowledge_base"
+    kb_dir.mkdir()
+    general_kb = kb_dir / "optimization_strategies.py"
+    general_kb.write_text("# general optimization knowledge\n")
+    gluon_kb = kb_dir / "triton_gluon_mi3xx_benchmark_safe.md"
+    gluon_kb.write_text("# benchmark-safe gluon knowledge\n")
+    return general_kb, gluon_kb
 
 
 # ---- Agent submits valid JSON -> tasks produced ----
@@ -106,6 +117,7 @@ def test_agent_failure_propagates(mock_agent):
 def test_run_task_agent_enables_skills_for_triton(mock_default_agent, _mock_tools, tmp_path: Path):
     model = FakePlanningModel()
     mock_default_agent.return_value.run.return_value = ("Submitted", "[]")
+    general_kb, _gluon_kb = _write_knowledge_files(tmp_path)
 
     submitted = _run_task_agent(
         kernel_path=str(tmp_path / "kernel.py"),
@@ -114,6 +126,11 @@ def test_run_task_agent_enables_skills_for_triton(mock_default_agent, _mock_tool
         kernel_language="python",
         function_names=["kernel_fwd"],
         workspace_path=str(tmp_path),
+        input_dialect="plain_triton",
+        gluon_feature_mode="off",
+        gluon_baseline_profile="raw",
+        allowed_output_dialects=["plain_triton"],
+        target_backend="hip/gfx942",
         base_task_context="ctx",
         model=model,
         profiling_path=None,
@@ -131,6 +148,94 @@ def test_run_task_agent_enables_skills_for_triton(mock_default_agent, _mock_tool
 
     assert submitted == "[]"
     assert mock_default_agent.call_args.kwargs["use_skills"] is True
+    assert mock_default_agent.call_args.kwargs["allowed_skill_tiers"] == ["general"]
+    run_kwargs = mock_default_agent.return_value.run.call_args.kwargs
+    assert run_kwargs["knowledge_base_path"] == str(general_kb)
+    assert run_kwargs["gluon_benchmark_safe_knowledge_path"] == ""
+
+
+@patch("minisweagent.tools.tools_runtime.get_tools_list", return_value=[{"name": "str_replace_editor"}, {"name": "submit"}])
+@patch("minisweagent.agents.default.DefaultAgent")
+def test_run_task_agent_raw_profile_omits_benchmark_safe_gluon_knowledge(
+    mock_default_agent, _mock_tools, tmp_path: Path
+):
+    model = FakePlanningModel()
+    mock_default_agent.return_value.run.return_value = ("Submitted", "[]")
+    general_kb, _gluon_kb = _write_knowledge_files(tmp_path)
+
+    submitted = _run_task_agent(
+        kernel_path=str(tmp_path / "kernel.py"),
+        kernel_name="test_kernel",
+        kernel_type="triton",
+        kernel_language="python",
+        function_names=["kernel_fwd"],
+        workspace_path=str(tmp_path),
+        input_dialect="amd_gluon",
+        gluon_feature_mode="auto",
+        gluon_baseline_profile="raw",
+        allowed_output_dialects=["plain_triton", "amd_gluon"],
+        target_backend="hip/gfx942",
+        base_task_context="ctx",
+        model=model,
+        profiling_path=None,
+        commandment_path=None,
+        baseline_metrics_path=None,
+        deep_search_path=None,
+        previous_results_dir=None,
+        discovery_path=None,
+        codebase_context_path=None,
+        previous_tasks_dir=None,
+        round_evaluations=None,
+        current_round=1,
+        num_gpus=1,
+    )
+
+    assert submitted == "[]"
+    assert mock_default_agent.call_args.kwargs["allowed_skill_tiers"] == ["general"]
+    run_kwargs = mock_default_agent.return_value.run.call_args.kwargs
+    assert run_kwargs["knowledge_base_path"] == str(general_kb)
+    assert run_kwargs["gluon_benchmark_safe_knowledge_path"] == ""
+
+
+@patch("minisweagent.tools.tools_runtime.get_tools_list", return_value=[{"name": "str_replace_editor"}, {"name": "submit"}])
+@patch("minisweagent.agents.default.DefaultAgent")
+def test_run_task_agent_uses_benchmark_safe_skill_tiers_for_mi3xx(mock_default_agent, _mock_tools, tmp_path: Path):
+    model = FakePlanningModel()
+    mock_default_agent.return_value.run.return_value = ("Submitted", "[]")
+    general_kb, gluon_kb = _write_knowledge_files(tmp_path)
+
+    submitted = _run_task_agent(
+        kernel_path=str(tmp_path / "kernel.py"),
+        kernel_name="test_kernel",
+        kernel_type="triton",
+        kernel_language="python",
+        function_names=["kernel_fwd"],
+        workspace_path=str(tmp_path),
+        input_dialect="amd_gluon",
+        gluon_feature_mode="auto",
+        gluon_baseline_profile="mi3xx",
+        allowed_output_dialects=["plain_triton", "amd_gluon"],
+        target_backend="hip/gfx942",
+        base_task_context="ctx",
+        model=model,
+        profiling_path=None,
+        commandment_path=None,
+        baseline_metrics_path=None,
+        deep_search_path=None,
+        previous_results_dir=None,
+        discovery_path=None,
+        codebase_context_path=None,
+        previous_tasks_dir=None,
+        round_evaluations=None,
+        current_round=1,
+        num_gpus=1,
+    )
+
+    assert submitted == "[]"
+    assert mock_default_agent.call_args.kwargs["allowed_skill_tiers"] == ["general", "benchmark_safe"]
+    run_kwargs = mock_default_agent.return_value.run.call_args.kwargs
+    assert run_kwargs["knowledge_base_path"] == str(general_kb)
+    assert run_kwargs["gluon_benchmark_safe_knowledge_path"] == str(gluon_kb)
 
 
 def test_write_task_files_marks_triton_tasks_with_skill_usage(tmp_path: Path):
@@ -138,17 +243,79 @@ def test_write_task_files_marks_triton_tasks_with_skill_usage(tmp_path: Path):
         '[{"label": "opt", "priority": 5, "agent_type": "strategy_agent", "task_prompt": "Do it"}]',
         FakeAgentClass,
     )
+    _general_kb, gluon_kb = _write_knowledge_files(tmp_path)
 
     paths = write_task_files(
         tasks,
         tmp_path,
         kernel_path=str(tmp_path / "kernel.py"),
         kernel_type="triton",
+        input_dialect="amd_gluon",
+        gluon_feature_mode="auto",
+        gluon_baseline_profile="mi3xx",
+        allowed_output_dialects=["plain_triton", "amd_gluon"],
+        target_backend="hip/gfx942",
     )
 
     meta, _body = read_task_file(paths[0])
     assert meta["kernel_type"] == "triton"
     assert meta["use_skills"] is True
+    assert meta["input_dialect"] == "amd_gluon"
+    assert meta["gluon_feature_mode"] == "auto"
+    assert meta["gluon_baseline_profile"] == "mi3xx"
+    assert meta["allowed_output_dialects"] == ["plain_triton", "amd_gluon"]
+    assert meta["allowed_skill_tiers"] == ["general", "benchmark_safe"]
+    assert meta["gluon_benchmark_safe_knowledge_path"] == str(gluon_kb)
+
+
+def test_write_task_files_omits_benchmark_safe_gluon_knowledge_for_raw(tmp_path: Path):
+    tasks = _parse_llm_response(
+        '[{"label": "opt", "priority": 5, "agent_type": "strategy_agent", "task_prompt": "Do it"}]',
+        FakeAgentClass,
+    )
+    _write_knowledge_files(tmp_path)
+
+    paths = write_task_files(
+        tasks,
+        tmp_path,
+        kernel_path=str(tmp_path / "kernel.py"),
+        kernel_type="triton",
+        input_dialect="amd_gluon",
+        gluon_feature_mode="auto",
+        gluon_baseline_profile="raw",
+        allowed_output_dialects=["plain_triton", "amd_gluon"],
+        target_backend="hip/gfx942",
+    )
+
+    meta, _body = read_task_file(paths[0])
+    assert "gluon_benchmark_safe_knowledge_path" not in meta
+
+
+def test_extract_kernel_meta_reinfers_unknown_gluon_type(tmp_path: Path):
+    kernel = tmp_path / "kernel.py"
+    kernel.write_text(
+        "from triton.experimental import gluon\n"
+        "@gluon.jit\n"
+        "def kernel_fwd(x):\n"
+        "    return x\n"
+    )
+
+    meta = _extract_kernel_meta(
+        {
+            "workspace": str(tmp_path),
+            "kernel": {
+                "file": str(kernel),
+                "name": "kernel",
+                "type": "unknown",
+                "functions": ["kernel_fwd"],
+            },
+        },
+        str(kernel),
+    )
+
+    assert meta["kernel_type"] == "triton"
+    assert meta["input_dialect"] == "amd_gluon"
+    assert meta["gluon_feature_mode"] == "auto"
 
 
 # ---- No kernels -> empty ----

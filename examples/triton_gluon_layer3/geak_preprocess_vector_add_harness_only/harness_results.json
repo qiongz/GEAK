@@ -1,0 +1,34 @@
+[
+  {
+    "mode": "correctness",
+    "success": true,
+    "returncode": 0,
+    "stdout": "COMPILE_OK=1\nCOMPILE_TARGET=GPUTarget(backend='hip', arch='gfx942', warp_size=64)\nCOMPILE_SHAPE=[98432]\nCORRECTNESS_CASE_OK=[4096]\nCORRECTNESS_CASE_OK=[98432]\nCORRECTNESS_CASE_OK=[1048576]\nCORRECTNESS_CASE_OK=[4194304]\nCORRECTNESS_OK=1\nGEAK_SHAPES_USED=[[4096], [98432], [1048576], [4194304]]\n",
+    "stderr": "",
+    "duration_s": 2.45
+  },
+  {
+    "mode": "profile",
+    "success": true,
+    "returncode": 0,
+    "stdout": "PROFILE_OK=1\nGEAK_SHAPES_USED=[[262144]]\n",
+    "stderr": "",
+    "duration_s": 2.22
+  },
+  {
+    "mode": "benchmark",
+    "success": true,
+    "returncode": 0,
+    "stdout": "BENCHMARK_OK=1\nGEAK_SHAPES_USED=[[4096], [262144], [4194304]]\nBENCHMARK_CASE shape=[4096] latency_ms=0.0095 gbps=5.1988\nBENCHMARK_CASE shape=[262144] latency_ms=0.0102 gbps=308.8333\nBENCHMARK_CASE shape=[4194304] latency_ms=0.0301 gbps=1672.7605\nGEAK_RESULT_GBPS=662.2642\nGEAK_RESULT_LATENCY_MS=0.0166\n",
+    "stderr": "",
+    "duration_s": 2.33
+  },
+  {
+    "mode": "full-benchmark",
+    "success": true,
+    "returncode": 0,
+    "stdout": "FULL_BENCHMARK_OK=1\nGEAK_SHAPES_USED=[[4096], [98432], [262144], [1048576], [4194304]]\nFULL_BENCHMARK_CASE shape=[4096] latency_ms=0.0094 gbps=5.2547\nFULL_BENCHMARK_CASE shape=[98432] latency_ms=0.0093 gbps=126.9384\nFULL_BENCHMARK_CASE shape=[262144] latency_ms=0.0098 gbps=322.0851\nFULL_BENCHMARK_CASE shape=[1048576] latency_ms=0.0116 gbps=1084.0236\nFULL_BENCHMARK_CASE shape=[4194304] latency_ms=0.0282 gbps=1783.4173\nGEAK_RESULT_GBPS=664.3438\nGEAK_RESULT_LATENCY_MS=0.0137\n",
+    "stderr": "",
+    "duration_s": 2.35
+  }
+]
