@@ -1,6 +1,6 @@
 # AMD AI DevTool Knowledge Base Index
 
-*Comprehensive navigation for 94 knowledge files covering the complete AMD GPU AI stack*
+*Comprehensive navigation for 95 knowledge files covering the complete AMD GPU AI stack*
 
 ---
 
@@ -130,6 +130,7 @@ Get up and running fast with these practical guides:
 
 **ML Primitives & Compilers:**
 - [Triton on AMD GPUs](amd-knowledge-base/layer-3-libraries/compilers/triton-on-rocm.md) - Triton is a Python-based language and compiler for writing efficient GPU kernels with ROCm support.
+- [Triton Gluon on AMD GPUs](amd-knowledge-base/layer-3-libraries/compilers/triton-gluon-on-rocm.md) - Lower-level Triton-family guide for explicit layouts, AMD matrix paths, and version-sensitive Gluon behavior.
 - [MIOpen Usage Guide](amd-knowledge-base/layer-3-libraries/ml-primitives/miopen-usage.md) - MIOpen is AMD's library for high-performance deep learning primitives, providing optimized implem...
 
 ### Layer 4: ML Frameworks & Runtimes
@@ -183,6 +184,7 @@ Get up and running fast with these practical guides:
 
 **Advanced Techniques:**
 - [Custom Kernels with Triton](amd-knowledge-base/layer-5-llm/05-advanced/custom-kernels/triton-kernels.md) - Guide to writing custom GPU kernels for AMD using Triton.
+- [Triton Gluon on AMD GPUs](amd-knowledge-base/layer-3-libraries/compilers/triton-gluon-on-rocm.md) - Structured Gluon knowledge for AMD targets, including layout-first design and MFMA/WMMA flows.
 - [MongoDB MCP Integration for AI/ML Workflows](amd-knowledge-base/layer-5-llm/05-advanced/data-management/mongodb-mcp-integration.md) - Query MongoDB databases directly from your IDE for experiment tracking, GPU monitoring data, and ...
 
 ## 🛠 Best Practices & Optimization

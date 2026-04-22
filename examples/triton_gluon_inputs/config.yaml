@@ -3,19 +3,24 @@ source_file_path:
   - 01_plain_triton_input.py
   - 02_nv_gluon_input.py
   - 03_amd_gluon_input.py
+  - 04_plain_triton_pa_decode.py
+  - 05_plain_triton_pa_mqa_logits.py
 harness_path: test_inputs.py
 compile_command:
-  - python3 test_inputs.py --kernel-file 01_plain_triton_input.py --mode compile
+  - python3 test_inputs.py --kernel-file 04_plain_triton_pa_decode.py --mode compile
 correctness_command:
-  - python3 test_inputs.py --kernel-file 01_plain_triton_input.py --correctness
+  - python3 test_inputs.py --kernel-file 04_plain_triton_pa_decode.py --correctness
 performance_command:
-  - python3 test_inputs.py --kernel-file 01_plain_triton_input.py --full-benchmark
+  - python3 test_inputs.py --kernel-file 04_plain_triton_pa_decode.py --full-benchmark
 target_kernel_functions:
   - add_kernel
+  - paged_attention_decode_kernel
+  - paged_mqa_logits_kernel
 prompt:
   instructions: >
     Minimal Triton-family input fixtures for the Gluon feature path. Select one
     fixture with --kernel-url, keep kernel_type on the Triton route, and prefer
     an amd_gluon candidate when gluon_feature_mode is on. The default commands
-    in this config use 01_plain_triton_input.py; use explicit --test-command
-    overrides when targeting the nv_gluon or amd_gluon fixtures.
+    in this config use 04_plain_triton_pa_decode.py as the primary MI300X/gfx942
+    plain-Triton benchmark fixture; use explicit --test-command overrides when
+    targeting the other plain_triton, nv_gluon, or amd_gluon fixtures.

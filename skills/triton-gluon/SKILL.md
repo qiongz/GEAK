@@ -1,6 +1,6 @@
 ---
 name: triton-gluon
-description: Use when optimizing a Triton-family kernel (`plain_triton`, `nv_gluon`, or `amd_gluon`) and you need to classify the input dialect, optionally translate NVIDIA-facing Gluon, and generate or refine an `amd_gluon` candidate on AMD.
+description: Rewrite or optimize Triton-family kernels (`plain_triton`, `nv_gluon`, or `amd_gluon`) toward valid AMD-facing Gluon candidates. Use when the task involves Gluon, `input_dialect`, AMD Triton layouts, MFMA or WMMA paths, or translating NVIDIA-facing Gluon assumptions to AMD.
 tier: general
 ---
 
@@ -10,30 +10,30 @@ tier: general
 
 - The task stays on the Triton route: `kernel_type = triton`.
 - The input dialect is `plain_triton`, `nv_gluon`, or `amd_gluon`.
-- The task should automatically optimize or rewrite the kernel rather than only
-  explain the API surface.
+- The task is to rewrite, optimize, or benchmark a kernel, not only explain API
+  names.
 
-## What to do immediately after load
+## Immediate checklist
 
 Do **not** stop at summarizing the skill. Apply it to the current kernel:
 
-1. Read the task metadata and classify the input as:
-   - `plain_triton`
-   - `nv_gluon`
-   - `amd_gluon`
+1. Classify the input as `plain_triton`, `nv_gluon`, or `amd_gluon`.
 2. Preserve source semantics first:
    - launcher shape
    - indexing
    - masks / boundary behavior
    - correctness oracle
    - benchmark intent
-3. Choose the action path:
-   - `plain_triton`: decide whether an `amd_gluon` candidate is structurally
-     promising; if yes, generate one early
-   - `nv_gluon`: translate vendor-specific APIs, layouts, or hardware idioms
-     into AMD-facing Gluon before tuning
-   - `amd_gluon`: keep the optimization path in AMD Gluon space and refine it
-4. Benchmark the resulting candidate against the source baseline or permitted
+3. Check the runtime contract:
+   - installed Triton version
+   - whether `triton.experimental.gluon` JIT imports exist
+   - whether the codebase depends on prebuilt AOT kernels
+   - whether `AMDMFMALayout.instr_shape` is 2D or 3D
+   - target backend and architecture
+   - whether "Gluon available" and "this operator supports the target" are
+     different questions
+4. Choose the action path for the current dialect.
+5. Benchmark the resulting candidate against the source baseline or a permitted
    fallback path.
 
 ## Output contract
@@ -43,96 +43,96 @@ Do **not** stop at summarizing the skill. Apply it to the current kernel:
   - `plain_triton`
   - `amd_gluon`
 - Never create a new optimized `nv_gluon` output path.
-- If `amd_gluon` is allowed and structurally promising, prefer an early
-  `amd_gluon` candidate instead of spending the whole plan on fallback-only
+- If `amd_gluon` is allowed and structurally promising, generate an
+  `amd_gluon` candidate early instead of spending the whole plan on fallback
   tuning.
-
-## Runtime and version checks
-
-- Gluon in Triton uses a distinct runtime path through `GluonASTSource`, so host
-  launch shape and attributes like `num_warps`, `num_ctas`, and target arch are
-  part of the contract.
-- Real downstream code may use:
-  - pure Gluon JIT
-  - Gluon AOT
-  - mixed pipelines with Gluon plus plain Triton stages
-- Before rewriting anything, check:
-  - installed Triton version
-  - whether Gluon JIT imports are available
-  - whether the codebase depends on prebuilt AOT kernels
-  - whether `AMDMFMALayout.instr_shape` expects old 2D or newer 3D form
 
 ## Input-dialect playbook
 
 ### `plain_triton`
 
-- Recover implicit layout and memory decisions before lowering into Gluon.
-- Generate an `amd_gluon` candidate only when explicit layouts or AMD primitives
-  have a real chance to help.
-- Keep plain Triton as a valid competitor when Gluon looks unlikely to pay off.
+Use this exact order:
+
+1. Keep the launcher recognizable.
+2. Recover the implicit layout from `tl.arange`, tile shape, `num_warps`, and
+   wave32 or wave64 assumptions.
+3. If layout depends on launch config, build it on the host and pass it as a
+   `constexpr`; keep the launcher in `kernel[grid](...)` form.
+4. Decide the memory path:
+   - simple scalar or vector path: prefer `gl.load` / `gl.store`
+   - explicit AMD global-memory path or code already using AMD Gluon idioms:
+     use `ttgl.amd.cdna3|cdna4.buffer_load` / `buffer_store`
+5. Decide the matrix path:
+   - if there is no real matrix instruction path, stop at explicit blocked
+     layout plus AMD memory ops
+   - if the kernel needs MFMA or WMMA, define `AMDMFMALayout` or
+     `AMDWMMALayout`, then `DotOperandLayout`, then `convert_layout`, then the
+     target-specific op
+6. Add shared memory, swizzle, async copy, barriers, or scheduler hints only as
+   second-stage tuning.
+7. Keep plain Triton as a valid competitor unless AMD Gluon is clearly
+   promising.
 
 ### `nv_gluon`
 
-- Separate common Gluon syntax from NVIDIA-only assumptions.
-- Preserve the common subset whenever it still makes sense on AMD.
-- Re-evaluate wave32-centric layouts, async-copy paths, descriptor paths, or
-  vendor-specific matrix APIs before carrying them over.
-- Translate to AMD-facing Gluon, then optimize.
+- Treat this as translation, not rename.
+- Preserve common Gluon control flow, launcher shape, indexing, masks, and
+  correctness scaffolding.
+- Re-evaluate before carrying to AMD:
+  - wave32-centric layouts
+  - NVIDIA async-copy paths
+  - `tma` / tensor descriptor assumptions
+  - Hopper or Blackwell-specific matrix instructions
+  - tensor-memory and cluster features
+- Translate to AMD-facing Gluon first, then optimize.
 
 ### `amd_gluon`
 
 - Preserve the AMD-facing structure unless benchmark evidence clearly favors a
   fallback comparison.
 - Optimize inside AMD Gluon space first.
+- Read operator-local architecture guards before assuming the support matrix
+  from a global helper.
 
-## Layout and API notes
+## API decision rules
 
-- Treat layout as a first-class design choice.
-- Common high-value building blocks:
-  - `BlockedLayout`
-  - `SliceLayout`
-  - `DotOperandLayout`
-  - `DistributedLinearLayout`
-  - `SwizzledSharedLayout`
-  - `PaddedSharedLayout`
-  - `PartitionedSharedLayout`
-  - `AMDMFMALayout`
-  - `AMDWMMALayout`
-- Common execution helpers:
-  - `allocate_shared_memory`
-  - `convert_layout`
-  - `barrier`
-  - `mbarrier`
-  - `cluster`
-  - `fence_async_shared`
-  - `warp_pipeline_stage`
-- Descriptor and tensor-memory concepts are vendor- and family-specific. Do not
-  assume `tma`, `tdm`, tensor descriptors, or tensor memory are interchangeable
-  by name.
+- `tl.arange` is not enough by itself in Gluon; rewrite it as
+  `gl.arange(..., layout=...)`.
+- `tl.load` / `tl.store` usually become `gl.load` / `gl.store` first. Move to
+  AMD `buffer_load` / `buffer_store` only when the target family or existing
+  kernel structure actually requires it.
+- `tl.zeros` becomes `gl.zeros(..., layout=...)`.
+- `tl.dot` or `tl.dot_scaled` is **not** a direct rename target. On AMD, the
+  real path is usually result layout -> operand layouts -> `convert_layout` ->
+  `mfma` / `mfma_scaled` / `wmma`.
+- Descriptor, tensor-memory, and async-copy concepts are vendor- and
+  family-specific. Do not translate by name alone.
 
 ## Architecture notes
 
 - `gfx942` / CDNA3:
   - prefer wave64-valid layouts
-  - `buffer_load`
-  - `buffer_store`
+  - `buffer_load` / `buffer_store`
   - `mfma` only when the kernel is genuinely matrix-op based
 - `gfx950` / CDNA4:
-  - use CDNA4-only async-copy or scaled-MFMA paths only when they are actually
-    required
-  - `mfma_scaled` and scale-layout helpers are CDNA4-specific high-value tools
-- `gfx1250` / RDNA-style paths:
-  - treat `wmma` / `tdm` / cluster APIs as a separate family, not as drop-in
-    substitutes for CDNA behavior
-- NVIDIA Ampere / Hopper / Blackwell:
-  - Ampere centers on `async_copy` and `mma_v2`
-  - Hopper adds `tma`, `warpgroup_mma`, `cluster`, and richer barriers
-  - Blackwell adds tensor-memory and `tcgen05_*` paths
+  - CDNA3-style paths may still appear
+  - `mfma_scaled` and scale-layout helpers are high-value tools
+  - use CDNA4-only async features only when required
+- `gfx1250`:
+  - treat `wmma`, `tdm`, cluster, and related APIs as a separate family
+  - do not use them as drop-in replacements for CDNA behavior
+  - prefer plain `wmma` before `wmma_scaled`
+  - descriptor paths have harder constraints than CDNA layouts: contiguous last
+    dimension, limited layout families, and stricter shared-memory rules
+  - `wmma_scaled` has hard constraints on `instr_shape`, accumulator layout,
+    scale dtype combinations, and scale factor
 - `AMDMFMALayout(version=3)` maps to `gfx942`; `version=4` maps to `gfx950`.
 - `AMDWMMALayout(version=3)` maps to `gfx1250`.
-- Do not assume the Python namespace alone tells you the full architecture
-  contract. Real code may still use `gl.amd.cdna3.*` helpers while the layout or
-  version branch targets `gfx950`.
+- The Python namespace is not the whole contract. Real code may still use
+  `gl.amd.cdna3.*` helpers while layout version or feature branches target
+  `gfx950`.
+- A global "Gluon available" helper is not the same thing as "this operator is
+  supported on this arch".
 
 ## Practical patterns from real code
 
@@ -146,9 +146,50 @@ Do **not** stop at summarizing the skill. Apply it to the current kernel:
 - Real aiter GEMM kernels on `gfx950` additionally use:
   - `mfma_scaled`
   - `get_mfma_scale_layout`
-  - JSON or heuristic-selected launch configs rather than only online autotune
-- Optional scheduler or barrier hints may appear in production code. Treat them
-  as second-stage tuning tools, not first-pass portability requirements.
+  - JSON or heuristic-selected launch configs instead of only online autotune
+- Preshuffled GEMM paths may use `DistributedLinearLayout` plus
+  `reshape` / `permute` / `trans` to unshuffle operand tiles. Treat that as
+  algorithm structure, not cosmetic cleanup.
+- Real attention kernels often carry 3D or 5D logical shapes, multiple
+  `SliceLayout` layers, and mask conversions across layouts.
+- JIT and AOT can coexist in one operator family.
+- Optional scheduler or barrier hints are second-stage tuning tools, not
+  first-pass portability requirements.
+
+## Optimization path heuristics
+
+- elementwise or simple vector kernels:
+  - first get explicit blocked layout + correct launcher
+  - then decide whether generic `gl.load` / `gl.store` is enough
+  - move to AMD `buffer_load` / `buffer_store` only if the target family or the
+    surrounding AMD code path really benefits
+- attention or decode kernels:
+  - preserve stride-rich host arguments, mask semantics, and partition logic
+  - keep query, key, value layout trees intact before changing memory paths
+  - treat layout conversions on masks or logits as part of correctness, not
+    cleanup
+- GEMM or FP8 kernels:
+  - first match the real matrix family, K width, and result layout
+  - then wire operand layouts and epilogue scaling
+  - only then add shared-memory staging, preshuffle logic, async, or config
+    tuning
+- `gfx1250` WMMA or descriptor kernels:
+  - first get plain `wmma` or basic descriptor use correct
+  - add `wmma_scaled`, scale layouts, `tdm`, or cluster behavior only after the
+    base path works
+
+## When to read source
+
+Stop treating the task as a generic rewrite and read operator-local source when
+you see any of these:
+
+- `DistributedLinearLayout`
+- `PartitionedSharedLayout` or host `TensorDescriptor`
+- `reshape` / `permute` / `trans` used to unshuffle matrix tiles
+- 3D or 5D logical layouts with multiple nested `SliceLayout`
+- AOT packaging, env-variable gates, or prebuilt-kernel loading
+- scheduler, barrier, or priority hints that appear to affect correctness or
+  launch shape
 
 ## Anti-patterns
 
@@ -156,10 +197,18 @@ Do **not** stop at summarizing the skill. Apply it to the current kernel:
 - Keeping NVIDIA layout assumptions unchanged on AMD
 - Renaming NVIDIA APIs to guessed AMD names
 - Treating compile-only success as enough to claim the rewrite is valid
-- Ignoring Triton minor-version compatibility when the codebase mixes JIT and AOT
+- Ignoring Triton minor-version compatibility when the codebase mixes JIT and
+  AOT
+- Assuming one global arch check is the operator support matrix
 - Copying checked-in manifests, snapshots, or benchmark outputs into the answer
 
-## Related docs
+## Read next
 
 - `docs/triton_gluon.md`
+  - section `4.2` for the mechanical `plain_triton -> amd_gluon` rewrite order
+  - section `7.5` for feature-availability vs operator-support differences
+  - section `7.6` for optimization order by kernel family
+  - section `7.7` for cases that still require source-first reading
+  - section `8` for end-to-end examples
+  - appendix `A` for API, version, and troubleshooting checklists
 - `examples/triton_gluon_inputs/README.md`
