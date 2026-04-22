@@ -114,6 +114,15 @@ Use GitHub **Draft PRs** when your work is not yet ready for formal review:
 - Run **Ruff** before pushing; fix new lint issues in touched files.
 - Prefer small, reviewable PRs; avoid drive-by refactors outside the stated goal.
 
+## Examples and checked-in artifacts
+
+- Keep `examples/` lightweight and runnable. Prefer source inputs plus a thin
+  harness/config over large checked-in example bundles.
+- Do **not** check generated run manifests, preprocess snapshots, profile JSON,
+  or benchmark output dumps into `examples/`.
+- Put reproducibility notes in docs or optimization logs rather than hardcoding
+  container names, branch names, or absolute local paths into reusable examples.
+
 ## Local checks
 
 Approximate what CI runs locally before you push:

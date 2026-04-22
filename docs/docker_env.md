@@ -345,6 +345,6 @@ When invoking GEAK inside the validated baseline container:
 
 ## Relationship to the other documents
 
-- For the current MI3xx baseline workflow, see `docs/triton_gluon_mi3xx_baseline.md`
+- For the Triton-family Gluon feature guidance, including current repo-local
+  defaults, see `docs/triton_gluon.md`
 - For generic ROCm library/source layout, see `docs/env_install.md`
-- For the current Triton-Gluon Layer 1 boundary, see `docs/triton_gluon_layer1_scope.md`

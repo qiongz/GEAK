@@ -135,8 +135,8 @@ GPU_AND_PROFILER_RULES = """
 TASKGEN_SYSTEM_PROMPT = textwrap.dedent("""\
 You are an expert GPU kernel optimization planner for AMD GPUs. You have
 access to profiling data, kernel metadata, and file-based reference
-material (general optimization knowledge plus optional benchmark-safe
-feature knowledge). Read the files you need using the
+material (general optimization knowledge plus feature metadata). Read the
+files you need using the
 `str_replace_editor` tool (command: "view"), reason about the best
 optimization approach, then submit your task list as JSON via the
 `submit` tool.
@@ -204,8 +204,7 @@ them priority 15 behind kernel-body algorithmic work.
    kernel's overall latency. Note which functions are imported from each
    dependency to identify what to optimize.
 3. Read the discovery file for kernel metadata (language, inner kernel, etc.).
-4. Read the knowledge base for applicable optimization strategies, plus
-   any benchmark-safe Gluon knowledge file if one is provided.
+4. Read the knowledge base for applicable optimization strategies.
 5. Optionally read baseline metrics, COMMANDMENT.md, deep search findings,
    or prior results if the paths are provided.
 6. Group related kernels (e.g., multiple Tensile GEMMs with different tile
@@ -229,6 +228,14 @@ them priority 15 behind kernel-body algorithmic work.
    in that block before proposing anything from the "Deprioritize Until
    Later" bucket (for example autotune-only, launch-only, or dispatch-only
    work).
+11. If an "Output Dialect Planning Policy" block is present, treat it as
+   mandatory. In particular, when it says to prefer AMD Gluon first for a
+   Triton-family input, generate at least one early task that evaluates an
+   AMD Gluon path before filling the batch with only fallback tuning. For
+   `nv_gluon` inputs, that early task should explicitly translate
+   vendor-specific APIs or layout assumptions into AMD-facing Gluon before
+   tuning, while still keeping any allowed plain-Triton fallback unless the
+   policy explicitly requires AMD Gluon.
 
 ## Output format
 
@@ -300,7 +307,6 @@ Generate optimization tasks for the kernel at {{ kernel_path }}.
 {% endif %}{% if baseline_metrics_path %}- **Baseline metrics**: {{ baseline_metrics_path }}
 {% endif %}{% if commandment_path %}- **COMMANDMENT.md** (evaluation contract): {{ commandment_path }}
 {% endif %}{% if knowledge_base_path %}- **Knowledge base** (optimization strategies): {{ knowledge_base_path }}
-{% endif %}{% if gluon_benchmark_safe_knowledge_path %}- **Benchmark-safe Gluon knowledge**: {{ gluon_benchmark_safe_knowledge_path }}
 {% endif %}{% if deep_search_path %}- **Deep search findings**: {{ deep_search_path }}
 {% endif %}{% if previous_results_path %}- **Prior round results** (what actually happened): {{ previous_results_path }}
 {% endif %}{% if previous_tasks_path %}- **Prior tasks planned** (avoid repeating): {{ previous_tasks_path }}
@@ -317,6 +323,9 @@ profiling data instead.
 {% endif %}
 {% if gluon_feature_context %}
 {{ gluon_feature_context }}
+{% endif %}
+{% if output_dialect_guidance %}
+{{ output_dialect_guidance }}
 {% endif %}
 {% if workload_guidance %}
 ## Workload / Backend Guidance
@@ -351,9 +360,8 @@ Read the profiling file first to understand the sub-kernel landscape. Then
 read the codebase context file for the kernel dependency tree -- every
 dependency listed is in-repo code that could be an optimization target.
 Read the discovery file for additional kernel metadata, and consult the
-knowledge base plus any benchmark-safe Gluon knowledge file for
-applicable strategies. Finally, submit your task list as JSON via the
-`submit` tool.
+knowledge base for applicable strategies. Finally, submit your task list
+as JSON via the `submit` tool.
 """)
 
 

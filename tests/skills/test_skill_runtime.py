@@ -200,8 +200,7 @@ class TestLoadSkill:
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXAMPLE_SILU = _REPO_ROOT / "examples" / "skills" / "silu-optimization" / "SKILL.md"
 _USER_SKILLS_SILU = _REPO_ROOT / "skills" / "silu-optimization" / "SKILL.md"
-_USER_TRITON_GLUON = _REPO_ROOT / "skills" / "triton-gluon-mi3xx" / "SKILL.md"
-_USER_TRITON_GLUON_BENCH = _REPO_ROOT / "skills" / "triton-gluon-mi3xx-benchmark-safe" / "SKILL.md"
+_USER_TRITON_GLUON = _REPO_ROOT / "skills" / "triton-gluon" / "SKILL.md"
 
 
 @pytest.mark.skipif(not _EXAMPLE_SILU.is_file(), reason="example skill examples/skills/silu-optimization not present")
@@ -221,13 +220,8 @@ class TestSkillRuntimeIntegration:
             assert s.path == _USER_SKILLS_SILU.parent
             assert "AMD" in s.description or "silu" in s.description.lower()
         if _USER_TRITON_GLUON.is_file():
-            assert "triton-gluon-mi3xx" in runtime.skills
-            s = runtime.skills["triton-gluon-mi3xx"]
+            assert "triton-gluon" in runtime.skills
+            s = runtime.skills["triton-gluon"]
             assert s.path == _USER_TRITON_GLUON.parent
-            assert "triton-gluon" in s.description.lower()
-            assert s.tier == "authoring_safe"
-        if _USER_TRITON_GLUON_BENCH.is_file():
-            assert "triton-gluon-mi3xx-benchmark-safe" in runtime.skills
-            s = runtime.skills["triton-gluon-mi3xx-benchmark-safe"]
-            assert s.path == _USER_TRITON_GLUON_BENCH.parent
-            assert s.tier == "benchmark_safe"
+            assert "triton-family" in s.description.lower() or "amd_gluon" in s.description.lower()
+            assert s.tier == "general"

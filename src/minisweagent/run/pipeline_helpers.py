@@ -913,7 +913,6 @@ def inject_pipeline_context(
     codebase_context: str | None = None,
     benchmark_baseline: str | None = None,
     feature_metadata: dict[str, Any] | None = None,
-    gluon_benchmark_safe_knowledge_path: str | None = None,
 ) -> tuple[str, dict]:
     """Prepend pipeline context to *task_body* and augment *config*.
 
@@ -945,15 +944,6 @@ def inject_pipeline_context(
                 feature_metadata,
                 heading="## Gluon Feature Context (auto-injected from task metadata)",
             )
-        )
-        ctx.append("")
-
-    if gluon_benchmark_safe_knowledge_path and Path(gluon_benchmark_safe_knowledge_path).exists():
-        ctx.append("## Benchmark-safe Gluon Knowledge")
-        ctx.append(f"BENCHMARK-SAFE GLUON KNOWLEDGE: {gluon_benchmark_safe_knowledge_path}")
-        ctx.append(
-            "Read this reference only if you need Gluon-specific guidance. "
-            "It is benchmark-safe MI3xx context, not authoring truth or a fixed recipe."
         )
         ctx.append("")
 

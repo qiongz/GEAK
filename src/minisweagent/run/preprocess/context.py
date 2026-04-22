@@ -37,6 +37,8 @@ class PreprocessContext:
     gluon_feature_mode: str | None = None
     gluon_baseline_profile: str | None = None
     allowed_output_dialects: list[str] | None = None
+    preferred_output_dialects: list[str] | None = None
+    output_dialect_search_policy: str | None = None
     target_backend: str | None = None
 
     # Inline data (kept in memory, not just a path)
@@ -110,6 +112,8 @@ class PreprocessContext:
             gluon_feature_mode=ctx.get("gluon_feature_mode"),
             gluon_baseline_profile=ctx.get("gluon_baseline_profile"),
             allowed_output_dialects=ctx.get("allowed_output_dialects"),
+            preferred_output_dialects=ctx.get("preferred_output_dialects"),
+            output_dialect_search_policy=ctx.get("output_dialect_search_policy"),
             target_backend=ctx.get("target_backend"),
             test_command=ctx.get("test_command"),
             discovery=ctx.get("discovery"),

@@ -63,6 +63,8 @@ from minisweagent.debug_runtime import emit_debug_log, model_tools_snapshot, too
 from minisweagent.run.preprocess.discovery_types import (
     GLUON_BASELINE_PROFILE_MI3XX,
     GLUON_FEATURE_MODE_OFF,
+    PREFER_AMD_GLUON_IF_VIABLE_POLICY,
+    REQUIRE_AMD_GLUON_POLICY,
     _infer_kernel_language,
     allowed_skill_tiers_for_feature,
     build_gluon_feature_metadata,
@@ -72,7 +74,6 @@ from minisweagent.run.preprocess.discovery_types import (
 logger = logging.getLogger(__name__)
 
 _KNOWLEDGE_BASE_REL = "knowledge_base/optimization_strategies.py"
-_GLUON_BENCHMARK_SAFE_KNOWLEDGE_REL = "knowledge_base/triton_gluon_mi3xx_benchmark_safe.md"
 _TRITON_FAMILY_MARKERS = (
     "@triton",
     "tl.",
@@ -183,6 +184,8 @@ def _extract_kernel_meta(
         gluon_baseline_profile=kernel_info.get("gluon_baseline_profile")
         or os.getenv("GEAK_GLUON_BASELINE_PROFILE"),
         allowed_output_dialects=kernel_info.get("allowed_output_dialects"),
+        preferred_output_dialects=kernel_info.get("preferred_output_dialects"),
+        output_dialect_search_policy=kernel_info.get("output_dialect_search_policy"),
         target_backend=kernel_info.get("target_backend") or os.getenv("GEAK_TARGET_BACKEND"),
     )
 
@@ -217,6 +220,8 @@ def generate_tasks(
     gluon_feature_mode: str = "off",
     gluon_baseline_profile: str = "raw",
     allowed_output_dialects: list[str] | None = None,
+    preferred_output_dialects: list[str] | None = None,
+    output_dialect_search_policy: str | None = None,
     target_backend: str = "",
     profiling_path: Path | None = None,
     commandment_path: Path | None = None,
@@ -278,6 +283,8 @@ def generate_tasks(
         gluon_feature_mode=gluon_feature_mode,
         gluon_baseline_profile=gluon_baseline_profile,
         allowed_output_dialects=allowed_output_dialects,
+        preferred_output_dialects=preferred_output_dialects,
+        output_dialect_search_policy=output_dialect_search_policy,
         target_backend=target_backend,
         base_task_context=base_task_context,
         model=model,
@@ -320,6 +327,8 @@ def generate_tasks_from_content(
     gluon_feature_mode: str = "off",
     gluon_baseline_profile: str = "raw",
     allowed_output_dialects: list[str] | None = None,
+    preferred_output_dialects: list[str] | None = None,
+    output_dialect_search_policy: str | None = None,
     target_backend: str = "",
     profiling_result: dict | None = None,
     commandment_content: str | None = None,
@@ -375,6 +384,8 @@ def generate_tasks_from_content(
             gluon_feature_mode=gluon_feature_mode,
             gluon_baseline_profile=gluon_baseline_profile,
             allowed_output_dialects=allowed_output_dialects,
+            preferred_output_dialects=preferred_output_dialects,
+            output_dialect_search_policy=output_dialect_search_policy,
             target_backend=target_backend,
             profiling_path=profiling_path,
             commandment_path=commandment_path,
@@ -408,6 +419,8 @@ def write_task_files(
     gluon_feature_mode: str = "off",
     gluon_baseline_profile: str = "raw",
     allowed_output_dialects: list[str] | None = None,
+    preferred_output_dialects: list[str] | None = None,
+    output_dialect_search_policy: str | None = None,
     target_backend: str = "",
     repo_root: str = "",
     commandment: str = "",
@@ -438,6 +451,8 @@ def write_task_files(
         gluon_feature_mode=gluon_feature_mode,
         gluon_baseline_profile=gluon_baseline_profile,
         allowed_output_dialects=allowed_output_dialects,
+        preferred_output_dialects=preferred_output_dialects,
+        output_dialect_search_policy=output_dialect_search_policy,
         target_backend=target_backend,
     )
     allowed_skill_tiers = allowed_skill_tiers_for_feature(
@@ -447,8 +462,6 @@ def write_task_files(
     )
     task_knowledge_paths = _resolve_task_knowledge_paths(
         Path(repo_root) if repo_root else (Path(kernel_path).parent if kernel_path else output_dir),
-        kernel_type=kernel_type,
-        feature_meta=feature_meta,
     )
 
     for t in tasks:
@@ -465,6 +478,8 @@ def write_task_files(
             "gluon_feature_mode": feature_meta["gluon_feature_mode"],
             "gluon_baseline_profile": feature_meta["gluon_baseline_profile"],
             "allowed_output_dialects": list(feature_meta["allowed_output_dialects"]),
+            "preferred_output_dialects": list(feature_meta["preferred_output_dialects"]),
+            "output_dialect_search_policy": feature_meta["output_dialect_search_policy"],
             "target_backend": feature_meta["target_backend"],
             "repo_root": repo_root,
             "commandment": commandment,
@@ -480,10 +495,6 @@ def write_task_files(
             "use_skills": _should_enable_skills(kernel_type),
             "allowed_skill_tiers": list(allowed_skill_tiers),
         }
-        if task_knowledge_paths["gluon_benchmark_safe_knowledge_path"]:
-            metadata["gluon_benchmark_safe_knowledge_path"] = task_knowledge_paths[
-                "gluon_benchmark_safe_knowledge_path"
-            ]
         body = f"# {t.label}\n\n{t.task}\n"
         write_task_file(task_path, metadata, body)
         paths.append(task_path)
@@ -518,46 +529,50 @@ def _find_knowledge_base(workspace: Path) -> Path | None:
     return _find_repo_relative_file(workspace, _KNOWLEDGE_BASE_REL)
 
 
-def _find_gluon_benchmark_safe_knowledge_base(
-    workspace: Path,
-    *,
-    kernel_type: str,
-    gluon_feature_mode: str,
-    gluon_baseline_profile: str,
-) -> Path | None:
-    """Locate benchmark-safe Gluon knowledge for MI3xx feature-enabled runs only."""
-    if kernel_type.strip().lower() != "triton":
-        return None
-    if str(gluon_feature_mode).strip().lower() == GLUON_FEATURE_MODE_OFF:
-        return None
-    if str(gluon_baseline_profile).strip().lower() != GLUON_BASELINE_PROFILE_MI3XX:
-        return None
-    return _find_repo_relative_file(workspace, _GLUON_BENCHMARK_SAFE_KNOWLEDGE_REL)
-
-
 def _resolve_task_knowledge_paths(
     workspace: Path,
-    *,
-    kernel_type: str,
-    feature_meta: dict[str, Any],
 ) -> dict[str, str]:
-    """Return the generic and feature-specific knowledge paths for a task run."""
+    """Return the generic knowledge paths for a task run."""
     knowledge_base_path = _find_knowledge_base(workspace)
-    gluon_knowledge_path = _find_gluon_benchmark_safe_knowledge_base(
-        workspace,
-        kernel_type=kernel_type,
-        gluon_feature_mode=feature_meta.get("gluon_feature_mode", GLUON_FEATURE_MODE_OFF),
-        gluon_baseline_profile=feature_meta.get("gluon_baseline_profile", ""),
-    )
     return {
         "knowledge_base_path": str(knowledge_base_path) if knowledge_base_path else "",
-        "gluon_benchmark_safe_knowledge_path": str(gluon_knowledge_path) if gluon_knowledge_path else "",
     }
 
 
 def _should_enable_skills(kernel_type: str) -> bool:
     """Enable skills only on the Triton planning/execution path."""
     return kernel_type.strip().lower() == "triton"
+
+
+def _build_output_dialect_guidance(feature_meta: dict[str, Any]) -> str:
+    """Return planner guidance for how to prioritize output dialects."""
+    policy = str(feature_meta.get("output_dialect_search_policy") or "").strip().lower()
+    input_dialect = str(feature_meta.get("input_dialect") or "").strip().lower()
+    preferred_outputs = feature_meta.get("preferred_output_dialects") or []
+    preferred_text = ", ".join(str(item) for item in preferred_outputs)
+    if policy == PREFER_AMD_GLUON_IF_VIABLE_POLICY:
+        lines = [
+            "## Output Dialect Planning Policy",
+            f"- Preferred output dialect order: {preferred_text}",
+            "- Prefer an AMD Gluon candidate first for this Triton-family input whenever the structure and target backend make that path viable.",
+        ]
+        if input_dialect == "nv_gluon":
+            lines.append("- This input starts as NVIDIA-facing Gluon. Generate at least one early task that translates vendor-specific APIs, layout assumptions, or memory paths into AMD-facing Gluon before tuning.")
+        elif input_dialect == "amd_gluon":
+            lines.append("- This input is already AMD Gluon. Keep the main optimization path inside AMD Gluon rather than drifting back to plain Triton unless benchmark evidence forces a fallback.")
+        else:
+            lines.append("- Generate at least one early task that explicitly evaluates an AMD Gluon rewrite before filling the batch with only plain Triton tuning.")
+        lines.append("- Keep a plain Triton fallback path alive when it remains an allowed output. If the kernel structure or benchmark evidence suggests Gluon is unlikely to help, say so and focus the remaining tasks on the fallback path.")
+        return "\n".join(lines)
+    if policy == REQUIRE_AMD_GLUON_POLICY:
+        return "\n".join(
+            [
+                "## Output Dialect Planning Policy",
+                f"- Preferred output dialect order: {preferred_text}",
+                "- AMD Gluon output is required for this run. Do not plan plain Triton-only fallback tasks as the main path.",
+            ]
+        )
+    return ""
 
 
 def _run_task_agent(
@@ -588,6 +603,8 @@ def _run_task_agent(
     num_gpus: int = 1,
     output_dir: Path | None = None,
     rag_enabled: bool | None = None,
+    preferred_output_dialects: list[str] | None = None,
+    output_dialect_search_policy: str | None = None,
 ) -> str:
     """Run a read-only planning agent and return the submitted JSON text."""
     from minisweagent.agents.default import DefaultAgent
@@ -602,6 +619,8 @@ def _run_task_agent(
         gluon_feature_mode=gluon_feature_mode,
         gluon_baseline_profile=gluon_baseline_profile,
         allowed_output_dialects=allowed_output_dialects,
+        preferred_output_dialects=preferred_output_dialects,
+        output_dialect_search_policy=output_dialect_search_policy,
         target_backend=target_backend,
     )
 
@@ -635,11 +654,7 @@ def _run_task_agent(
     tmp_files: list[Path] = []
     try:
         env = LocalEnvironment(cwd=str(workspace))
-        knowledge_paths = _resolve_task_knowledge_paths(
-            workspace,
-            kernel_type=kernel_type,
-            feature_meta=feature_meta,
-        )
+        knowledge_paths = _resolve_task_knowledge_paths(workspace)
 
         prev_results_path: Path | None = None
         if previous_results_dir and Path(previous_results_dir).is_dir():
@@ -688,6 +703,7 @@ def _run_task_agent(
                 feature_meta,
                 heading="## Gluon Feature Context",
             ),
+            "output_dialect_guidance": _build_output_dialect_guidance(feature_meta),
             "codebase_context_path": str(codebase_context_path) if codebase_context_path else "",
             "discovery_path": str(discovery_path) if discovery_path else "",
             "profiling_path": str(profiling_path) if profiling_path else "",
@@ -1100,6 +1116,8 @@ def main():
         gluon_feature_mode=kernel_meta["gluon_feature_mode"],
         gluon_baseline_profile=kernel_meta["gluon_baseline_profile"],
         allowed_output_dialects=kernel_meta["allowed_output_dialects"],
+        preferred_output_dialects=kernel_meta["preferred_output_dialects"],
+        output_dialect_search_policy=kernel_meta["output_dialect_search_policy"],
         target_backend=kernel_meta["target_backend"],
         profiling_path=profiling_path,
         commandment_path=commandment_path,
@@ -1128,6 +1146,8 @@ def main():
             gluon_feature_mode=kernel_meta["gluon_feature_mode"],
             gluon_baseline_profile=kernel_meta["gluon_baseline_profile"],
             allowed_output_dialects=kernel_meta["allowed_output_dialects"],
+            preferred_output_dialects=kernel_meta["preferred_output_dialects"],
+            output_dialect_search_policy=kernel_meta["output_dialect_search_policy"],
             target_backend=kernel_meta["target_backend"],
             repo_root=args.repo_root or "",
             commandment=args.commandment or "",

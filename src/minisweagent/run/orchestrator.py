@@ -187,6 +187,8 @@ def _probe_preprocess_dir(pp_dir: Path):
         gluon_feature_mode=((discovery or {}).get("kernel") or {}).get("gluon_feature_mode"),
         gluon_baseline_profile=((discovery or {}).get("kernel") or {}).get("gluon_baseline_profile"),
         allowed_output_dialects=((discovery or {}).get("kernel") or {}).get("allowed_output_dialects"),
+        preferred_output_dialects=((discovery or {}).get("kernel") or {}).get("preferred_output_dialects"),
+        output_dialect_search_policy=((discovery or {}).get("kernel") or {}).get("output_dialect_search_policy"),
         target_backend=((discovery or {}).get("kernel") or {}).get("target_backend"),
     )
 
@@ -205,6 +207,8 @@ def _probe_preprocess_dir(pp_dir: Path):
         gluon_feature_mode=feature_meta["gluon_feature_mode"],
         gluon_baseline_profile=feature_meta["gluon_baseline_profile"],
         allowed_output_dialects=feature_meta["allowed_output_dialects"],
+        preferred_output_dialects=feature_meta["preferred_output_dialects"],
+        output_dialect_search_policy=feature_meta["output_dialect_search_policy"],
         target_backend=feature_meta["target_backend"],
         discovery=discovery,
     )

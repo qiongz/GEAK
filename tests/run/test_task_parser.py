@@ -75,6 +75,28 @@ class TestParseTaskInfo:
         assert out["gluon_feature_mode"] == "auto"
         assert out["gluon_baseline_profile"] == "mi3xx"
 
+    def test_normalizes_gluon_on_alias(self) -> None:
+        payload = {
+            "kernel_name": "gemm",
+            "kernel_url": "https://example.com/k.py",
+            "kernel_type": "triton",
+            "repo": None,
+            "test_command": "pytest",
+            "metric": "latency",
+            "num_parallel": 2,
+            "gpu_ids": "0,1",
+            "output_dir": None,
+            "model": "m",
+            "config": None,
+            "input_dialect": "plain_triton",
+            "gluon_feature_mode": "gluon-on",
+            "gluon_baseline_profile": "raw",
+            "target_backend": "hip/gfx942",
+        }
+        out = tp.parse_task_info("task", self._Model(json.dumps(payload)))
+        assert out["input_dialect"] == "plain_triton"
+        assert out["gluon_feature_mode"] == "auto"
+
     def test_strips_json_from_markdown_fence(self) -> None:
         inner = json.dumps(
             {

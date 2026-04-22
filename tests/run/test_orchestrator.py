@@ -174,6 +174,29 @@ class TestProbePreprocessDir:
         assert pc.input_dialect == "amd_gluon"
         assert pc.gluon_feature_mode == "auto"
         assert pc.gluon_baseline_profile == "mi3xx"
+        assert pc.preferred_output_dialects == ["amd_gluon", "plain_triton"]
+        assert pc.output_dialect_search_policy == "prefer_amd_gluon_if_viable_else_plain_triton"
+
+    def test_probe_preprocess_dir_prefers_amd_gluon_for_plain_triton_auto(self, tmp_path: Path) -> None:
+        pp = tmp_path / "pp"
+        pp.mkdir()
+        (pp / "discovery.json").write_text(
+            json.dumps(
+                {
+                    "kernel": {
+                        "type": "triton",
+                        "input_dialect": "plain_triton",
+                        "gluon_feature_mode": "auto",
+                        "gluon_baseline_profile": "raw",
+                        "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+                    }
+                }
+            )
+        )
+
+        pc = _probe_preprocess_dir(pp)
+        assert pc.preferred_output_dialects == ["amd_gluon", "plain_triton"]
+        assert pc.output_dialect_search_policy == "prefer_amd_gluon_if_viable_else_plain_triton"
 
     def test_discovery_unknown_type_still_inferrs_gluon_feature_metadata(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
@@ -253,6 +276,8 @@ def test_run_heterogeneous_orchestrator_prefers_explicit_feature_context(
             "gluon_feature_mode": "auto",
             "gluon_baseline_profile": "mi3xx",
             "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+            "preferred_output_dialects": ["amd_gluon", "plain_triton"],
+            "output_dialect_search_policy": "prefer_amd_gluon_if_viable_else_plain_triton",
             "target_backend": "hip/gfx942",
             "discovery": {
                 "workspace": str(tmp_path),
@@ -281,3 +306,54 @@ def test_run_heterogeneous_orchestrator_prefers_explicit_feature_context(
     assert "Input dialect: amd_gluon" in instance_msg
     assert "Gluon feature mode: auto" in instance_msg
     assert "Gluon baseline profile: mi3xx" in instance_msg
+    assert "Preferred output dialect order: amd_gluon, plain_triton" in instance_msg
+    assert "Output-dialect search policy: prefer_amd_gluon_if_viable_else_plain_triton" in instance_msg
+
+
+@patch("minisweagent.tools.tools_runtime.ToolRuntime", return_value=MagicMock())
+@patch("minisweagent.agents.heterogeneous.orchestrator.build_tools_schema", return_value=[])
+@patch("minisweagent.agents.heterogeneous.orchestrator.run_llm_steps", return_value={"status": "done"})
+def test_run_heterogeneous_orchestrator_injects_plain_triton_gluon_preference(
+    mock_run_llm_steps,
+    _mock_tools_schema,
+    _mock_toolruntime,
+    tmp_path: Path,
+) -> None:
+    kernel = tmp_path / "kernel.py"
+    kernel.write_text("import triton\n")
+
+    report = run_heterogeneous_orchestrator(
+        preprocess_ctx={
+            "kernel_path": str(kernel),
+            "repo_root": str(tmp_path),
+            "commandment": "Keep correctness first.",
+            "input_dialect": "plain_triton",
+            "gluon_feature_mode": "auto",
+            "gluon_baseline_profile": "raw",
+            "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+            "preferred_output_dialects": ["amd_gluon", "plain_triton"],
+            "output_dialect_search_policy": "prefer_amd_gluon_if_viable_else_plain_triton",
+            "target_backend": "hip/gfx942",
+            "discovery": {
+                "workspace": str(tmp_path),
+                "kernel": {
+                    "file": str(kernel),
+                    "name": "kernel",
+                    "type": "triton",
+                },
+            },
+        },
+        gpu_ids=[0],
+        model=_DummyModel(),
+        model_factory=MagicMock(),
+        output_dir=tmp_path,
+        max_rounds=1,
+        start_round=1,
+    )
+
+    assert report == {"status": "done"}
+    messages = mock_run_llm_steps.call_args.args[1]
+    instance_msg = messages[1]["content"]
+    assert "Preferred output dialect order: amd_gluon, plain_triton" in instance_msg
+    assert "Output-dialect search policy: prefer_amd_gluon_if_viable_else_plain_triton" in instance_msg
+    assert "Keep a plain Triton fallback alive" in instance_msg

@@ -1,0 +1,21 @@
+task_type: triton_geak
+source_file_path:
+  - 01_plain_triton_input.py
+  - 02_nv_gluon_input.py
+  - 03_amd_gluon_input.py
+harness_path: test_inputs.py
+compile_command:
+  - python3 test_inputs.py --kernel-file 01_plain_triton_input.py --mode compile
+correctness_command:
+  - python3 test_inputs.py --kernel-file 01_plain_triton_input.py --correctness
+performance_command:
+  - python3 test_inputs.py --kernel-file 01_plain_triton_input.py --full-benchmark
+target_kernel_functions:
+  - add_kernel
+prompt:
+  instructions: >
+    Minimal Triton-family input fixtures for the Gluon feature path. Select one
+    fixture with --kernel-url, keep kernel_type on the Triton route, and prefer
+    an amd_gluon candidate when gluon_feature_mode is on. The default commands
+    in this config use 01_plain_triton_input.py; use explicit --test-command
+    overrides when targeting the nv_gluon or amd_gluon fixtures.

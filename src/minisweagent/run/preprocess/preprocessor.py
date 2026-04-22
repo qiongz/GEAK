@@ -1625,13 +1625,13 @@ def main() -> None:
         "--input-dialect",
         default=None,
         choices=("plain_triton", "nv_gluon", "amd_gluon"),
-        help="Optional Triton-family input dialect override.",
+        help="Optional Triton-family input dialect override. Keep kernel_type on the Triton route.",
     )
     parser.add_argument(
         "--gluon-feature-mode",
         default=None,
         choices=("off", "auto", "force"),
-        help="Optional Gluon feature gate override.",
+        help="Optional current explicit Triton-family gluon-on gate override.",
     )
     parser.add_argument(
         "--gluon-baseline-profile",

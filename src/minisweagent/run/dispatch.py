@@ -182,6 +182,8 @@ def _task_feature_metadata(meta: dict[str, Any]) -> dict[str, Any]:
         gluon_feature_mode=meta.get("gluon_feature_mode"),
         gluon_baseline_profile=meta.get("gluon_baseline_profile"),
         allowed_output_dialects=meta.get("allowed_output_dialects"),
+        preferred_output_dialects=meta.get("preferred_output_dialects"),
+        output_dialect_search_policy=meta.get("output_dialect_search_policy"),
         target_backend=meta.get("target_backend"),
     )
 
@@ -297,7 +299,6 @@ def task_file_to_agent_task(task_file: Path):
         codebase_context=codebase_ctx_text,
         benchmark_baseline=benchmark_baseline_text,
         feature_metadata=feature_meta,
-        gluon_benchmark_safe_knowledge_path=meta.get("gluon_benchmark_safe_knowledge_path"),
     )
 
     try:

@@ -67,6 +67,8 @@ def tool_generate_tasks(
         "gluon_feature_mode": kernel_meta.get("gluon_feature_mode", "off"),
         "gluon_baseline_profile": kernel_meta.get("gluon_baseline_profile", "raw"),
         "allowed_output_dialects": kernel_meta.get("allowed_output_dialects"),
+        "preferred_output_dialects": kernel_meta.get("preferred_output_dialects"),
+        "output_dialect_search_policy": kernel_meta.get("output_dialect_search_policy"),
         "target_backend": kernel_meta.get("target_backend", ""),
         "num_gpus": len(ctx.get("gpu_ids", [0])),
     }
@@ -165,6 +167,8 @@ def tool_generate_tasks(
         gluon_feature_mode=kernel_meta.get("gluon_feature_mode", "off"),
         gluon_baseline_profile=kernel_meta.get("gluon_baseline_profile", "raw"),
         allowed_output_dialects=kernel_meta.get("allowed_output_dialects"),
+        preferred_output_dialects=kernel_meta.get("preferred_output_dialects"),
+        output_dialect_search_policy=kernel_meta.get("output_dialect_search_policy"),
         target_backend=kernel_meta.get("target_backend", ""),
         repo_root=str(ctx.get("repo_root", "")),
         commandment=str(kwargs.get("commandment_path", "")),
