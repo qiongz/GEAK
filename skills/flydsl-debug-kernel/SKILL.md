@@ -1,10 +1,10 @@
 ---
 name: flydsl-debug-kernel
 description: >
-  Use when a kernel written with `@flyc.kernel` on AMD GPUs produces NaN,
-  inf, wrong results, compilation errors, or hangs, especially when cache
-  state, frontend tracing pitfalls, buffer addressing, layout verification,
-  or MFMA/LDS logic may be involved.
+  Use when a GEAK FlyDSL task or local repro for a kernel written with
+  `@flyc.kernel` on AMD GPUs produces NaN, inf, wrong results, compilation
+  errors, or hangs, especially when cache state, frontend tracing pitfalls,
+  buffer addressing, layout verification, or MFMA/LDS logic may be involved.
 allowed-tools: Read Edit Bash Grep Glob Agent
 ---
 
@@ -12,6 +12,13 @@ allowed-tools: Read Edit Bash Grep Glob Agent
 
 Use this skill for correctness, stability, and hang triage on runnable
 FlyDSL kernels.
+
+**GEAK role**: Treat this as the companion skill for GEAK FlyDSL tasks when the
+problem is correctness, compilation, or stability rather than kernel-speed
+analysis. If GEAK already produced a reproducible harness command,
+correctness command, or failing task entry point, replay that exact repro
+first before simplifying locally so the task remains comparable across
+iterations.
 
 **Scope**: This skill focuses on execution debugging rather than GEAK-side
 performance triage. If you are entering from a performance report, start with

@@ -1,9 +1,9 @@
 ---
 name: flydsl-tile-programming
 description: >
-  Use when writing a new `@flyc.kernel`, porting a Triton kernel to
-  tile-programmed `flyc` code, or building the first correct CuTe-style
-  kernel structure on AMD GPUs.
+  Use when a GEAK FlyDSL task needs structural kernel work: writing a new
+  `@flyc.kernel`, porting a Triton kernel to tile-programmed `flyc` code, or
+  building the first correct CuTe-style kernel structure on AMD GPUs.
 allowed-tools: Read Edit Bash Grep Glob Agent
 ---
 
@@ -14,6 +14,8 @@ allowed-tools: Read Edit Bash Grep Glob Agent
 Use this skill to design the first correct kernel structure with FlyDSL's tile programming model (CuTe-style layout algebra). It walks through turning a kernel requirement into a runnable, tested FlyDSL kernel.
 
 **Prerequisites**: FlyDSL available in the active Python environment (for example via an editable install from a FlyDSL checkout). GPU access required for testing.
+
+**GEAK role**: Use this as the structural companion to `flydsl-optimization` when a GEAK FlyDSL task needs kernel-shape changes rather than immediate tuning. Keep the externally visible harness entry point and task-facing invocation stable while iterating so GEAK correctness, benchmark, and profiling runs stay comparable.
 
 **Scope**: Start here for a new kernel structure. Switch to `flydsl-debug-kernel` once you have runnable code to debug.
 **GEAK note**: After the kernel runs, start performance triage from `profile.json` and `baseline_metrics.json`, then use `flydsl-optimization`; this skill is about kernel structure rather than bottleneck proof.
