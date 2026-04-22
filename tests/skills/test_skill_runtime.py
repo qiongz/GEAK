@@ -187,3 +187,36 @@ class TestSkillRuntimeIntegration:
             s = runtime.skills["silu-optimization"]
             assert s.path == _USER_SKILLS_SILU.parent
             assert "AMD" in s.description or "silu" in s.description.lower()
+
+
+_SKILLS_ROOT = _REPO_ROOT / "skills"
+_EXPECTED_FLYDSL_SKILLS = {
+    "flydsl-debug-kernel": _SKILLS_ROOT / "flydsl-debug-kernel",
+    "flydsl-tile-programming": _SKILLS_ROOT / "flydsl-tile-programming",
+}
+
+
+class TestFlydslSkillRuntimeIntegration:
+    @pytest.mark.parametrize("skill_name,skill_dir", _EXPECTED_FLYDSL_SKILLS.items())
+    def test_repo_flydsl_skill_parse_metadata(self, skill_name: str, skill_dir: Path):
+        assert (skill_dir / "SKILL.md").is_file()
+
+        rt = SkillRuntime.__new__(SkillRuntime)
+        desc = rt._parse_metadata(skill_dir)
+
+        assert desc.name == skill_name
+        assert desc.path == skill_dir
+        assert desc.description.strip()
+
+    def test_init_discovers_all_repo_flydsl_skills(self):
+        runtime = SkillRuntime()
+
+        for skill_name, skill_dir in _EXPECTED_FLYDSL_SKILLS.items():
+            assert skill_name in runtime.skills
+            assert runtime.skills[skill_name].path == skill_dir
+
+    def test_init_discovers_flat_tile_programming_skill(self):
+        runtime = SkillRuntime()
+
+        assert "flydsl-tile-programming" in runtime.skills
+        assert runtime.skills["flydsl-tile-programming"].path == _EXPECTED_FLYDSL_SKILLS["flydsl-tile-programming"]
