@@ -2,11 +2,11 @@
 layer: "5"
 category: "advanced"
 subcategory: "custom-kernels"
-tags: ["triton", "kernels", "optimization", "hip", "mlir"]
+tags: ["triton", "gluon", "kernels", "optimization", "hip", "mlir"]
 rocm_version: "7.0+"
 rocm_verified: "7.0.2"
 therock_included: true
-last_updated: 2025-11-03
+last_updated: 2026-04-22
 difficulty: "expert"
 estimated_time: "60min"
 ---
@@ -22,6 +22,21 @@ Guide to writing custom GPU kernels for AMD using Triton.
 **Documentation**: [https://triton-lang.org/](https://triton-lang.org/)
 
 > **About Triton**: Triton is a Python-based language and compiler for writing efficient custom GPU kernels. It provides automatic optimizations and works seamlessly with PyTorch on AMD GPUs via ROCm.
+
+## Scope of This Guide
+
+This guide focuses on the **plain Triton** custom-kernel path used by most
+LLM-oriented kernels:
+
+- `@triton.jit`
+- `triton.language as tl`
+- compiler-managed layout decisions
+- autotuning and blocked kernels
+
+If you need the lower-level Gluon path with explicit layouts, AMD matrix
+families, shared-memory layout control, or JIT versus AOT trade-offs, see:
+
+- [Triton Gluon on AMD GPUs](../../../layer-3-libraries/compilers/triton-gluon-on-rocm.md)
 
 ## Why Triton for Custom Kernels?
 
@@ -232,7 +247,8 @@ rocprof --hip-trace python your_script.py
 ### Related Guides
 
 - [Triton on ROCm](../../../layer-3-libraries/compilers/triton-on-rocm.md) - Complete Triton guide
+- [Triton Gluon on AMD GPUs](../../../layer-3-libraries/compilers/triton-gluon-on-rocm.md) - Lower-level Triton-family path for explicit layouts and AMD matrix flows
 - [PyTorch with ROCm](../../../layer-4-frameworks/pytorch/pytorch-rocm-basics.md) - PyTorch integration
-- [HIP Programming](../../../layer-2-compute-stack/hip/hip-basics.md) - Alternative kernel approach
+- [HIP Programming](../../../layer-2-compute-stack/hip/hip-gpu-programming-fundamentals.md) - Alternative kernel approach
 - [GPU Optimization](../../../best-practices/performance/gpu-optimization.md) - General optimization tips
 

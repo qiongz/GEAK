@@ -3,6 +3,7 @@
 import logging
 import os
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 from minisweagent.models import GLOBAL_MODEL_STATS
@@ -35,6 +36,7 @@ class AmdLlmModelConfig:
     model_name: str
     model_kwargs: dict[str, Any] = field(default_factory=dict)
     api_key: str | None = None
+    api_key_file: str | None = None
     base_url: str | None = None
     api_version: str = "2023-10-16"
     cost_per_1k_input_tokens: float = 0.01
@@ -92,14 +94,45 @@ class AmdLlmModelBase:
     # Helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _read_secret_file(path_value: str, *, source_name: str) -> str:
+        path = Path(path_value).expanduser()
+        if not path.is_file():
+            raise ValueError(f"Secret file from {source_name} does not exist: {path}")
+
+        mode = path.stat().st_mode & 0o777
+        if mode & 0o077:
+            raise ValueError(
+                f"Secret file from {source_name} must not be group/world accessible: "
+                f"{path} (mode {oct(mode)})"
+            )
+
+        secret = path.read_text(encoding="utf-8").strip()
+        if not secret:
+            raise ValueError(f"Secret file from {source_name} is empty: {path}")
+        return secret
+
     def _get_api_key(self) -> str:
+        if self.config.api_key_file:
+            return self._read_secret_file(
+                self.config.api_key_file,
+                source_name="config.api_key_file",
+            )
+
+        for env_name in ("AMD_LLM_API_KEY_FILE", "LLM_GATEWAY_KEY_FILE"):
+            path_value = os.getenv(env_name)
+            if path_value:
+                return self._read_secret_file(path_value, source_name=env_name)
+
         api_key = self.config.api_key or os.getenv("AMD_LLM_API_KEY") or os.getenv("LLM_GATEWAY_KEY")
         if not api_key:
             raise ValueError(
                 "API key not provided. Please set it via:\n"
                 "  1. VSCode settings (mini-swe-agent.apiKey), or\n"
-                "  2. Environment variable AMD_LLM_API_KEY, or\n"
-                "  3. Environment variable LLM_GATEWAY_KEY"
+                "  2. Secret-file path config.api_key_file, or\n"
+                "  3. Environment variable AMD_LLM_API_KEY_FILE / LLM_GATEWAY_KEY_FILE, or\n"
+                "  4. Environment variable AMD_LLM_API_KEY, or\n"
+                "  5. Environment variable LLM_GATEWAY_KEY"
             )
         return api_key
 

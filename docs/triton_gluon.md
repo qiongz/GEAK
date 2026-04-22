@@ -141,12 +141,75 @@ Start from **target family + layout**, not from copied tutorial syntax.
 Use this path when the source is normal Triton and you want to decide whether an
 AMD-facing Gluon candidate is worth generating.
 
-Recommended order:
+Recommended mechanical rewrite order:
 
 1. keep launcher and correctness semantics recognizable
-2. recover implicit layout and memory decisions
-3. make layout explicit
-4. only then lower selected operations into AMD-facing Gluon
+2. reconstruct the base tile and layout before touching target-specific ops
+3. align host launch config and layout
+4. choose the memory path
+5. choose the matrix path if needed
+6. add shared-memory or pipeline features only after the first candidate works
+
+#### Recover implicit layout before changing APIs
+
+In plain Triton, `tl.arange`, tile sizes, pointer arithmetic, and `num_warps`
+implicitly define how work is distributed. In Gluon, that distribution becomes
+an explicit layout object.
+
+- start from the logical tile shape from the original Triton kernel
+- derive a `BlockedLayout` that matches the original execution shape
+- for 1D kernels, satisfy:
+  `size_per_thread[0] * threads_per_warp[0] * warps_per_cta[0] == XBLOCK`
+- on MI3xx-style CDNA targets, prefer a wave64-valid first candidate such as
+  `threads_per_warp=[64]`
+- for 2D kernels, choose `order` so the fastest-varying logical dimension still
+  matches the coalesced dimension from the original pointer arithmetic
+- derive `SliceLayout` or `DotOperandLayout` from that base layout instead of
+  inventing them independently
+
+#### Align host launcher and layout
+
+Gluon keeps Triton's host-side launcher model, but host code may now need to
+construct and pass layouts.
+
+- if layout depends only on fixed compile-time constants, it can live inside the
+  kernel
+- if layout depends on `BLOCK_*`, `num_warps`, target family, or a tuning
+  choice, build it on the host and pass it as a `constexpr`
+- keep the launcher in `kernel[grid](...)` form
+- keep `num_warps`, `num_ctas`, and target architecture aligned with the layout,
+  because Gluon IR verification checks layouts against launch attributes
+
+#### Choose the memory path deliberately
+
+Use the simplest correct path first:
+
+- `gl.load` / `gl.store` is the right first rewrite for scalar or simple vector
+  loads and stores
+- move to AMD `buffer_load` / `buffer_store` when the target family, existing
+  AMD Gluon code structure, or performance-sensitive access pattern actually
+  calls for it
+- do not introduce descriptor paths, async copy, or shared-memory staging in the
+  same step as the initial layout rewrite unless the source already depends on
+  them
+
+#### Treat matrix lowering as a separate step
+
+`tl.dot` and `tl.dot_scaled` are not direct rename targets.
+
+The usual AMD Gluon path is:
+
+1. choose the result layout: `AMDMFMALayout` or `AMDWMMALayout`
+2. derive `DotOperandLayout` for each operand
+3. `convert_layout` into the operand layouts
+4. call the target-specific op such as `mfma`, `mfma_scaled`, or `wmma`
+
+Only after that first matrix candidate is correct should you add:
+
+- shared-memory swizzles
+- async copy
+- scale-layout helpers
+- scheduler or barrier hints
 
 Stay in plain Triton when:
 
@@ -347,6 +410,13 @@ Treat these as separate families rather than as "CDNA with different names".
 - cluster and barrier APIs must be re-evaluated on their own terms
 - current aiter Gluon code does not represent gfx1250 as a drop-in extension of
   the current CDNA3/4 kernels
+- host `TensorDescriptor` paths are stricter than generic CDNA-style blocked
+  layouts: the last dimension must be contiguous, only certain shared-memory
+  layout families are valid, and some swizzle settings are rejected
+- `wmma_scaled` carries extra contract checks around `instr_shape`,
+  accumulator layout, scale dtype combinations, and scale-factor selection
+- practical first path: get plain `wmma` or a basic descriptor path working
+  before adding `wmma_scaled`, `tdm`, or cluster behavior
 
 ### 6.5 Module path vs architecture version is not always the same thing
 
@@ -424,6 +494,119 @@ Treat these as:
 - target-specific hints
 - not first-pass mandatory portability features
 
+### 7.5 Feature availability is not operator support
+
+Real downstream trees often have both:
+
+- a coarse "Gluon is available on this machine" helper
+- operator-local arch guards inside specific kernels
+
+Do not assume these are the same thing.
+
+Common examples in aiter-style code:
+
+- one global helper may only mark `gfx950` and `gfx1250` as Gluon-available
+- a specific attention kernel may still support `gfx942` and `gfx950`
+- a CDNA4 GEMM may require `gfx950` even though another Gluon operator runs on
+  `gfx942`
+
+When reviewing or generating code, read operator-local guards before concluding
+that an architecture is supported or unsupported.
+
+### 7.6 Optimization paths by kernel family
+
+The most effective optimization order depends on the kernel family. Real aiter
+code strongly suggests the following progression.
+
+#### Elementwise or vector-style kernels
+
+Recommended path:
+
+1. preserve launcher, masks, and baseline behavior
+2. reconstruct a correct blocked layout
+3. decide whether generic `gl.load` / `gl.store` is enough
+4. move to AMD `buffer_load` / `buffer_store` only if the target family or the
+   existing code path actually benefits
+5. benchmark against plain Triton before adding any more structure
+
+This is the safest family for early `plain_triton -> amd_gluon` candidates.
+
+#### Attention or decode kernels
+
+Recommended path:
+
+1. preserve stride-rich host arguments and partition logic
+2. preserve the query, key, value logical shapes before touching matrix ops
+3. keep nested `SliceLayout` trees and mask conversions semantically intact
+4. wire `AMDMFMALayout` and operand layouts only after the logical shape story
+   is still correct
+5. treat optional scheduler, barrier, or staging hints as second-stage tuning
+
+The main trap here is thinking that reshape, mask conversion, or layout changes
+on scores are cosmetic. In real attention kernels, they are often part of
+correctness.
+
+#### GEMM or FP8 kernels
+
+Recommended path:
+
+1. identify the actual matrix instruction family and K width
+2. pick the result layout first
+3. derive operand layouts and `convert_layout` steps
+4. make the epilogue correct: scales, bias, accumulation dtype, store layout
+5. only then add shared-memory staging, async features, preshuffle support, or
+   tuned config selection
+
+In real `gfx950` code, config selection may come from heuristics or checked-in
+JSON, not only from online autotune.
+
+#### Preshuffled GEMM
+
+This deserves separate caution because it often stops being a generic matrix
+recipe and becomes an operator-specific layout transformation problem.
+
+Watch for:
+
+- `DistributedLinearLayout`
+- `reshape` / `permute` / `trans` unshuffle sequences
+- assumptions that K is a multiple of the preshuffled block shape
+
+When these appear, preserve the transformation structure first and optimize only
+after the unshuffle is still correct.
+
+#### `gfx1250` WMMA or descriptor kernels
+
+Recommended path:
+
+1. get plain `wmma` or plain descriptor load and store working
+2. validate layout family, contiguous-last-dimension requirements, and shared
+   layout constraints
+3. only then add `wmma_scaled`, scale layouts, `tdm`, async paths, or cluster
+   logic
+
+This family has more frontend assertions than the current CDNA3/4 paths, so it
+punishes speculative rewrites more quickly.
+
+### 7.7 When docs are not enough
+
+Even with this guide, some patterns should immediately trigger source-first
+reading rather than generic rewriting.
+
+Read operator-local source before changing the kernel if you see:
+
+- `DistributedLinearLayout`
+- `PartitionedSharedLayout`
+- host `TensorDescriptor`
+- `reshape` / `permute` / `trans` used to unshuffle matrix tiles
+- 3D or 5D logical layouts with multiple nested `SliceLayout`
+- environment-variable gates around JIT versus AOT paths
+- prebuilt-kernel loading, AOT packaging, or generated asset lookup
+- scheduler, barrier, or priority hints that appear to affect launch shape or
+  correctness
+
+These are the cases where the general playbook is still useful, but it is no
+longer sufficient on its own.
+
 ## 8. Representative examples
 
 These examples are intentionally different from the checked-in test fixtures.
@@ -434,10 +617,23 @@ They are documentation examples, not golden outputs.
 Suppose the source kernel applies `output[row, col] = input[row, col] * scale[row] + bias[row]`.
 The plain Triton version may leave layout implicit. The AMD-facing Gluon version
 should make the one-dimensional row tile explicit before lowering memory ops.
+This example is intentionally end-to-end: it includes the host-side layout
+builder and launcher, because that is where many first rewrites go wrong.
 
 ```python
+import triton
 from triton.experimental import gluon
 from triton.experimental.gluon import language as ttgl
+
+def make_cdna_1d_layout(block_size: int, num_warps: int):
+    lanes_per_cta = 64 * num_warps
+    assert block_size % lanes_per_cta == 0
+    return ttgl.BlockedLayout(
+        size_per_thread=[block_size // lanes_per_cta],
+        threads_per_warp=[64],
+        warps_per_cta=[num_warps],
+        order=[0],
+    )
 
 @gluon.jit
 def row_affine_kernel(
@@ -463,15 +659,33 @@ def row_affine_kernel(
         stored_value=y,
         mask=mask,
     )
+
+def launch_row_affine(x, scale, bias, out, col_block=256, num_warps=4):
+    assert x.is_contiguous()
+    n_rows, n_cols = x.shape
+    layout = make_cdna_1d_layout(col_block, num_warps)
+    grid = (n_rows,)
+    row_affine_kernel[grid](
+        x,
+        scale,
+        bias,
+        out,
+        n_cols,
+        COL_BLOCK=col_block,
+        layout=layout,
+        num_warps=num_warps,
+    )
 ```
 
 What this example is showing:
 
 - the launcher stays Triton-like
-- the layout is explicit
-- the memory path is AMD-facing
-- the operation is not just vector add, so it does not duplicate the checked-in
-  example fixtures
+- host code may need to construct the layout and pass it into the kernel
+- the layout must agree with `col_block` and `num_warps`
+- the main row tile uses an AMD-facing memory path while scalar row parameters
+  can remain generic
+- for non-contiguous tensors, pass explicit strides instead of relying on
+  `row * n_cols`
 
 ### 8.2 Example: `nv_gluon -> amd_gluon` tile reader rewrite
 
@@ -525,11 +739,22 @@ Some real code has to survive Triton minor-version differences in
 `AMDMFMALayout.instr_shape`.
 
 ```python
+import triton
 import triton.language as tl
 from triton.experimental import gluon
 from triton.experimental.gluon import language as gl
 
-TRITON_VERSION_GE_3_6_0 = tl.constexpr(True)
+def parse_triton_version(version: str) -> tuple[int, ...]:
+    version = version.split("+")[0].split("-")[0]
+    parts = []
+    for part in version.split("."):
+        try:
+            parts.append(int(part))
+        except ValueError:
+            break
+    return tuple(parts)
+
+TRITON_VERSION_GE_3_6_0 = tl.constexpr(parse_triton_version(triton.__version__) >= (3, 6, 0))
 
 @gluon.jit
 def mfma_guarded_kernel(x_ptr, y_ptr, out_ptr, K_BLOCK: gl.constexpr, CDNA_VERSION: gl.constexpr):
@@ -550,6 +775,7 @@ What this example is showing:
 
 - Triton version can be part of the kernel-generation contract
 - layout generation may need compatibility guards
+- this is a real module-level version check, not placeholder pseudocode
 - this is especially relevant for mixed JIT and AOT environments
 
 ### 8.4 Example: JIT with explicit AOT fallback
@@ -638,25 +864,51 @@ from triton.experimental.gluon import language as ttgl
 ### A.2 JIT entry and host launcher
 
 ```python
+import triton
+from triton.experimental import gluon
+from triton.experimental.gluon import language as gl
+
+def make_cdna_1d_layout(xblock, num_warps):
+    lanes_per_cta = 64 * num_warps
+    assert xblock % lanes_per_cta == 0
+    return gl.BlockedLayout(
+        size_per_thread=[xblock // lanes_per_cta],
+        threads_per_warp=[64],
+        warps_per_cta=[num_warps],
+        order=[0],
+    )
+
 @gluon.jit
-def kernel(x_ptr, y_ptr, xnumel, XBLOCK: gl.constexpr):
+def kernel(x_ptr, y_ptr, xnumel, XBLOCK: gl.constexpr, layout: gl.constexpr):
     pid = gl.program_id(0)
-    layout: gl.constexpr = gl.BlockedLayout([1], [32], [4], [0])
     offsets = pid * XBLOCK + gl.arange(0, XBLOCK, layout=layout)
     mask = offsets < xnumel
-    x = gl.load(x_ptr + offsets, mask=mask)
-    gl.store(y_ptr + offsets, x, mask=mask)
+    x = gl.amd.cdna3.buffer_load(ptr=x_ptr, offsets=offsets, mask=mask, other=0.0)
+    gl.amd.cdna3.buffer_store(ptr=y_ptr, offsets=offsets, stored_value=x, mask=mask)
 
 def launch(x, y, XBLOCK=256, num_warps=4, num_ctas=1):
+    layout = make_cdna_1d_layout(XBLOCK, num_warps)
     xnumel = x.numel()
     grid = (triton.cdiv(xnumel, XBLOCK),)
-    kernel[grid](x, y, xnumel, XBLOCK, num_warps=num_warps, num_ctas=num_ctas)
+    kernel[grid](
+        x,
+        y,
+        xnumel,
+        XBLOCK=XBLOCK,
+        layout=layout,
+        num_warps=num_warps,
+        num_ctas=num_ctas,
+    )
 ```
 
 Relevant runtime facts:
 
+- the launcher stays Triton-like
+- when layout depends on launch choices, build it on the host and pass it in
 - `GluonASTSource` uses `Language.GLUON`
 - launch attributes include target, warps, CTAs, and threads-per-warp
+- if you intentionally stay vendor-neutral, the host layout pattern is the same;
+  only the `load` / `store` lines change back to `gl.load` / `gl.store`
 
 ### A.3 Core language and layout surface
 
@@ -685,14 +937,33 @@ Recommended order:
 4. convert layout if needed
 5. run the target-specific op
 
+Decision table for common Triton rewrites:
+
+| Plain Triton pattern | First Gluon rewrite | Escalate when |
+|----------------------|---------------------|---------------|
+| `tl.arange(0, XBLOCK)` | `gl.arange(0, XBLOCK, layout=layout)` | always; Gluon needs the layout to be explicit |
+| `tl.load` / `tl.store` | `gl.load` / `gl.store` | switch to AMD `buffer_load` / `buffer_store` when the target family or the existing AMD code path actually depends on it |
+| `tl.zeros((M, N), dtype=...)` | `gl.zeros((M, N), dtype=..., layout=layout)` | always; accumulators need explicit layout too |
+| `tl.dot` / `tl.dot_scaled` | result layout + operand layouts + `convert_layout` + target-specific matrix op | always; this is not a direct rename target |
+| tensor descriptor helpers | target-specific descriptor family | only when the target family actually supports descriptors or tensor memory |
+| implicit shared-memory staging from a tuned Triton kernel | `allocate_shared_memory` after the first correct candidate | only after the blocked-layout or matrix path is already correct |
+
 ### A.4 Shared memory, synchronization, and cluster surface
 
 ```python
-smem = gl.allocate_shared_memory(gl.float32, [XBLOCK], layout=smem_layout)
-copy_op(...)
-commit_group()
-wait_group(0)
-value = smem.load(layout)
+shared_a: gl.constexpr = gl.SwizzledSharedLayout(vec=16, per_phase=1, max_phase=16, order=[1, 0])
+shared_b: gl.constexpr = gl.SwizzledSharedLayout(vec=16, per_phase=1, max_phase=16, order=[0, 1])
+
+smem_a = gl.allocate_shared_memory(a_ptr.type.element_ty, [BLOCK_M, BLOCK_K], layout=shared_a)
+smem_b = gl.allocate_shared_memory(b_ptr.type.element_ty, [BLOCK_K, BLOCK_N], layout=shared_b)
+
+smem_a.store(a)
+smem_b.store(b)
+gl.barrier()
+
+cur_a = smem_a.load(layout=dot_a_layout)
+cur_b = smem_b.load(layout=dot_b_layout)
+acc = gl.amd.cdna4.mfma(cur_a, cur_b, acc)
 ```
 
 Common concepts:
@@ -704,12 +975,18 @@ Common concepts:
 - `fence_async_shared`
 - `warp_pipeline_stage`
 
-The high-level phase structure is usually:
+This is the simplest concrete shared-memory staging pattern to copy from.
+
+If the target family later adds an async path, keep the same high-level phase
+structure:
 
 1. issue async transfer
 2. commit
 3. wait
 4. consume from shared memory or continue compute
+
+Do not copy literal async function names between NVIDIA, CDNA, and `gfx1250`
+families. The phase structure is common; the APIs are not.
 
 ### A.5 Descriptor and tensor-memory surface
 
@@ -782,6 +1059,29 @@ b = ttgl.convert_layout(b, ttgl.DotOperandLayout(1, wmma_layout, k_width))
 acc = ttgl.amd.gfx1250.wmma(a, b, acc)
 ```
 
+Key constraints that are easy to miss:
+
+- prefer getting plain `wmma` working before adding scaled WMMA
+- `wmma_scaled` expects stricter layout contracts than plain `wmma`
+- when an input format is `e2m1`, the operand WMMA layout expects
+  `instr_shape=[16, 16, 64]`
+- the accumulator layout for scaled WMMA expects `instr_shape=[16, 16, 128]`
+- `get_wmma_scale_layout` only supports scale factor `16` or `32`
+- scale dtype combinations are limited; do not guess them by name
+
+#### `gfx1250` descriptor constraints
+
+Practical rules from the frontend checks:
+
+- the descriptor shape rank must be between 1 and 5
+- the last tensor dimension must be contiguous
+- only `PaddedSharedLayout`, `SwizzledSharedLayout`, or
+  `PartitionedSharedLayout` are valid descriptor layouts
+- for the currently accepted swizzled cases, `max_phase` must stay at `1`
+- only `"zero"` padding is supported
+
+Treat descriptor setup as a correctness contract, not as a later optimization.
+
 ### A.7 NVIDIA quick patterns
 
 #### Ampere or Hopper async copy
@@ -812,12 +1112,18 @@ tcgen05_commit(...)
 
 ### A.8 Version and compatibility checklist
 
-- check the installed Triton version before assuming a Gluon feature exists
-- treat Triton `3.5` vs `3.6+` as a compatibility boundary for some Gluon code
-- confirm whether `AMDMFMALayout.instr_shape` is expected in 2D or 3D form
-- confirm whether the code path expects JIT, AOT, or both
-- confirm target backend, arch, and warp or wave assumptions before changing
-  layouts
+| Check | Why it matters | Typical questions |
+|-------|----------------|-------------------|
+| Triton minor version | `instr_shape` and some AOT metadata differ across versions | is this code path expecting `3.5` or `3.6+`? |
+| `AMDMFMALayout.instr_shape` form | 2D vs 3D affects whether layout construction succeeds | should this be `[M, N]` or `[M, N, K]`? |
+| Execution mode | some downstreams use JIT, AOT, or both | does the code need `triton.experimental.gluon`, prebuilt kernels, or both? |
+| Target backend and arch | wave size, memory path, and matrix family all depend on it | `hip/gfx942`, `hip/gfx950`, `hip/gfx1250`, or CUDA target? |
+| Global feature availability | coarse helpers do not define per-operator support | does "Gluon available" really mean this operator is supported here? |
+| Operator-local support matrix | real kernels may have narrower or different guards | does this specific attention or GEMM path support the arch? |
+| AOT scratch requirements | some AOT pipelines reject kernels with scratch requirements | does the kernel need global or profile scratch? |
+
+Treat Triton version, execution mode, and target architecture as part of the
+benchmark and integration contract, not as incidental metadata.
 
 ### A.9 Common pitfalls
 
@@ -842,3 +1148,31 @@ tcgen05_commit(...)
 - do not assume every benchmark-valid task is profiler-ready
 - do not assume the namespace name alone fully determines the architecture
   contract
+- do not treat host-side layout construction as optional when layout depends on
+  launch configuration
+- do not assume `DistributedLinearLayout` and unshuffle transforms can be
+  simplified away without changing the algorithm
+- do not guess `wmma_scaled` scale formats, scale factor, or accumulator layout
+  from naming alone
+
+### A.10 Common failures and fix order
+
+| Symptom | Inspect first | Typical fix |
+|---------|---------------|-------------|
+| layout or IR verification fails | `BlockedLayout`, `threads_per_warp`, `warps_per_cta`, `order`, `num_warps`, target arch | make the layout consistent with the launch contract before changing APIs again |
+| `AMDMFMALayout` or `instr_shape` construction fails | Triton version, 2D vs 3D `instr_shape`, layout version | add a real version guard and match the expected layout form |
+| kernel compiles but target path is wrong | backend, arch, operator-local guards, namespace vs layout version | re-check the actual support matrix for the operator, not only a global helper |
+| JIT Gluon import is missing | whether the downstream expects JIT, AOT, or both | preserve or add the existing fallback path instead of deleting it |
+| AOT compilation fails with scratch-related error | `global_scratch_size` or `profile_scratch_size` | keep JIT for that path or redesign the kernel; current AOT helpers may not support it |
+| correctness is fine but performance regresses | baseline comparison, memory path choice, shared-memory staging order | keep the plain Triton baseline and add AMD-specific features incrementally |
+| `gfx1250` descriptor construction fails | contiguity of the last dimension, layout family, swizzle settings, padding mode | satisfy descriptor assertions first instead of weakening the layout model |
+| `wmma_scaled` fails or asserts | input format, operand `instr_shape`, accumulator layout, scale factor, scale dtype combination | get plain `wmma` working first, then match the exact scaled-WMMA contract |
+| preshuffled GEMM gives wrong answers | `DistributedLinearLayout`, unshuffle `reshape` / `permute` / `trans`, K divisibility assumptions | preserve the transformation sequence before tuning loads or matrix ops |
+
+Suggested debug order:
+
+1. confirm runtime version, backend, and arch
+2. confirm launcher and layout alignment
+3. confirm memory path selection
+4. confirm matrix layout and `instr_shape`
+5. only then add shared-memory, async, or scheduler features

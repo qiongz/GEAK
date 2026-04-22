@@ -145,25 +145,6 @@ geak --repo "$REPO" \
 
 For more options and examples, see **[Quick start](docs/quick_start.md)**.
 
-#### Triton-family feature path (`gluon-on`)
-
-GEAK still treats Gluon work as **`kernel_type=triton`**. The current explicit
-feature gate is **`gluon_feature_mode`** (the repo documentation refers to this
-as **`gluon-on`** when it is not `off`).
-
-- Input dialects stay inside the Triton family:
-  - `plain_triton`
-  - `nv_gluon`
-  - `amd_gluon`
-- When the Gluon feature is on and AMD Gluon output is allowed, GEAK prefers an
-  **`amd_gluon`** candidate first.
-- For **`nv_gluon`** inputs, the agent must translate vendor-specific APIs,
-  layout assumptions, or hardware-specific idioms before optimizing on AMD.
-- See **[docs/triton_gluon.md](docs/triton_gluon.md)**
-  and **[examples/triton_gluon_inputs/README.md](examples/triton_gluon_inputs/README.md)**
-  for the current feature guide, repo-local defaults, and the three minimal
-  input fixtures.
-
 
 ### Configuration
 

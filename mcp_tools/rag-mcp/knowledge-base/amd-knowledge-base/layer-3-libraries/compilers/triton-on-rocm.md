@@ -6,7 +6,7 @@ tags: ["triton", "kernel", "python", "optimization", "compiler", "mlir"]
 rocm_version: "7.0+"
 rocm_verified: "7.0.2"
 therock_included: false
-last_updated: 2025-11-03
+last_updated: 2026-04-22
 ---
 
 # Triton on AMD GPUs
@@ -20,6 +20,20 @@ Triton is a Python-based language and compiler for writing efficient GPU kernels
 **Documentation**: [https://triton-lang.org/](https://triton-lang.org/)
 
 > **About Triton**: Triton is a language and compiler for parallel programming. It aims to provide a Python-based programming environment to productively write custom DNN compute kernels capable of running at maximal throughput on modern GPU hardware.
+
+## Scope of This Guide
+
+This guide focuses on the **plain Triton** path built around:
+
+- `@triton.jit`
+- `triton.language as tl`
+- mostly implicit layout decisions
+- standard blocked programming and autotuning patterns
+
+If you need lower-level control over layouts, explicit shared-memory layouts,
+AMD matrix paths, or Gluon-specific JIT versus AOT behavior, see:
+
+- [Triton Gluon on AMD GPUs](triton-gluon-on-rocm.md)
 
 ## Key Features
 
@@ -655,7 +669,8 @@ Triton 2.0 includes major improvements:
 ### Related Guides
 
 - [PyTorch with ROCm](../../layer-4-frameworks/pytorch/pytorch-rocm-basics.md)
-- [HIP Programming](../../layer-2-compute-stack/hip/hip-basics.md)
+- [HIP Programming](../../layer-2-compute-stack/hip/hip-gpu-programming-fundamentals.md)
 - [GPU Optimization Best Practices](../../best-practices/performance/gpu-optimization.md)
 - [Custom Kernels with Triton](../../layer-5-llm/05-advanced/custom-kernels/triton-kernels.md)
+- [Triton Gluon on AMD GPUs](triton-gluon-on-rocm.md)
 
