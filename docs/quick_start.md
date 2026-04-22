@@ -135,6 +135,43 @@ geak --num-parallel 4 \
   --gpu-ids 0,1,2,3 
 ```
 
+### Triton-family feature path (`gluon-on`)
+
+Gluon stays inside the existing Triton route. Do **not** introduce a new
+`kernel_type`; keep `kernel_type = triton`.
+
+- The current explicit gate is `gluon_feature_mode`:
+  - `off` = plain Triton-only behavior
+  - `auto` / `force` = current repo shorthand for **`gluon-on`**
+- The input dialect can be:
+  - `plain_triton`
+  - `nv_gluon`
+  - `amd_gluon`
+- When `gluon-on` is active and AMD Gluon output is allowed, GEAK prefers an
+  `amd_gluon` candidate first.
+- For `nv_gluon` inputs, the agent is expected to translate NVIDIA-specific
+  interfaces or assumptions before optimizing on AMD.
+
+You can pass the feature metadata explicitly through the preprocessor:
+
+```bash
+python -m minisweagent.run.preprocess.preprocessor /path/to/kernel.py \
+  --repo /path/to/kernel/repo \
+  --output_dir /tmp/geak_output \
+  --input-dialect plain_triton \
+  --gluon-feature-mode auto \
+  --gluon-baseline-profile raw \
+  --target-backend hip/gfx942
+```
+
+Or express the same intent in the `geak` task text, for example:
+
+```bash
+geak --repo /path/to/kernel/repo \
+  --kernel-url /path/to/kernel.py \
+  --task "Optimize this Triton kernel. Keep kernel_type=triton. Turn gluon-on. Input dialect is nv_gluon. Prefer an amd_gluon output candidate on hip/gfx942."
+```
+
 
 ### End-to-end examples
 

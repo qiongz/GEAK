@@ -46,6 +46,8 @@ class PreprocessContext:
     gluon_feature_mode: str | None = None
     gluon_baseline_profile: str | None = None
     allowed_output_dialects: list[str] | None = None
+    preferred_output_dialects: list[str] | None = None
+    output_dialect_search_policy: str | None = None
     target_backend: str | None = None
     discovery: dict | None = None
     # Translation metadata (populated when translation preprocessing runs)
@@ -74,6 +76,8 @@ class PreprocessContext:
             gluon_feature_mode=d.get("gluon_feature_mode"),
             gluon_baseline_profile=d.get("gluon_baseline_profile"),
             allowed_output_dialects=d.get("allowed_output_dialects"),
+            preferred_output_dialects=d.get("preferred_output_dialects"),
+            output_dialect_search_policy=d.get("output_dialect_search_policy"),
             target_backend=d.get("target_backend"),
             discovery=d.get("discovery"),
             translation_source_language=d.get("translation_source_language"),

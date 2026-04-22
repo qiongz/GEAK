@@ -4,8 +4,50 @@ How GEAK loads **YAML** for **`geak`**, where builtin files live, and how **`--c
 
 ## Main CLI
 
-1. **Base** — **`src/minisweagent/config/geak.yaml`** is always loaded first.
-2. **Override** — If you pass **`-c` / `--config`**, that file is **deep-merged** on top. Keys you set in the user file replace or merge into the result.
+1. **Base template** — **`src/minisweagent/config/mini_kernel_strategy_list.yaml`** is loaded first.
+2. **User config** — GEAK then loads either:
+   - the default **`src/minisweagent/config/geak.yaml`**, or
+   - the file passed via **`-c` / `--config`**
+3. **Task-provided config** — if the natural-language task mentions a config path and you did **not** already pass `--config`, that file is merged next.
+4. **CLI overrides** — command-line options still win last.
+
+This matches the merge order in **`src/minisweagent/run/mini.py`**.
+
+## Triton-family feature metadata
+
+Gluon does **not** create a new top-level `kernel_type`. The product model stays:
+
+- `hip`
+- `triton`
+- `other`
+
+Within the Triton path, the current explicit feature gate is
+**`gluon_feature_mode`** (the docs refer to `auto` / `force` as **`gluon-on`**).
+
+Primary user-facing fields:
+
+| Field | Meaning |
+|------|---------|
+| **`input_dialect`** | One of **`plain_triton`**, **`nv_gluon`**, or **`amd_gluon`** |
+| **`gluon_feature_mode`** | Current explicit Gluon gate: **`off`**, **`auto`**, **`force`** |
+| **`gluon_baseline_profile`** | Baseline profile such as **`raw`** or **`mi3xx`** |
+| **`target_backend`** | Target backend string such as **`hip/gfx942`** |
+
+Derived planner fields:
+
+| Field | Meaning |
+|------|---------|
+| **`allowed_output_dialects`** | Search space GEAK is allowed to consider |
+| **`preferred_output_dialects`** | Ordered preference within that search space |
+| **`output_dialect_search_policy`** | Planner policy such as “prefer AMD Gluon first” |
+
+Current product policy:
+
+- keep **`kernel_type = triton`**
+- when `gluon-on` is enabled and `amd_gluon` is allowed, prefer an
+  **`amd_gluon`** candidate first
+- for **`nv_gluon`** inputs, let the agent translate vendor-specific APIs or
+  assumptions before optimizing on AMD
 
 
 ## What’s in the default config file (**`src/minisweagent/config/geak.yaml`**)

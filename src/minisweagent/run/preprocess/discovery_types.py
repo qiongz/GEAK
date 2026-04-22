@@ -38,6 +38,18 @@ GENERAL_SKILL_TIER = "general"
 AUTHORING_SAFE_SKILL_TIER = "authoring_safe"
 BENCHMARK_SAFE_SKILL_TIER = "benchmark_safe"
 DEFAULT_ALLOWED_OUTPUT_DIALECTS = (PLAIN_TRITON_DIALECT,)
+PLAIN_TRITON_ONLY_SEARCH_POLICY = "plain_triton_only"
+COMPARE_ALLOWED_OUTPUTS_WITHOUT_BIAS_POLICY = "compare_allowed_outputs_without_bias"
+PREFER_AMD_GLUON_IF_VIABLE_POLICY = "prefer_amd_gluon_if_viable_else_plain_triton"
+REQUIRE_AMD_GLUON_POLICY = "require_amd_gluon"
+ALL_OUTPUT_DIALECT_SEARCH_POLICIES = frozenset(
+    (
+        PLAIN_TRITON_ONLY_SEARCH_POLICY,
+        COMPARE_ALLOWED_OUTPUTS_WITHOUT_BIAS_POLICY,
+        PREFER_AMD_GLUON_IF_VIABLE_POLICY,
+        REQUIRE_AMD_GLUON_POLICY,
+    )
+)
 
 _GLUON_CORE_MARKERS = (
     "@gluon.jit",
@@ -107,6 +119,13 @@ def _normalize_gluon_feature_mode(value: Any, *, input_dialect: str) -> str:
         "on": GLUON_FEATURE_MODE_AUTO,
         "enabled": GLUON_FEATURE_MODE_AUTO,
         "true": GLUON_FEATURE_MODE_AUTO,
+        "gluon-on": GLUON_FEATURE_MODE_AUTO,
+        "gluon_on": GLUON_FEATURE_MODE_AUTO,
+        "gluon-enabled": GLUON_FEATURE_MODE_AUTO,
+        "disabled": GLUON_FEATURE_MODE_OFF,
+        "false": GLUON_FEATURE_MODE_OFF,
+        "gluon-off": GLUON_FEATURE_MODE_OFF,
+        "gluon_off": GLUON_FEATURE_MODE_OFF,
     }
     text = aliases.get(text, text)
     return text if text in ALL_GLUON_FEATURE_MODES else default_mode
@@ -118,8 +137,6 @@ def _normalize_gluon_baseline_profile(value: Any) -> str:
     if not text:
         return GLUON_BASELINE_PROFILE_RAW
     aliases = {
-        "benchmark_safe": GLUON_BASELINE_PROFILE_MI3XX,
-        "benchmark-safe": GLUON_BASELINE_PROFILE_MI3XX,
         "mi300": GLUON_BASELINE_PROFILE_MI3XX,
         "mi300x": GLUON_BASELINE_PROFILE_MI3XX,
         "mi325x": GLUON_BASELINE_PROFILE_MI3XX,
@@ -145,6 +162,59 @@ def _normalize_allowed_output_dialects(value: Any) -> list[str]:
         normalized.append(text)
         seen.add(text)
     return normalized or list(DEFAULT_ALLOWED_OUTPUT_DIALECTS)
+
+
+def _normalize_preferred_output_dialects(
+    value: Any,
+    *,
+    allowed_output_dialects: list[str],
+) -> list[str]:
+    """Normalize an ordered output-dialect preference list.
+
+    The resulting order is always a subset of ``allowed_output_dialects`` and
+    preserves any missing allowed dialects at the end so downstream consumers
+    still see the full search space.
+    """
+    allowed = _normalize_allowed_output_dialects(allowed_output_dialects)
+    if not value:
+        return list(allowed)
+    if isinstance(value, str):
+        raw_items = [item.strip() for item in value.split(",")]
+    else:
+        raw_items = [str(item).strip() for item in value]
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        text = _normalize_input_dialect(item)
+        if text is None or text not in allowed or text in seen:
+            continue
+        normalized.append(text)
+        seen.add(text)
+    for dialect in allowed:
+        if dialect not in seen:
+            normalized.append(dialect)
+    return normalized or list(allowed)
+
+
+def _normalize_output_dialect_search_policy(value: Any) -> str | None:
+    """Normalize output-dialect planning policy names."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    aliases = {
+        "plain_only": PLAIN_TRITON_ONLY_SEARCH_POLICY,
+        "plain_triton_only": PLAIN_TRITON_ONLY_SEARCH_POLICY,
+        "compare_allowed_outputs": COMPARE_ALLOWED_OUTPUTS_WITHOUT_BIAS_POLICY,
+        "compare": COMPARE_ALLOWED_OUTPUTS_WITHOUT_BIAS_POLICY,
+        "prefer_gluon": PREFER_AMD_GLUON_IF_VIABLE_POLICY,
+        "prefer_amd_gluon": PREFER_AMD_GLUON_IF_VIABLE_POLICY,
+        "prefer_amd_gluon_if_viable": PREFER_AMD_GLUON_IF_VIABLE_POLICY,
+        "prefer_amd_gluon_then_fallback_plain_triton": PREFER_AMD_GLUON_IF_VIABLE_POLICY,
+        "require_gluon": REQUIRE_AMD_GLUON_POLICY,
+        "require_amd_gluon": REQUIRE_AMD_GLUON_POLICY,
+    }
+    text = aliases.get(text, text)
+    return text if text in ALL_OUTPUT_DIALECT_SEARCH_POLICIES else None
 
 
 def infer_input_dialect(
@@ -184,6 +254,49 @@ def derive_allowed_output_dialects(input_dialect: str, gluon_feature_mode: str) 
     return [PLAIN_TRITON_DIALECT]
 
 
+def derive_preferred_output_dialects(
+    input_dialect: str,
+    gluon_feature_mode: str,
+    allowed_output_dialects: list[str],
+) -> list[str]:
+    """Derive the ordered output-dialect preference list for planning."""
+    outputs = _normalize_allowed_output_dialects(allowed_output_dialects)
+    if gluon_feature_mode == GLUON_FEATURE_MODE_FORCE:
+        return [AMD_GLUON_DIALECT]
+    if (
+        AMD_GLUON_DIALECT in outputs
+        and (
+            gluon_feature_mode != GLUON_FEATURE_MODE_OFF
+            or input_dialect in {NV_GLUON_DIALECT, AMD_GLUON_DIALECT}
+        )
+    ):
+        return [AMD_GLUON_DIALECT] + [dialect for dialect in outputs if dialect != AMD_GLUON_DIALECT]
+    return outputs
+
+
+def derive_output_dialect_search_policy(
+    input_dialect: str,
+    gluon_feature_mode: str,
+    preferred_output_dialects: list[str],
+    allowed_output_dialects: list[str],
+) -> str:
+    """Derive the planner's output-dialect search policy."""
+    preferred = _normalize_preferred_output_dialects(
+        preferred_output_dialects,
+        allowed_output_dialects=allowed_output_dialects,
+    )
+    allowed = _normalize_allowed_output_dialects(allowed_output_dialects)
+    if gluon_feature_mode == GLUON_FEATURE_MODE_FORCE:
+        return REQUIRE_AMD_GLUON_POLICY
+    if preferred == [PLAIN_TRITON_DIALECT] and AMD_GLUON_DIALECT not in allowed:
+        return PLAIN_TRITON_ONLY_SEARCH_POLICY
+    if preferred and preferred[0] == AMD_GLUON_DIALECT and AMD_GLUON_DIALECT in allowed:
+        if allowed == [AMD_GLUON_DIALECT]:
+            return REQUIRE_AMD_GLUON_POLICY
+        return PREFER_AMD_GLUON_IF_VIABLE_POLICY
+    return COMPARE_ALLOWED_OUTPUTS_WITHOUT_BIAS_POLICY
+
+
 def build_gluon_feature_metadata(
     kernel_path: Path,
     kernel_type: str = "unknown",
@@ -192,6 +305,8 @@ def build_gluon_feature_metadata(
     gluon_feature_mode: Any = None,
     gluon_baseline_profile: Any = None,
     allowed_output_dialects: Any = None,
+    preferred_output_dialects: Any = None,
+    output_dialect_search_policy: Any = None,
     target_backend: Any = None,
     content: str | None = None,
 ) -> dict[str, Any]:
@@ -214,11 +329,33 @@ def build_gluon_feature_metadata(
         if allowed_output_dialects
         else derive_allowed_output_dialects(normalized_input_dialect, normalized_feature_mode)
     )
+    normalized_preferred_outputs = (
+        _normalize_preferred_output_dialects(
+            preferred_output_dialects,
+            allowed_output_dialects=normalized_outputs,
+        )
+        if preferred_output_dialects
+        else derive_preferred_output_dialects(
+            normalized_input_dialect,
+            normalized_feature_mode,
+            normalized_outputs,
+        )
+    )
+    normalized_search_policy = _normalize_output_dialect_search_policy(output_dialect_search_policy) or (
+        derive_output_dialect_search_policy(
+            normalized_input_dialect,
+            normalized_feature_mode,
+            normalized_preferred_outputs,
+            normalized_outputs,
+        )
+    )
     return {
         "input_dialect": normalized_input_dialect,
         "gluon_feature_mode": normalized_feature_mode,
         "gluon_baseline_profile": normalized_profile,
         "allowed_output_dialects": normalized_outputs,
+        "preferred_output_dialects": normalized_preferred_outputs,
+        "output_dialect_search_policy": normalized_search_policy,
         "target_backend": normalized_target_backend,
     }
 
@@ -232,11 +369,6 @@ def allowed_skill_tiers_for_feature(
     """Return the visible skill tiers for a task."""
     if str(kernel_type).strip().lower() != "triton":
         return []
-    if (
-        str(gluon_feature_mode).strip().lower() != GLUON_FEATURE_MODE_OFF
-        and str(gluon_baseline_profile).strip().lower() == GLUON_BASELINE_PROFILE_MI3XX
-    ):
-        return [GENERAL_SKILL_TIER, BENCHMARK_SAFE_SKILL_TIER]
     return [GENERAL_SKILL_TIER]
 
 
@@ -248,6 +380,10 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
     gluon_feature_mode = str(feature_meta.get("gluon_feature_mode") or GLUON_FEATURE_MODE_OFF)
     gluon_baseline_profile = str(feature_meta.get("gluon_baseline_profile") or GLUON_BASELINE_PROFILE_RAW)
     outputs = feature_meta.get("allowed_output_dialects") or list(DEFAULT_ALLOWED_OUTPUT_DIALECTS)
+    preferred_outputs = feature_meta.get("preferred_output_dialects") or list(outputs)
+    search_policy = str(
+        feature_meta.get("output_dialect_search_policy") or COMPARE_ALLOWED_OUTPUTS_WITHOUT_BIAS_POLICY
+    )
     target_backend = str(feature_meta.get("target_backend") or DEFAULT_TARGET_BACKEND)
 
     lines = [
@@ -256,15 +392,32 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
         f"- Gluon feature mode: {gluon_feature_mode}",
         f"- Gluon baseline profile: {gluon_baseline_profile}",
         f"- Allowed output dialects: {', '.join(str(item) for item in outputs)}",
+        f"- Preferred output dialect order: {', '.join(str(item) for item in preferred_outputs)}",
+        f"- Output-dialect search policy: {search_policy}",
         f"- Target backend: {target_backend}",
     ]
 
+    if search_policy == PREFER_AMD_GLUON_IF_VIABLE_POLICY:
+        lines.append("- Prefer an AMD Gluon candidate first when it looks structurally promising for this Triton-family input.")
+        if input_dialect == NV_GLUON_DIALECT:
+            lines.append("- If the input is NVIDIA-oriented Gluon, translate vendor-specific APIs, layouts, or memory paths into AMD-facing Gluon semantics before tuning.")
+        elif input_dialect == AMD_GLUON_DIALECT:
+            lines.append("- The input is already AMD Gluon; keep the optimized path in amd_gluon space unless the allowed outputs explicitly require a comparison fallback.")
+        else:
+            lines.append("- Generate an early AMD Gluon candidate before filling the plan with only plain Triton tuning.")
+        if PLAIN_TRITON_DIALECT in outputs:
+            lines.append("- Keep a plain Triton fallback alive unless the policy explicitly requires AMD Gluon.")
+    elif search_policy == REQUIRE_AMD_GLUON_POLICY:
+        lines.append("- This run requires an AMD Gluon output path.")
+    elif search_policy == PLAIN_TRITON_ONLY_SEARCH_POLICY:
+        lines.append("- This run is restricted to plain Triton output only.")
+
     if gluon_feature_mode == GLUON_FEATURE_MODE_OFF:
-        lines.append("- Gluon-specific prompt, skill, and benchmark-safe reference material is disabled.")
+        lines.append("- Gluon-specific prompt and skill guidance is disabled.")
         if input_dialect in {NV_GLUON_DIALECT, AMD_GLUON_DIALECT}:
             lines.append("- Existing Gluon input is still valid input; preserve semantics even with the feature gate off.")
     elif gluon_baseline_profile == GLUON_BASELINE_PROFILE_RAW:
-        lines.append("- The Gluon feature gate is enabled, but do not assume any extra Gluon-specific skill/doc/knowledge.")
+        lines.append("- The Gluon feature gate is enabled; rely on the single shared Gluon guide and skill rather than extra profile-specific references.")
         lines.append("- Compare plain Triton and AMD Gluon output paths only when the allowed outputs permit them.")
     else:
         lines.append("- Benchmark-safe MI3xx Gluon guidance is enabled for this run.")
@@ -298,6 +451,8 @@ class KernelMeta:
     gluon_feature_mode: str = GLUON_FEATURE_MODE_OFF
     gluon_baseline_profile: str = GLUON_BASELINE_PROFILE_RAW
     allowed_output_dialects: list[str] = field(default_factory=lambda: list(DEFAULT_ALLOWED_OUTPUT_DIALECTS))
+    preferred_output_dialects: list[str] = field(default_factory=lambda: list(DEFAULT_ALLOWED_OUTPUT_DIALECTS))
+    output_dialect_search_policy: str = PLAIN_TRITON_ONLY_SEARCH_POLICY
     target_backend: str = DEFAULT_TARGET_BACKEND
 
 
@@ -334,6 +489,8 @@ class KernelInfo(KernelMeta):
             gluon_feature_mode=self.gluon_feature_mode,
             gluon_baseline_profile=self.gluon_baseline_profile,
             allowed_output_dialects=list(self.allowed_output_dialects),
+            preferred_output_dialects=list(self.preferred_output_dialects),
+            output_dialect_search_policy=self.output_dialect_search_policy,
             target_backend=self.target_backend,
         )
 
@@ -626,6 +783,8 @@ class DiscoveryResult:
                 gluon_feature_mode=kernel_info.get("gluon_feature_mode"),
                 gluon_baseline_profile=kernel_info.get("gluon_baseline_profile"),
                 allowed_output_dialects=kernel_info.get("allowed_output_dialects"),
+                preferred_output_dialects=kernel_info.get("preferred_output_dialects"),
+                output_dialect_search_policy=kernel_info.get("output_dialect_search_policy"),
                 target_backend=kernel_info.get("target_backend"),
             )
 
@@ -658,6 +817,8 @@ class DiscoveryResult:
                     gluon_feature_mode=feature_meta["gluon_feature_mode"],
                     gluon_baseline_profile=feature_meta["gluon_baseline_profile"],
                     allowed_output_dialects=list(feature_meta["allowed_output_dialects"]),
+                    preferred_output_dialects=list(feature_meta["preferred_output_dialects"]),
+                    output_dialect_search_policy=feature_meta["output_dialect_search_policy"],
                     target_backend=feature_meta["target_backend"],
                 )
             )

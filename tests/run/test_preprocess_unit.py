@@ -164,7 +164,63 @@ class TestKernelMetaContract:
         assert meta.gluon_feature_mode == "off"
         assert meta.gluon_baseline_profile == "raw"
         assert meta.allowed_output_dialects == ["plain_triton"]
+        assert meta.preferred_output_dialects == ["plain_triton"]
+        assert meta.output_dialect_search_policy == "plain_triton_only"
         assert meta.target_backend == "hip/gfx942"
+
+    def test_plain_triton_auto_prefers_amd_gluon_then_fallback(self):
+        from minisweagent.run.preprocess.discovery_types import build_gluon_feature_metadata
+
+        with tempfile.TemporaryDirectory() as tmp:
+            kernel = Path(tmp) / "topk.py"
+            kernel.write_text("import triton\n")
+            meta = build_gluon_feature_metadata(
+                kernel,
+                "triton",
+                input_dialect="plain_triton",
+                gluon_feature_mode="auto",
+                gluon_baseline_profile="raw",
+                allowed_output_dialects=["plain_triton", "amd_gluon"],
+            )
+
+        assert meta["preferred_output_dialects"] == ["amd_gluon", "plain_triton"]
+        assert meta["output_dialect_search_policy"] == "prefer_amd_gluon_if_viable_else_plain_triton"
+
+    def test_amd_gluon_input_still_prefers_amd_gluon_first(self):
+        from minisweagent.run.preprocess.discovery_types import build_gluon_feature_metadata
+
+        with tempfile.TemporaryDirectory() as tmp:
+            kernel = Path(tmp) / "topk.py"
+            kernel.write_text("from triton.experimental import gluon\n")
+            meta = build_gluon_feature_metadata(
+                kernel,
+                "triton",
+                input_dialect="amd_gluon",
+                gluon_feature_mode="auto",
+                gluon_baseline_profile="raw",
+                allowed_output_dialects=["plain_triton", "amd_gluon"],
+            )
+
+        assert meta["preferred_output_dialects"] == ["amd_gluon", "plain_triton"]
+        assert meta["output_dialect_search_policy"] == "prefer_amd_gluon_if_viable_else_plain_triton"
+
+    def test_gluon_on_alias_normalizes_to_auto(self):
+        from minisweagent.run.preprocess.discovery_types import build_gluon_feature_metadata
+
+        with tempfile.TemporaryDirectory() as tmp:
+            kernel = Path(tmp) / "topk.py"
+            kernel.write_text("import triton\n")
+            meta = build_gluon_feature_metadata(
+                kernel,
+                "triton",
+                input_dialect="plain_triton",
+                gluon_feature_mode="gluon-on",
+                gluon_baseline_profile="raw",
+                allowed_output_dialects=["plain_triton", "amd_gluon"],
+            )
+
+        assert meta["gluon_feature_mode"] == "auto"
+        assert meta["preferred_output_dialects"] == ["amd_gluon", "plain_triton"]
 
     def test_discovery_result_populates_kernel_meta_fields(self):
         from minisweagent.run.preprocess.discovery_types import DiscoveryResult, KernelMeta
@@ -380,6 +436,8 @@ class TestPreprocessContext:
                 "test_command": f"python {harness} --correctness",
                 "discovery": {"tests": [], "benchmarks": []},
                 "codebase_context_path": str(Path(tmp) / "CODEBASE_CONTEXT.md"),
+                "preferred_output_dialects": ["amd_gluon", "plain_triton"],
+                "output_dialect_search_policy": "prefer_amd_gluon_if_viable_else_plain_triton",
             }
             pc = PreprocessContext.from_preprocessor_output(ctx, tmp)
 
@@ -390,6 +448,8 @@ class TestPreprocessContext:
             assert pc.commandment_path is not None
             assert pc.baseline_metrics_path is not None
             assert pc.profiling_result_path is not None
+            assert pc.preferred_output_dialects == ["amd_gluon", "plain_triton"]
+            assert pc.output_dialect_search_policy == "prefer_amd_gluon_if_viable_else_plain_triton"
 
     def test_validate_catches_missing_required(self):
         from minisweagent.run.preprocess.context import PreprocessContext
@@ -429,12 +489,16 @@ class TestPreprocessContext:
                 harness_path="/a/harness.py",
                 preprocess_dir=tmp,
                 discovery={"tests": [1, 2, 3]},
+                preferred_output_dialects=["amd_gluon", "plain_triton"],
+                output_dialect_search_policy="prefer_amd_gluon_if_viable_else_plain_triton",
             )
             json_path = Path(tmp) / "ctx.json"
             pc.to_json(json_path)
             loaded = PreprocessContext.from_json(json_path)
             assert loaded.kernel_path == pc.kernel_path
             assert loaded.discovery == pc.discovery
+            assert loaded.preferred_output_dialects == pc.preferred_output_dialects
+            assert loaded.output_dialect_search_policy == pc.output_dialect_search_policy
 
     def test_from_dict_ignores_unknown_keys(self):
         from minisweagent.run.preprocess.context import PreprocessContext

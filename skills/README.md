@@ -45,6 +45,12 @@ Good practices:
 - Use clear sections (workflows, checklists, constraints, examples).
 - Prefer **concrete** guidance: commands, file patterns, APIs, or patterns the agent should follow.
 - If the skill is domain-specific (kernels, build systems, tests), spell out **assumptions** (data types, targets, repo layout).
+- If the skill is a **feature supplement** to an existing route, encode that in the
+  `name` / `description` (for example `triton-gluon`) instead of using
+  stage labels such as `layer1`, `layer2`, or `layer3`.
+- Keep the folder layout **flat**. `SkillRuntime` only scans immediate
+  subdirectories of `skills/`, so do not depend on nested folder hierarchies to
+  express relationships between base routes and feature extensions.
 
 See the built-in example: `examples/skills/silu-optimization/SKILL.md` — frontmatter plus structured sections (context, functionality, numbered optimizations with code excerpts).
 

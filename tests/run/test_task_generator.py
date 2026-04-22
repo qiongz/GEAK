@@ -47,14 +47,12 @@ def _make_kernel_kwargs(
     }
 
 
-def _write_knowledge_files(workspace: Path) -> tuple[Path, Path]:
+def _write_knowledge_files(workspace: Path) -> Path:
     kb_dir = workspace / "knowledge_base"
     kb_dir.mkdir()
     general_kb = kb_dir / "optimization_strategies.py"
     general_kb.write_text("# general optimization knowledge\n")
-    gluon_kb = kb_dir / "triton_gluon_mi3xx_benchmark_safe.md"
-    gluon_kb.write_text("# benchmark-safe gluon knowledge\n")
-    return general_kb, gluon_kb
+    return general_kb
 
 
 # ---- Agent submits valid JSON -> tasks produced ----
@@ -117,7 +115,7 @@ def test_agent_failure_propagates(mock_agent):
 def test_run_task_agent_enables_skills_for_triton(mock_default_agent, _mock_tools, tmp_path: Path):
     model = FakePlanningModel()
     mock_default_agent.return_value.run.return_value = ("Submitted", "[]")
-    general_kb, _gluon_kb = _write_knowledge_files(tmp_path)
+    general_kb = _write_knowledge_files(tmp_path)
 
     submitted = _run_task_agent(
         kernel_path=str(tmp_path / "kernel.py"),
@@ -151,17 +149,16 @@ def test_run_task_agent_enables_skills_for_triton(mock_default_agent, _mock_tool
     assert mock_default_agent.call_args.kwargs["allowed_skill_tiers"] == ["general"]
     run_kwargs = mock_default_agent.return_value.run.call_args.kwargs
     assert run_kwargs["knowledge_base_path"] == str(general_kb)
-    assert run_kwargs["gluon_benchmark_safe_knowledge_path"] == ""
 
 
 @patch("minisweagent.tools.tools_runtime.get_tools_list", return_value=[{"name": "str_replace_editor"}, {"name": "submit"}])
 @patch("minisweagent.agents.default.DefaultAgent")
-def test_run_task_agent_raw_profile_omits_benchmark_safe_gluon_knowledge(
+def test_run_task_agent_raw_profile_keeps_single_skill_tier(
     mock_default_agent, _mock_tools, tmp_path: Path
 ):
     model = FakePlanningModel()
     mock_default_agent.return_value.run.return_value = ("Submitted", "[]")
-    general_kb, _gluon_kb = _write_knowledge_files(tmp_path)
+    general_kb = _write_knowledge_files(tmp_path)
 
     submitted = _run_task_agent(
         kernel_path=str(tmp_path / "kernel.py"),
@@ -194,15 +191,103 @@ def test_run_task_agent_raw_profile_omits_benchmark_safe_gluon_knowledge(
     assert mock_default_agent.call_args.kwargs["allowed_skill_tiers"] == ["general"]
     run_kwargs = mock_default_agent.return_value.run.call_args.kwargs
     assert run_kwargs["knowledge_base_path"] == str(general_kb)
-    assert run_kwargs["gluon_benchmark_safe_knowledge_path"] == ""
 
 
 @patch("minisweagent.tools.tools_runtime.get_tools_list", return_value=[{"name": "str_replace_editor"}, {"name": "submit"}])
 @patch("minisweagent.agents.default.DefaultAgent")
-def test_run_task_agent_uses_benchmark_safe_skill_tiers_for_mi3xx(mock_default_agent, _mock_tools, tmp_path: Path):
+def test_run_task_agent_plain_triton_auto_prefers_amd_gluon_first(
+    mock_default_agent, _mock_tools, tmp_path: Path
+):
     model = FakePlanningModel()
     mock_default_agent.return_value.run.return_value = ("Submitted", "[]")
-    general_kb, gluon_kb = _write_knowledge_files(tmp_path)
+    general_kb = _write_knowledge_files(tmp_path)
+
+    submitted = _run_task_agent(
+        kernel_path=str(tmp_path / "kernel.py"),
+        kernel_name="test_kernel",
+        kernel_type="triton",
+        kernel_language="python",
+        function_names=["kernel_fwd"],
+        workspace_path=str(tmp_path),
+        input_dialect="plain_triton",
+        gluon_feature_mode="auto",
+        gluon_baseline_profile="raw",
+        allowed_output_dialects=["plain_triton", "amd_gluon"],
+        target_backend="hip/gfx942",
+        base_task_context="ctx",
+        model=model,
+        profiling_path=None,
+        commandment_path=None,
+        baseline_metrics_path=None,
+        deep_search_path=None,
+        previous_results_dir=None,
+        discovery_path=None,
+        codebase_context_path=None,
+        previous_tasks_dir=None,
+        round_evaluations=None,
+        current_round=1,
+        num_gpus=1,
+    )
+
+    assert submitted == "[]"
+    assert mock_default_agent.call_args.kwargs["allowed_skill_tiers"] == ["general"]
+    run_kwargs = mock_default_agent.return_value.run.call_args.kwargs
+    assert run_kwargs["knowledge_base_path"] == str(general_kb)
+    assert "Preferred output dialect order: amd_gluon, plain_triton" in run_kwargs["gluon_feature_context"]
+    assert "prefer_amd_gluon_if_viable_else_plain_triton" in run_kwargs["gluon_feature_context"]
+    assert "Generate at least one early task" in run_kwargs["output_dialect_guidance"]
+    assert "Keep a plain Triton fallback path alive" in run_kwargs["output_dialect_guidance"]
+
+
+@patch("minisweagent.tools.tools_runtime.get_tools_list", return_value=[{"name": "str_replace_editor"}, {"name": "submit"}])
+@patch("minisweagent.agents.default.DefaultAgent")
+def test_run_task_agent_nv_gluon_mentions_translation_before_tuning(
+    mock_default_agent, _mock_tools, tmp_path: Path
+):
+    model = FakePlanningModel()
+    mock_default_agent.return_value.run.return_value = ("Submitted", "[]")
+    _write_knowledge_files(tmp_path)
+
+    submitted = _run_task_agent(
+        kernel_path=str(tmp_path / "kernel.py"),
+        kernel_name="test_kernel",
+        kernel_type="triton",
+        kernel_language="python",
+        function_names=["kernel_fwd"],
+        workspace_path=str(tmp_path),
+        input_dialect="nv_gluon",
+        gluon_feature_mode="auto",
+        gluon_baseline_profile="raw",
+        allowed_output_dialects=["plain_triton", "amd_gluon"],
+        target_backend="hip/gfx942",
+        base_task_context="ctx",
+        model=model,
+        profiling_path=None,
+        commandment_path=None,
+        baseline_metrics_path=None,
+        deep_search_path=None,
+        previous_results_dir=None,
+        discovery_path=None,
+        codebase_context_path=None,
+        previous_tasks_dir=None,
+        round_evaluations=None,
+        current_round=1,
+        num_gpus=1,
+    )
+
+    assert submitted == "[]"
+    run_kwargs = mock_default_agent.return_value.run.call_args.kwargs
+    assert "Preferred output dialect order: amd_gluon, plain_triton" in run_kwargs["gluon_feature_context"]
+    assert "translate vendor-specific APIs, layouts, or memory paths" in run_kwargs["gluon_feature_context"]
+    assert "translates vendor-specific APIs, layout assumptions, or memory paths" in run_kwargs["output_dialect_guidance"]
+
+
+@patch("minisweagent.tools.tools_runtime.get_tools_list", return_value=[{"name": "str_replace_editor"}, {"name": "submit"}])
+@patch("minisweagent.agents.default.DefaultAgent")
+def test_run_task_agent_keeps_general_skill_tiers_for_mi3xx(mock_default_agent, _mock_tools, tmp_path: Path):
+    model = FakePlanningModel()
+    mock_default_agent.return_value.run.return_value = ("Submitted", "[]")
+    general_kb = _write_knowledge_files(tmp_path)
 
     submitted = _run_task_agent(
         kernel_path=str(tmp_path / "kernel.py"),
@@ -232,10 +317,9 @@ def test_run_task_agent_uses_benchmark_safe_skill_tiers_for_mi3xx(mock_default_a
     )
 
     assert submitted == "[]"
-    assert mock_default_agent.call_args.kwargs["allowed_skill_tiers"] == ["general", "benchmark_safe"]
+    assert mock_default_agent.call_args.kwargs["allowed_skill_tiers"] == ["general"]
     run_kwargs = mock_default_agent.return_value.run.call_args.kwargs
     assert run_kwargs["knowledge_base_path"] == str(general_kb)
-    assert run_kwargs["gluon_benchmark_safe_knowledge_path"] == str(gluon_kb)
 
 
 def test_write_task_files_marks_triton_tasks_with_skill_usage(tmp_path: Path):
@@ -243,7 +327,7 @@ def test_write_task_files_marks_triton_tasks_with_skill_usage(tmp_path: Path):
         '[{"label": "opt", "priority": 5, "agent_type": "strategy_agent", "task_prompt": "Do it"}]',
         FakeAgentClass,
     )
-    _general_kb, gluon_kb = _write_knowledge_files(tmp_path)
+    _write_knowledge_files(tmp_path)
 
     paths = write_task_files(
         tasks,
@@ -264,11 +348,12 @@ def test_write_task_files_marks_triton_tasks_with_skill_usage(tmp_path: Path):
     assert meta["gluon_feature_mode"] == "auto"
     assert meta["gluon_baseline_profile"] == "mi3xx"
     assert meta["allowed_output_dialects"] == ["plain_triton", "amd_gluon"]
-    assert meta["allowed_skill_tiers"] == ["general", "benchmark_safe"]
-    assert meta["gluon_benchmark_safe_knowledge_path"] == str(gluon_kb)
+    assert meta["preferred_output_dialects"] == ["amd_gluon", "plain_triton"]
+    assert meta["output_dialect_search_policy"] == "prefer_amd_gluon_if_viable_else_plain_triton"
+    assert meta["allowed_skill_tiers"] == ["general"]
 
 
-def test_write_task_files_omits_benchmark_safe_gluon_knowledge_for_raw(tmp_path: Path):
+def test_write_task_files_records_plain_triton_gluon_preference(tmp_path: Path):
     tasks = _parse_llm_response(
         '[{"label": "opt", "priority": 5, "agent_type": "strategy_agent", "task_prompt": "Do it"}]',
         FakeAgentClass,
@@ -280,7 +365,7 @@ def test_write_task_files_omits_benchmark_safe_gluon_knowledge_for_raw(tmp_path:
         tmp_path,
         kernel_path=str(tmp_path / "kernel.py"),
         kernel_type="triton",
-        input_dialect="amd_gluon",
+        input_dialect="plain_triton",
         gluon_feature_mode="auto",
         gluon_baseline_profile="raw",
         allowed_output_dialects=["plain_triton", "amd_gluon"],
@@ -288,7 +373,8 @@ def test_write_task_files_omits_benchmark_safe_gluon_knowledge_for_raw(tmp_path:
     )
 
     meta, _body = read_task_file(paths[0])
-    assert "gluon_benchmark_safe_knowledge_path" not in meta
+    assert meta["preferred_output_dialects"] == ["amd_gluon", "plain_triton"]
+    assert meta["output_dialect_search_policy"] == "prefer_amd_gluon_if_viable_else_plain_triton"
 
 
 def test_extract_kernel_meta_reinfers_unknown_gluon_type(tmp_path: Path):
@@ -453,5 +539,6 @@ def test_system_prompt_deprioritizes_dispatch_path_work():
     assert "- 0: Novel algorithmic kernel rewrites" in _SYSTEM_PROMPT
     assert "- 15: Wrapper/launch-config/dispatch-only changes (lowest priority)" in _SYSTEM_PROMPT
     assert 'Generate at least 3 tasks from the "Prefer First" families' in _SYSTEM_PROMPT
+    assert 'If an "Output Dialect Planning Policy" block is present' in _SYSTEM_PROMPT
     assert "leave some gpus idle" in _SYSTEM_PROMPT.lower()
     assert "Generate at least one priority-0 task that specifically checks the dispatch path" not in _SYSTEM_PROMPT

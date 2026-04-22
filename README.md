@@ -4,6 +4,10 @@ GEAK is an agent-driven framework for end-to-end GPU kernel optimization in real
 
 ---
 
+- **Stack-aware** — **HIP** and **Triton** are the primary optimization targets today. Within the Triton path, **Gluon** is handled as an optional Triton-family feature (`plain_triton`, `nv_gluon`, `amd_gluon`), not as a separate kernel type or product line.
+- **Closed-loop / end-to-end** — **`geak`** can carry a run from start to finish: generate or discover **test/harness scripts** when needed, **run profiling**, iterate with the LLM, **save every patch** on disk, and **pick the best result** against your metrics—artifacts land under `optimization_logs/` for reproducibility.
+- **Scales with hardware** — Multi-agent parallel search with isolated git workspaces and best-patch selection when you explore competing strategies.
+
 ## Core Capabilities
 
 - End-to-end optimization
@@ -141,6 +145,25 @@ geak --repo "$REPO" \
 
 For more options and examples, see **[Quick start](docs/quick_start.md)**.
 
+#### Triton-family feature path (`gluon-on`)
+
+GEAK still treats Gluon work as **`kernel_type=triton`**. The current explicit
+feature gate is **`gluon_feature_mode`** (the repo documentation refers to this
+as **`gluon-on`** when it is not `off`).
+
+- Input dialects stay inside the Triton family:
+  - `plain_triton`
+  - `nv_gluon`
+  - `amd_gluon`
+- When the Gluon feature is on and AMD Gluon output is allowed, GEAK prefers an
+  **`amd_gluon`** candidate first.
+- For **`nv_gluon`** inputs, the agent must translate vendor-specific APIs,
+  layout assumptions, or hardware-specific idioms before optimizing on AMD.
+- See **[docs/triton_gluon.md](docs/triton_gluon.md)**
+  and **[examples/triton_gluon_inputs/README.md](examples/triton_gluon_inputs/README.md)**
+  for the current feature guide, repo-local defaults, and the three minimal
+  input fixtures.
+
 
 ### Configuration
 
@@ -148,10 +171,12 @@ For more options and examples, see **[Quick start](docs/quick_start.md)**.
 
 `geak` loads configuration in layers:
 
-1. base config: `src/minisweagent/config/geak.yaml`
-2. template: `src/minisweagent/config/mini_kernel_strategy_list.yaml` (default)
-3. user override: `--config xxx.yaml`
-4. CLI override: CLI args (final override)
+1. base template: `src/minisweagent/config/mini_kernel_strategy_list.yaml`
+2. user config:
+   - default: `src/minisweagent/config/geak.yaml`
+   - or `--config xxx.yaml`
+3. optional task-provided config path extracted from natural language (only when `--config` is not already set)
+4. CLI overrides (**final override**)
 
 For more options and examples, see [Configuration](docs/configuration.md).
 

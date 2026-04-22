@@ -216,6 +216,10 @@ def run_heterogeneous_orchestrator(
             or kernel_meta.get("gluon_baseline_profile"),
             allowed_output_dialects=preprocess_ctx.get("allowed_output_dialects")
             or kernel_meta.get("allowed_output_dialects"),
+            preferred_output_dialects=preprocess_ctx.get("preferred_output_dialects")
+            or kernel_meta.get("preferred_output_dialects"),
+            output_dialect_search_policy=preprocess_ctx.get("output_dialect_search_policy")
+            or kernel_meta.get("output_dialect_search_policy"),
             target_backend=preprocess_ctx.get("target_backend") or kernel_meta.get("target_backend"),
         )
     )
