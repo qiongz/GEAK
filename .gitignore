@@ -187,6 +187,7 @@ optimization_logs*/
 .optimization_strategies.md
 .cursor/
 .vscode/
+geak_preprocess_*/
 
 # MkDocs build output (deployed via GitHub Actions, not committed)
 site/
