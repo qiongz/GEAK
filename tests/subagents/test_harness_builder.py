@@ -195,6 +195,182 @@ class TestStripsCodeFences:
         written = out.read_text()
         assert not written.strip().startswith("```")
 
+    def test_prose_preamble_with_fenced_block_extracted(self, tmp_path: Path) -> None:
+        """The exact failure mode observed in production: LLM emits a chatty
+        preamble ("I'll start by understanding...") followed by the actual
+        code in a ```python ...``` block.  The extractor MUST pick the
+        fenced block, NOT the preamble."""
+        kernel = tmp_path / "kernel.py"
+        kernel.write_text("pass\n")
+        out = tmp_path / "harness.py"
+
+        prose = (
+            "I'll start by understanding the existing code, harness, and "
+            "profile data to build a proper harness and optimize the kernel.\n"
+            "\n"
+            "```python\n"
+            + _valid_harness_source()
+            + "```\n"
+            "\n"
+            "That should satisfy the universal contract.\n"
+        )
+        builder = _make_builder(tmp_path, model_responses=[prose])
+        result = builder.run(kernel_path=kernel, out_path=out)
+        assert result["ok"] is True
+        written = out.read_text()
+        assert "I'll start by understanding" not in written
+        assert "That should satisfy" not in written
+        for flag in ("--correctness", "--benchmark", "--full-benchmark", "--profile"):
+            assert flag in written
+
+    def test_largest_fenced_block_wins_when_multiple(self, tmp_path: Path) -> None:
+        """LLMs sometimes embed small bash snippets ("here's how to run it")
+        next to the harness block.  We must pick the largest block, which
+        is the harness."""
+        kernel = tmp_path / "kernel.py"
+        kernel.write_text("pass\n")
+        out = tmp_path / "harness.py"
+
+        response = (
+            "First, here's how you'd run it:\n"
+            "```bash\n"
+            "python harness.py --correctness\n"
+            "```\n"
+            "\n"
+            "And here is the harness:\n"
+            "```python\n"
+            + _valid_harness_source()
+            + "```\n"
+        )
+        builder = _make_builder(tmp_path, model_responses=[response])
+        result = builder.run(kernel_path=kernel, out_path=out)
+        assert result["ok"] is True
+
+    def test_pure_prose_response_passes_through_to_validator(
+        self, tmp_path: Path
+    ) -> None:
+        """When the LLM returns nothing but prose (no fence, no code-looking
+        line), we hand the prose to the validator unchanged so it can
+        report the correct error (missing flags/markers)."""
+        kernel = tmp_path / "kernel.py"
+        kernel.write_text("pass\n")
+        out = tmp_path / "harness.py"
+
+        prose_only = (
+            "I'll start by understanding the existing code, harness, and "
+            "profile data to build a proper harness and optimize the kernel.\n"
+        )
+        builder = _make_builder(
+            tmp_path,
+            model_responses=[prose_only, prose_only],
+            max_retries=1,
+        )
+        with pytest.raises(HarnessBuildFailed) as exc:
+            builder.run(kernel_path=kernel, out_path=out)
+        assert "missing" in str(exc.value)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Wallclock-bounded loop (architectural plan §0.5(b))
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestWallclockBoundedLoop:
+    def test_loop_terminates_when_budget_exhausted(self, tmp_path: Path) -> None:
+        """When validation never passes, the loop must terminate cleanly
+        once the wallclock budget is exhausted (no infinite loop)."""
+        kernel = tmp_path / "kernel.py"
+        kernel.write_text("pass\n")
+        out = tmp_path / "harness.py"
+
+        lang = _fake_language(tmp_path)
+        config = SubagentConfig(
+            name="harness_builder",
+            model_name="fake",
+            system_template="sys {language_name}",
+            instance_template="inst {language_name}",
+            step_limit=1,
+            cost_limit=3.0,
+            temperature=0.2,
+            extra={},
+        )
+        builder = HarnessBuilder(language=lang, config=config)
+
+        # Always return invalid; loop should rely on wallclock to
+        # terminate.  We use a tiny budget (50 ms) so the test is fast,
+        # and a model that takes ~30 ms per call so we get exactly 1-2
+        # attempts before the deadline.
+        import time as _time
+
+        def _slow_q(messages):
+            _time.sleep(0.03)
+            return _invalid_harness_source()
+
+        builder.model = MagicMock(query=_slow_q)  # type: ignore[attr-defined]
+
+        with pytest.raises(HarnessBuildFailed):
+            builder.run(
+                kernel_path=kernel,
+                out_path=out,
+                max_wallclock_seconds=0.05,
+            )
+        # Rejected file written
+        rejected = out.with_suffix(out.suffix + ".rejected")
+        assert rejected.exists()
+
+    def test_loop_succeeds_within_budget(self, tmp_path: Path) -> None:
+        """When the LLM produces a valid harness within the budget, the
+        loop returns ok=True even if max_retries is unbounded."""
+        kernel = tmp_path / "kernel.py"
+        kernel.write_text("pass\n")
+        out = tmp_path / "harness.py"
+
+        lang = _fake_language(tmp_path)
+        config = SubagentConfig(
+            name="harness_builder",
+            model_name="fake",
+            system_template="sys {language_name}",
+            instance_template="inst {language_name}",
+            step_limit=1,
+            cost_limit=3.0,
+            temperature=0.2,
+            extra={},
+        )
+        builder = HarnessBuilder(language=lang, config=config)
+        responses = iter([_invalid_harness_source(), _valid_harness_source()])
+        builder.model = MagicMock(query=lambda m: next(responses))  # type: ignore[attr-defined]
+
+        result = builder.run(
+            kernel_path=kernel,
+            out_path=out,
+            max_wallclock_seconds=30.0,  # 30 s; plenty
+        )
+        assert result["ok"] is True
+        assert result["attempts_used"] == 2
+
+    def test_max_retries_cap_still_honoured(self, tmp_path: Path) -> None:
+        """``max_retries`` remains a deterministic safety cap for tests
+        that need predictable attempt counts even under a large
+        wallclock budget."""
+        kernel = tmp_path / "kernel.py"
+        kernel.write_text("pass\n")
+        out = tmp_path / "harness.py"
+
+        builder = _make_builder(
+            tmp_path,
+            model_responses=[_invalid_harness_source(), _invalid_harness_source()],
+            max_retries=1,
+        )
+        with pytest.raises(HarnessBuildFailed):
+            builder.run(
+                kernel_path=kernel,
+                out_path=out,
+                max_wallclock_seconds=300.0,
+                max_retries=1,
+            )
+        # ``_make_builder`` only provided 2 responses; if the cap had not
+        # fired we would have hit StopIteration instead of HarnessBuildFailed.
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Retry path

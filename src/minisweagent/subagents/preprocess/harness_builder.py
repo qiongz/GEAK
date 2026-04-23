@@ -28,6 +28,8 @@ validate + retry on structural failure).
 from __future__ import annotations
 
 import logging
+import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
@@ -38,6 +40,29 @@ if TYPE_CHECKING:  # pragma: no cover
     from minisweagent.kernel_languages.base import KernelLanguage
 
 logger = logging.getLogger(__name__)
+
+
+# Default wallclock budget for HarnessBuilder's validate-retry loop.
+# Architectural intent (execution plan §0.5(b) Harness phase): keep
+# trying — with validator feedback fed back into the next prompt —
+# until the universal contract is satisfied OR the budget is exhausted.
+# 30 min is generous enough that a sluggish backend (e.g. token-rate-
+# limited LLM) can still converge, but bounded enough that a stuck
+# pipeline reports failure instead of hanging indefinitely.
+_DEFAULT_WALLCLOCK_BUDGET_S = 30 * 60
+
+
+# Heuristic regexes used by ``_strip_code_fences`` to extract the actual
+# Python from LLM responses that may include prose preamble, prose
+# epilogue, and/or a single code-fenced block.
+_FENCED_BLOCK_RE = re.compile(
+    r"```(?:[a-zA-Z0-9_+\-.]*)\s*\n(.*?)```",
+    re.DOTALL,
+)
+_PYTHON_LINE_START_RE = re.compile(
+    r"^(?:#!|#\s|import |from |def |class |@\w|if __name__|\"\"\"|''')",
+    re.MULTILINE,
+)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -158,12 +183,24 @@ class HarnessBuilder(SubagentBase):
           - ``out_path``     (Path): where the harness is written
 
         Optional inputs:
-          - ``repo_root``           (Path): informational; embedded in prompt
-          - ``user_test_files``     (list[Path]): user-supplied test files
-          - ``discovery_context``   (str): codebase context snippet
-          - ``max_retries``         (int, default 1): extra round-trips
-                                     when the first candidate fails
-                                     contract validation
+          - ``repo_root``                (Path): informational; embedded in prompt
+          - ``user_test_files``          (list[Path]): user-supplied test files
+          - ``discovery_context``        (str): codebase context snippet
+          - ``max_wallclock_seconds``    (float, default 1800.0 = 30 min):
+                                          total wallclock budget for the
+                                          validate-retry loop.  When the
+                                          budget is exhausted, the latest
+                                          candidate is written to
+                                          ``harness.py.rejected`` and the
+                                          call returns ok=False (or raises
+                                          ``HarnessBuildFailed`` from the
+                                          public ``run`` wrapper).
+          - ``max_retries``              (int | None, default None):
+                                          OPTIONAL safety cap on attempt
+                                          count.  ``None`` means unbounded
+                                          (only the wallclock terminates).
+                                          Tests pin small values for
+                                          deterministic termination.
 
         Returns:
           A dict ``{"harness_path": str, "attempts_used": int, "ok": bool}``
@@ -171,7 +208,8 @@ class HarnessBuilder(SubagentBase):
           harness contract.
 
         Raises:
-          HarnessBuildFailed if ALL attempts fail validation.
+          HarnessBuildFailed if the loop exits without a valid harness
+          (either wallclock budget exhausted OR ``max_retries`` cap hit).
         """
         kernel_path = inputs.get("kernel_path")
         out_path = inputs.get("out_path")
@@ -189,7 +227,31 @@ class HarnessBuilder(SubagentBase):
         user_test_files_raw = inputs.get("user_test_files") or []
         user_test_files = [Path(p) for p in user_test_files_raw]
         discovery_context = str(inputs.get("discovery_context") or "")
-        max_retries = max(0, int(inputs.get("max_retries", 1)))
+
+        # Resolve wallclock + retry caps.  Precedence (highest first):
+        #   1. ``run`` kwargs
+        #   2. ``config.extra`` (lets the YAML-loaded SubagentConfig set them)
+        #   3. defaults: 30 min wallclock, no retry cap
+        # Both can be set simultaneously; the loop stops on whichever
+        # fires first.  ``max_retries`` exists primarily so tests can
+        # pin a deterministic attempt count without relying on timing.
+        cfg_extra = (getattr(self, "config", None) and self.config.extra) or {}
+
+        wallclock_raw = inputs.get("max_wallclock_seconds")
+        if wallclock_raw is None:
+            wallclock_raw = cfg_extra.get("max_wallclock_seconds")
+        retries_raw = inputs.get("max_retries")
+        if retries_raw is None:
+            retries_raw = cfg_extra.get("max_retries")
+
+        max_wallclock_seconds = (
+            float(wallclock_raw)
+            if wallclock_raw is not None
+            else float(_DEFAULT_WALLCLOCK_BUDGET_S)
+        )
+        max_retries: int | None = (
+            max(0, int(retries_raw)) if retries_raw is not None else None
+        )
 
         kernel_source = self._safe_read(kernel_path)
         user_tests_blob = self._read_user_tests(user_test_files)
@@ -201,6 +263,7 @@ class HarnessBuilder(SubagentBase):
             discovery_context=discovery_context,
             out_path=out_path,
             repo_root=repo_root,
+            max_wallclock_seconds=max_wallclock_seconds,
             max_retries=max_retries,
         )
 
@@ -229,16 +292,56 @@ class HarnessBuilder(SubagentBase):
         discovery_context: str,
         out_path: Path,
         repo_root: Path | None,
-        max_retries: int,
+        max_wallclock_seconds: float,
+        max_retries: int | None,
     ) -> HarnessBuildResult:
-        """Core loop: query model, validate output, retry up to ``max_retries``."""
+        """Validate-retry loop bounded by wallclock + optional attempt cap.
+
+        Runs until any of:
+          - the candidate passes ``_validate`` (returns ok=True), OR
+          - ``max_wallclock_seconds`` elapses since loop entry, OR
+          - ``max_retries`` is set and ``max_retries + 1`` attempts have
+            completed (deterministic cap for tests).
+
+        Validator errors from each failed attempt are fed back into the
+        next prompt so the LLM can fix them.  This is the "loop until
+        the universal contract is satisfied" behaviour from execution
+        plan §0.5(b) Harness phase.
+        """
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         last_errors: list[str] = []
         last_candidate: str = ""
-        total_attempts = max_retries + 1
+        attempt = 0
+        deadline = time.monotonic() + max(0.0, float(max_wallclock_seconds))
+        max_attempts_cap = (max_retries + 1) if max_retries is not None else None
 
-        for attempt in range(1, total_attempts + 1):
+        logger.info(
+            "HarnessBuilder loop start: budget=%.0fs, max_attempts=%s, language=%s, kernel=%s",
+            max_wallclock_seconds,
+            max_attempts_cap if max_attempts_cap is not None else "unbounded",
+            self.language.name,
+            kernel_path.name,
+        )
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if attempt > 0 and remaining <= 0.0:
+                logger.warning(
+                    "HarnessBuilder wallclock budget exhausted after attempt %d "
+                    "(budget=%.0fs); writing rejected candidate.",
+                    attempt,
+                    max_wallclock_seconds,
+                )
+                break
+            if max_attempts_cap is not None and attempt >= max_attempts_cap:
+                logger.warning(
+                    "HarnessBuilder hit max_attempts cap (%d); writing rejected candidate.",
+                    max_attempts_cap,
+                )
+                break
+
+            attempt += 1
             sys_p, inst_p = self._compose_harness_prompt(
                 kernel_path=kernel_path,
                 kernel_source=kernel_source,
@@ -249,12 +352,15 @@ class HarnessBuilder(SubagentBase):
                 attempt=attempt,
             )
 
+            cap_str = (
+                f"/{max_attempts_cap}" if max_attempts_cap is not None else ""
+            )
             logger.info(
-                "HarnessBuilder attempt %d/%d (language=%s, kernel=%s)",
+                "HarnessBuilder attempt %d%s (%.0fs of %.0fs budget remaining)",
                 attempt,
-                total_attempts,
-                self.language.name,
-                kernel_path.name,
+                cap_str,
+                max(0.0, remaining if attempt > 1 else max_wallclock_seconds),
+                max_wallclock_seconds,
             )
             raw = self._query_model(sys_p, inst_p)
             candidate = self._strip_code_fences(raw)
@@ -288,19 +394,15 @@ class HarnessBuilder(SubagentBase):
                 "; ".join(errors)[:400],
             )
 
-        # Exhausted — write the final candidate to a ``.rejected`` sibling
-        # so callers can diff + debug, and return failure.
+        # Loop exited without a valid candidate.  Persist the final
+        # attempt next to ``out_path`` with a ``.rejected`` suffix so
+        # callers can diff + debug.
         rejected_path = out_path.with_suffix(out_path.suffix + ".rejected")
         rejected_path.write_text(last_candidate, encoding="utf-8")
-        logger.warning(
-            "HarnessBuilder exhausted %d attempt(s); last candidate written to %s",
-            total_attempts,
-            rejected_path,
-        )
         return HarnessBuildResult(
             ok=False,
             harness_path=str(rejected_path),
-            attempts_used=total_attempts,
+            attempts_used=attempt,
             contract_errors=last_errors,
             candidate_code=last_candidate,
         )
@@ -468,25 +570,65 @@ class HarnessBuilder(SubagentBase):
 
     @staticmethod
     def _strip_code_fences(text: str) -> str:
-        """Defensive post-processing: strip ```...``` fences if the LLM emitted them.
+        """Extract the harness Python from an LLM response.
 
-        The system prompt explicitly forbids markdown fences, but some
-        models still wrap output.  We strip the outermost fence only —
-        nested fences inside a multi-line string literal in the harness
-        are preserved verbatim.
+        The system prompt forbids markdown fences and prose.  Reality
+        is messier — we observe at least three response shapes:
+
+          1. **Pure code** (no fences, starts with Python-looking
+             syntax).  Returned as-is.
+          2. **Code wrapped in a single ``` ...```` fence**, optionally
+             with a language hint (``` ```python```).  The fence is
+             stripped.
+          3. **Prose preamble + one or more fenced blocks** (LLMs love
+             to "explain" before emitting code).  We pick the LARGEST
+             fenced block — the harness is by far the longest piece of
+             code in the response, so size is a robust selector.
+
+        If we still cannot find code (no fences, prose-first), we look
+        for the first Python-looking line and discard everything before
+        it.  When that also fails we return the raw text and let the
+        contract validator surface the error.
         """
-        stripped = text.strip()
-        if not stripped.startswith("```"):
+        if not text:
+            return ""
+
+        # Case 3: response contains explicit code fences anywhere in the
+        # body.  Pick the largest fenced block — the harness is the
+        # longest code in the response by construction.
+        fenced = _FENCED_BLOCK_RE.findall(text)
+        if fenced:
+            largest = max(fenced, key=len).rstrip()
+            return largest + "\n"
+
+        # Case 1: response starts with code.  Return as-is.
+        stripped = text.lstrip()
+        if not stripped:
+            return ""
+        first_line = stripped.split("\n", 1)[0].strip()
+        if first_line.startswith(
+            ("#!", "#", '"""', "'''", "import ", "from ", "def ", "class ", "@")
+        ) or first_line == "if __name__":
             return text
-        # Drop the leading fence line (may include a language hint like ```python)
-        lines = stripped.splitlines()
-        lines = lines[1:]
-        # Drop the trailing fence if present
-        while lines and lines[-1].strip() == "":
-            lines.pop()
-        if lines and lines[-1].strip() == "```":
-            lines.pop()
-        return "\n".join(lines) + "\n"
+
+        # Case 2 (no closing fence): response begins with ``` but the
+        # closing fence is missing — strip the leading line.
+        if stripped.startswith("```"):
+            lines = stripped.splitlines()[1:]
+            while lines and lines[-1].strip() in ("", "```"):
+                lines.pop()
+            return "\n".join(lines) + "\n"
+
+        # Prose-first with NO fence: try to locate the first Python-
+        # looking line and discard preamble.
+        m = _PYTHON_LINE_START_RE.search(text)
+        if m:
+            return text[m.start():].rstrip() + "\n"
+
+        # Pure prose — give up; let the validator complain about the
+        # missing flags/markers (which is the right error message
+        # anyway, since the LLM clearly didn't produce a harness).
+        return text
 
     @staticmethod
     def _validate(path: Path) -> list[str]:

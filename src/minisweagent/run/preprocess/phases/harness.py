@@ -396,6 +396,17 @@ class HarnessPhase(Phase):
         except ImportError:
             return None
 
+        # Wallclock budget for the validate-retry loop.  Architectural
+        # intent (execution plan §0.5(b) Harness phase): keep retrying
+        # — feeding the previous attempt's contract-validation errors
+        # back into the next prompt — until the universal contract is
+        # satisfied OR the budget is exhausted.  30 min default;
+        # override via ``GEAK_HARNESS_BUILDER_BUDGET_S``.
+        try:
+            budget_s = float(os.getenv("GEAK_HARNESS_BUILDER_BUDGET_S", "1800"))
+        except ValueError:
+            budget_s = 1800.0
+
         config = SubagentConfig(
             name="harness_builder",
             model_name=getattr(model, "name", "harness_builder_model"),
@@ -404,7 +415,7 @@ class HarnessPhase(Phase):
             step_limit=1,
             cost_limit=3.0,
             temperature=0.2,
-            extra={"max_retries": 1},
+            extra={"max_wallclock_seconds": budget_s},
         )
         builder = HarnessBuilder(language=ctx.language, config=config)
         builder.model = model  # type: ignore[attr-defined]
@@ -419,7 +430,7 @@ class HarnessPhase(Phase):
                 repo_root=Path(ctx.repo_root) if ctx.repo_root else None,
                 user_test_files=user_tests,
                 discovery_context=_read_codebase_context(ctx),
-                max_retries=int(config.extra.get("max_retries", 1)),
+                max_wallclock_seconds=budget_s,
             )
         except HarnessBuildFailed:
             return None

@@ -184,14 +184,24 @@ class TestLayer5HarnessBuilder:
         assert expected.exists()
 
     def test_falls_back_when_harness_builder_fails(
-        self, tmp_path: Path, mock_runtime_ok, mock_cache_miss
+        self,
+        tmp_path: Path,
+        mock_runtime_ok,
+        mock_cache_miss,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Model returns garbage -> HarnessBuildFailed -> Layer 5 returns None.
 
         Layer 6 (UTA) is skipped because we mock its dependency, and
         Layer 7 is also skipped because discovery is empty.  Final:
         no harness resolved, phase leaves ctx.harness_path unset.
+
+        We override ``GEAK_HARNESS_BUILDER_BUDGET_S`` to a sub-second
+        value so the validate-retry loop terminates quickly in tests
+        even though the production default is 30 min.
         """
+        monkeypatch.setenv("GEAK_HARNESS_BUILDER_BUDGET_S", "0.1")
+
         kernel = tmp_path / "k.py"
         kernel.write_text("pass")
         ctx = PhaseContext(output_dir=tmp_path)
