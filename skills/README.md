@@ -53,7 +53,6 @@ See the built-in example: `examples/skills/silu-optimization/SKILL.md` — front
 1. **Discovery**: At startup, GEAK reads each `skills/<folder>/SKILL.md` and registers the skill by the **`name`** from frontmatter (not necessarily the folder name).
 2. **Listing**: Only **`name`** and **`description`** from frontmatter are advertised in the system prompt.
 3. **Loading**: When relevant, the model is instructed to request a skill; the full `SKILL.md` contents are then injected for that turn/session logic.
-
 Keep **`description`** accurate so the model knows when to load the skill; put the detailed procedure in the Markdown body.
 
 ## Skill reference usage

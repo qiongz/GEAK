@@ -129,6 +129,30 @@ Otherwise, respond normally.
             f"{bullets}\n"
         )
 
+    def load_skill_by_name(self, skill_name: str) -> dict:
+        """Load a skill by its registered name."""
+        results = {
+            "output": "",
+            "returncode": 0,
+        }
+        if skill_name not in self.skills:
+            results["output"] = f"The skill {skill_name} is not exist."
+            return results
+
+        skill = self.skills[skill_name]
+        if not self._is_skill_allowed(skill):
+            results["output"] = f"The skill {skill_name} is not available in this run."
+            return results
+        if skill.loaded:
+            return results
+
+        skill_md = skill.path / "SKILL.md"
+        content = skill_md.read_text(encoding="utf-8")
+        material = self._format_skill_material_paths(skill.path)
+        results["output"] = f"\n# Loaded skill: {skill.name}{material}\n{content}"
+        skill.loaded = True
+        return results
+
     def load_skill(self, response: dict) -> dict:
         results = {
             "output": "",
@@ -141,20 +165,7 @@ Otherwise, respond normally.
             try:
                 kill_action = json.loads(match.group(1))
                 if kill_action["action"] == "use_skill":
-                    if kill_action["skill"] not in self.skills.keys():
-                        results["output"] = f"The skill {kill_action['skill']} is not exist."
-                        return results
-                    skill = self.skills[kill_action["skill"]]
-                    if not self._is_skill_allowed(skill):
-                        results["output"] = f"The skill {kill_action['skill']} is not available in this run."
-                        return results
-                    if skill.loaded:
-                        return results
-                    skill_md = skill.path / "SKILL.md"
-                    md_content = skill_md.read_text(encoding="utf-8")
-                    material = self._format_skill_material_paths(skill.path)
-                    results["output"] = f"\n# Loaded skill: {skill.name}{material}\n{md_content}"
-                    skill.loaded = True
+                    return self.load_skill_by_name(kill_action["skill"])
             except Exception as e:
                 results["output"] = f"No skills. Error: {e}"
         return results

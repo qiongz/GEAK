@@ -236,6 +236,19 @@ them priority 15 behind kernel-body algorithmic work.
    vendor-specific APIs or layout assumptions into AMD-facing Gluon before
    tuning, while still keeping any allowed plain-Triton fallback unless the
    policy explicitly requires AMD Gluon.
+12. If a "Gluon Planning Contract" block is present, treat it as
+    mandatory. Use Gluon information to constrain task decomposition and
+    viability. Do not let Gluon guidance change the required output format:
+    your final `submit` payload must still be a JSON array of task objects
+    and nothing else.
+13. If a "Gluon Task Staging Policy" block is present, treat it as
+    mandatory. In particular, for `plain_triton -> amd_gluon` paths, do not
+    spend the highest-priority slots only on the hardest persistent or
+    work-stealing designs before generating at least one minimal compileable
+    amd_gluon rewrite task and one safer semantics-preserving structural step.
+14. If a "Gluon Failure Guardrails" block is present, treat it as
+    mandatory. Avoid assigning high-priority tasks that assume risky layout
+    conversions, direct API renames, or compile-only validation is enough.
 
 ## Output format
 
@@ -307,6 +320,9 @@ Generate optimization tasks for the kernel at {{ kernel_path }}.
 {% endif %}{% if baseline_metrics_path %}- **Baseline metrics**: {{ baseline_metrics_path }}
 {% endif %}{% if commandment_path %}- **COMMANDMENT.md** (evaluation contract): {{ commandment_path }}
 {% endif %}{% if knowledge_base_path %}- **Knowledge base** (optimization strategies): {{ knowledge_base_path }}
+{% endif %}{% if gluon_guide_path %}- **Gluon guide** (canonical GEAK workflow doc): {{ gluon_guide_path }}
+{% endif %}{% if gluon_kb_path %}- **Gluon knowledge base** (structured AMD Gluon knowledge): {{ gluon_kb_path }}
+{% endif %}{% if gluon_examples_path %}- **Gluon examples** (repo examples and harness expectations): {{ gluon_examples_path }}
 {% endif %}{% if deep_search_path %}- **Deep search findings**: {{ deep_search_path }}
 {% endif %}{% if previous_results_path %}- **Prior round results** (what actually happened): {{ previous_results_path }}
 {% endif %}{% if previous_tasks_path %}- **Prior tasks planned** (avoid repeating): {{ previous_tasks_path }}
@@ -326,6 +342,15 @@ profiling data instead.
 {% endif %}
 {% if output_dialect_guidance %}
 {{ output_dialect_guidance }}
+{% endif %}
+{% if gluon_planning_contract %}
+{{ gluon_planning_contract }}
+{% endif %}
+{% if gluon_task_generation_guidance %}
+{{ gluon_task_generation_guidance }}
+{% endif %}
+{% if gluon_failure_guardrails %}
+{{ gluon_failure_guardrails }}
 {% endif %}
 {% if workload_guidance %}
 ## Workload / Backend Guidance
@@ -360,9 +385,8 @@ Read the profiling file first to understand the sub-kernel landscape. Then
 read the codebase context file for the kernel dependency tree -- every
 dependency listed is in-repo code that could be an optimization target.
 Read the discovery file for additional kernel metadata, and consult the
-knowledge base plus any benchmark-safe Gluon knowledge file for
-applicable strategies. Finally, submit your task list as JSON via the
-`submit` tool.
+knowledge sources for applicable strategies and feature-specific guidance. Finally, submit your task list
+as JSON via the `submit` tool.
 """)
 
 

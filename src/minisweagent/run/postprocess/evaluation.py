@@ -82,7 +82,17 @@ def setup_eval_worktree(repo_root: str, patch_file: str, output_dir: Path) -> Pa
         subprocess.run(["git", "init"], cwd=str(eval_dir), capture_output=True, text=True, check=True, env=git_env)
         subprocess.run(["git", "add", "."], cwd=str(eval_dir), capture_output=True, text=True, check=True, env=git_env)
         subprocess.run(
-            ["git", "commit", "-m", "initial"],
+            [
+                "git",
+                "-c",
+                "user.name=geak-eval",
+                "-c",
+                "user.email=geak-eval@local",
+                "commit",
+                "-m",
+                "initial",
+                "--allow-empty",
+            ],
             cwd=str(eval_dir),
             capture_output=True,
             text=True,

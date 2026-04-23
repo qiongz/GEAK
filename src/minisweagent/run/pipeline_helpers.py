@@ -21,7 +21,12 @@ from pathlib import Path
 from typing import Any
 
 from minisweagent import get_repo_root
-from minisweagent.run.preprocess.discovery_types import build_gluon_feature_prompt_block
+from minisweagent.run.preprocess.discovery_types import (
+    AMD_GLUON_DIALECT,
+    NV_GLUON_DIALECT,
+    build_gluon_feature_prompt_block,
+    feature_uses_gluon_guidance,
+)
 from minisweagent.run.utils.gpu_arch import (
     detect_gpu_arch,
     is_wmma_capable,
@@ -776,6 +781,90 @@ def _gpu_arch_context(profiling_path: str) -> list[str]:
     ]
 
 
+# ── gluon guidance injection ──────────────────────────────────────────
+
+
+def _build_gluon_reference_block(
+    *,
+    knowledge_base_path: str | None = None,
+    gluon_guide_path: str | None = None,
+    gluon_kb_path: str | None = None,
+    gluon_examples_path: str | None = None,
+) -> list[str]:
+    refs: list[tuple[str, str]] = []
+    if gluon_guide_path:
+        refs.append(("GEAK Gluon guide", gluon_guide_path))
+    if gluon_kb_path:
+        refs.append(("Structured Gluon knowledge base", gluon_kb_path))
+    if gluon_examples_path:
+        refs.append(("Gluon examples and harness notes", gluon_examples_path))
+    if knowledge_base_path and all(path != knowledge_base_path for _, path in refs):
+        refs.append(("Knowledge base path", knowledge_base_path))
+
+    if not refs:
+        return []
+
+    lines = ["## Canonical Gluon References"]
+    for label, path in refs:
+        lines.append(f"- {label}: {path}")
+    lines.append(
+        "- Read the short working-set rules below first. Use these paths with `view` only when you need deeper detail."
+    )
+    lines.append(
+        "- These reference files are read-only guidance. They may live outside REPO ROOT; you may `view` them, but do not modify them."
+    )
+    lines.append("")
+    return lines
+
+
+def _build_gluon_working_set(feature_metadata: dict[str, Any] | None) -> list[str]:
+    feature_metadata = feature_metadata or {}
+    input_dialect = str(feature_metadata.get("input_dialect") or "").strip().lower()
+
+    lines = [
+        "## Gluon Working Set",
+        "- Preserve launcher shape, indexing, masks, correctness behavior, and benchmark intent before changing algorithms.",
+        "- Recover the implicit layout before changing APIs. In Gluon, `gl.arange(..., layout=...)` is not optional.",
+        "- If layout depends on launch config, construct it on the host and pass it as a `constexpr`.",
+        "- Prefer `gl.load` / `gl.store` first; move to AMD `buffer_load` / `buffer_store` when the target family or existing kernel structure actually requires it.",
+        "- `tl.dot` is not a direct rename target. The real path is result layout -> operand layouts -> `convert_layout` -> target-specific matrix op.",
+    ]
+
+    if input_dialect == NV_GLUON_DIALECT:
+        lines.extend(
+            [
+                "- Treat `nv_gluon` as translation, not rename. Re-evaluate wave32-centric layouts, descriptor paths, async-copy paths, and tensor-memory features before carrying them to AMD.",
+                "- Preserve semantic parity first, then optimize inside AMD-facing Gluon.",
+            ]
+        )
+    elif input_dialect == AMD_GLUON_DIALECT:
+        lines.extend(
+            [
+                "- Preserve the existing AMD-facing structure first. Stay inside `amd_gluon` space unless benchmark evidence clearly justifies a fallback comparison.",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "- For `plain_triton -> amd_gluon`, first obtain a minimal compileable and correctness-passing amd_gluon baseline before trying persistent scheduling, split-K, or atomics.",
+            ]
+        )
+
+    lines.extend(
+        [
+            "- High-frequency failure modes:",
+            "  - `zeros` / `full` need an explicit `layout` in Gluon paths.",
+            "  - `expand_dims` / `[:, None]` expects a `SliceLayout` input, not an arbitrary `BlockedLayout`.",
+            "  - `dot_fma` requires a `BlockedLayout` accumulator plus matching `DotOperandLayout` operands.",
+            "  - `threads_per_warp` in layouts must agree with the module warp size contract (wave64 on current AMD runs).",
+            "  - Be very cautious when converting between layouts that do not share the same parent distributed layout.",
+            "- When you see `DistributedLinearLayout`, `PartitionedSharedLayout`, host `TensorDescriptor`, `reshape` / `permute` / `trans` tile unshuffle, nested 3D/5D `SliceLayout`, or JIT/AOT packaging gates, stop generic rewriting and read the operator-local source.",
+            "",
+        ]
+    )
+    return lines
+
+
 # ── pipeline context injection ───────────────────────────────────────
 
 
@@ -792,6 +881,10 @@ def inject_pipeline_context(
     codebase_context: str | None = None,
     benchmark_baseline: str | None = None,
     feature_metadata: dict[str, Any] | None = None,
+    knowledge_base_path: str | None = None,
+    gluon_guide_path: str | None = None,
+    gluon_kb_path: str | None = None,
+    gluon_examples_path: str | None = None,
 ) -> tuple[str, dict]:
     """Prepend pipeline context to *task_body* and augment *config*.
 
@@ -825,6 +918,21 @@ def inject_pipeline_context(
             )
         )
         ctx.append("")
+        if feature_uses_gluon_guidance(
+            "triton",
+            input_dialect=feature_metadata.get("input_dialect"),
+            gluon_feature_mode=feature_metadata.get("gluon_feature_mode"),
+            allowed_output_dialects=feature_metadata.get("allowed_output_dialects"),
+        ):
+            ctx.extend(
+                _build_gluon_reference_block(
+                    knowledge_base_path=knowledge_base_path,
+                    gluon_guide_path=gluon_guide_path,
+                    gluon_kb_path=gluon_kb_path,
+                    gluon_examples_path=gluon_examples_path,
+                )
+            )
+            ctx.extend(_build_gluon_working_set(feature_metadata))
 
     ctx.append(
         "IMPORTANT: Only edit files within your REPO ROOT directory. "

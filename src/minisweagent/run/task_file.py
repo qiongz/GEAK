@@ -35,6 +35,10 @@ _PATH_KEYS = (
     "baseline_metrics",
     "profiling",
     "codebase_context",
+    "knowledge_base_path",
+    "gluon_guide_path",
+    "gluon_kb_path",
+    "gluon_examples_path",
     "starting_patch",
 )
 
