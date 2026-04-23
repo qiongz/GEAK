@@ -2,11 +2,6 @@
 
 This is the single GEAK document for the Triton-family Gluon feature.
 
-It is based on:
-
-- the actual Gluon implementation under `/apps/qiongzhu/triton`
-- the real Gluon kernels and host integration patterns under `/apps/qiongzhu/aiter`
-
 The goal is not just to explain the API surface. The goal is to help GEAK
 correctly read, translate, generate, and optimize:
 
@@ -14,7 +9,8 @@ correctly read, translate, generate, and optimize:
 - `nv_gluon`
 - `amd_gluon`
 
-while staying grounded in what Triton and aiter actually implement today.
+while staying grounded in what current Triton-family and AMD-facing Gluon
+implementations actually support today.
 
 ## 1. Product contract
 

@@ -310,9 +310,10 @@ class DefaultAgent:
         self.extra_template_vars["tool_names"] = set(self.toolruntime._tool_table.keys())
         self.messages = []
         self._traj_last_saved_idx = -1
+        system_template = self.config.system_template
         if self.config.use_skills:
-            self.config.system_template += self.skillruntime.build_system_prompt()
-        self.add_message("system", self.render_template(self.config.system_template))
+            system_template += self.skillruntime.build_system_prompt()
+        self.add_message("system", self.render_template(system_template))
         self.add_message("user", self.render_template(self.config.instance_template))
 
         while True:

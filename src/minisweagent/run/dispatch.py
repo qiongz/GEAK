@@ -201,8 +201,6 @@ def _task_allowed_skill_tiers(meta: dict[str, Any]) -> list[str]:
         gluon_feature_mode=feature_meta["gluon_feature_mode"],
         gluon_baseline_profile=feature_meta["gluon_baseline_profile"],
     )
-
-
 def task_file_to_agent_task(task_file: Path):
     """Read a task markdown file and convert it to an AgentTask.
 
@@ -299,6 +297,10 @@ def task_file_to_agent_task(task_file: Path):
         codebase_context=codebase_ctx_text,
         benchmark_baseline=benchmark_baseline_text,
         feature_metadata=feature_meta,
+        knowledge_base_path=meta.get("knowledge_base_path"),
+        gluon_guide_path=meta.get("gluon_guide_path"),
+        gluon_kb_path=meta.get("gluon_kb_path"),
+        gluon_examples_path=meta.get("gluon_examples_path"),
     )
 
     try:

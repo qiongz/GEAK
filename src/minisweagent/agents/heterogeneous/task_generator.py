@@ -42,6 +42,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from minisweagent import get_repo_root
 from minisweagent.agents.agent_spec import AgentTask
 from minisweagent.agents.heterogeneous.prompts import (
     TASKGEN_INSTANCE_TEMPLATE as _INSTANCE_TEMPLATE,
@@ -69,11 +70,16 @@ from minisweagent.run.preprocess.discovery_types import (
     allowed_skill_tiers_for_feature,
     build_gluon_feature_metadata,
     build_gluon_feature_prompt_block,
+    feature_uses_gluon_guidance,
 )
 
 logger = logging.getLogger(__name__)
+_GEAK_REPO_ROOT = get_repo_root()
 
 _KNOWLEDGE_BASE_REL = "knowledge_base/optimization_strategies.py"
+_GLUON_GUIDE_REL = "docs/triton_gluon.md"
+_GLUON_KB_REL = "knowledge-base/amd-knowledge-base/layer-3-libraries/compilers/triton-gluon-on-rocm.md"
+_GLUON_EXAMPLES_REL = "examples/triton_gluon_inputs/README.md"
 _TRITON_FAMILY_MARKERS = (
     "@triton",
     "tl.",
@@ -462,6 +468,8 @@ def write_task_files(
     )
     task_knowledge_paths = _resolve_task_knowledge_paths(
         Path(repo_root) if repo_root else (Path(kernel_path).parent if kernel_path else output_dir),
+        kernel_type=kernel_type,
+        feature_meta=feature_meta,
     )
 
     for t in tasks:
@@ -494,6 +502,7 @@ def write_task_files(
             "round": round_num,
             "use_skills": _should_enable_skills(kernel_type),
             "allowed_skill_tiers": list(allowed_skill_tiers),
+            **task_knowledge_paths,
         }
         body = f"# {t.label}\n\n{t.task}\n"
         write_task_file(task_path, metadata, body)
@@ -531,12 +540,167 @@ def _find_knowledge_base(workspace: Path) -> Path | None:
 
 def _resolve_task_knowledge_paths(
     workspace: Path,
+    *,
+    kernel_type: str = "",
+    feature_meta: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """Return the generic knowledge paths for a task run."""
     knowledge_base_path = _find_knowledge_base(workspace)
+    feature_meta = feature_meta or {}
+
+    uses_gluon_guidance = feature_uses_gluon_guidance(
+        kernel_type,
+        input_dialect=feature_meta.get("input_dialect"),
+        gluon_feature_mode=feature_meta.get("gluon_feature_mode"),
+        allowed_output_dialects=feature_meta.get("allowed_output_dialects"),
+    )
+
+    gluon_guide_path = (_GEAK_REPO_ROOT / _GLUON_GUIDE_REL).resolve() if uses_gluon_guidance else None
+    gluon_kb_path = (_GEAK_REPO_ROOT / _GLUON_KB_REL).resolve() if uses_gluon_guidance else None
+    gluon_examples_path = (_GEAK_REPO_ROOT / _GLUON_EXAMPLES_REL).resolve() if uses_gluon_guidance else None
+    if gluon_guide_path and not gluon_guide_path.exists():
+        gluon_guide_path = None
+    if gluon_kb_path and not gluon_kb_path.exists():
+        gluon_kb_path = None
+    if gluon_examples_path and not gluon_examples_path.exists():
+        gluon_examples_path = None
+
+    primary_knowledge_path = knowledge_base_path
+    if primary_knowledge_path is None and uses_gluon_guidance:
+        primary_knowledge_path = gluon_kb_path or gluon_guide_path
+
     return {
-        "knowledge_base_path": str(knowledge_base_path) if knowledge_base_path else "",
+        "knowledge_base_path": str(primary_knowledge_path) if primary_knowledge_path else "",
+        "gluon_guide_path": str(gluon_guide_path) if gluon_guide_path else "",
+        "gluon_kb_path": str(gluon_kb_path) if gluon_kb_path else "",
+        "gluon_examples_path": str(gluon_examples_path) if gluon_examples_path else "",
     }
+
+
+def _build_gluon_task_generation_guidance(feature_meta: dict[str, Any]) -> str:
+    """Return planner guidance for staging Gluon work by difficulty.
+
+    This block must stay generic across Triton-family inputs and kernel families.
+    It should shape task generation without hardcoding any sample-specific logic.
+    """
+    if not feature_uses_gluon_guidance(
+        "triton",
+        input_dialect=feature_meta.get("input_dialect"),
+        gluon_feature_mode=feature_meta.get("gluon_feature_mode"),
+        allowed_output_dialects=feature_meta.get("allowed_output_dialects"),
+    ):
+        return ""
+
+    input_dialect = str(feature_meta.get("input_dialect") or "").strip().lower()
+    search_policy = str(feature_meta.get("output_dialect_search_policy") or "").strip().lower()
+
+    lines = [
+        "## Gluon Task Staging Policy",
+        "- Follow the standard GEAK progression for Gluon tasks:",
+        "  1. minimal compileable AMD Gluon rewrite",
+        "  2. semantics-preserving structural step",
+        "  3. safer parallelization or decomposition",
+        "  4. more aggressive multi-stage decomposition only after a passing AMD Gluon baseline exists",
+        "  5. persistent scheduling, atomics, or work-stealing last",
+        "- Favor early tasks that keep the original algorithm recognizable, make layout decisions explicit, and preserve correctness with the smallest possible semantic delta.",
+        "- Treat the first passing AMD Gluon candidate as a platform for later aggressive optimizations, not as a final answer.",
+    ]
+
+    if input_dialect == "plain_triton":
+        lines.extend(
+            [
+                "- For `plain_triton -> amd_gluon`, at least one early priority-0 task must target a minimal compileable amd_gluon rewrite with recognizable launcher, layout, and correctness semantics.",
+                "- Do not spend the whole first batch on only the hardest persistent or work-stealing designs.",
+            ]
+        )
+    elif input_dialect == "nv_gluon":
+        lines.extend(
+            [
+                "- For `nv_gluon` inputs, early tasks should translate NVIDIA-facing semantics into AMD-facing Gluon first.",
+                "- Defer aggressive algorithmic changes until at least one translation-style task preserves semantics on AMD.",
+            ]
+        )
+    elif input_dialect == "amd_gluon":
+        lines.extend(
+            [
+                "- For `amd_gluon` inputs, preserve the existing AMD Gluon structure first.",
+                "- More aggressive in-dialect rewrites are allowed earlier because the baseline is already in the target dialect.",
+            ]
+        )
+
+    if search_policy == REQUIRE_AMD_GLUON_POLICY:
+        lines.append("- AMD Gluon is required for this run, but the first goal is still a passing baseline candidate before the most ambitious rewrites.")
+    elif search_policy == PREFER_AMD_GLUON_IF_VIABLE_POLICY:
+        lines.append("- Prefer AMD Gluon first, but keep one safer path alive before filling the batch with only ambitious Gluon strategies.")
+
+    return "\n".join(lines)
+
+
+def _build_gluon_planning_contract(feature_meta: dict[str, Any]) -> str:
+    """Return planner-safe Gluon constraints.
+
+    This block is intentionally about task decomposition and viability, not
+    worker-level implementation detail.
+    """
+    if not feature_uses_gluon_guidance(
+        "triton",
+        input_dialect=feature_meta.get("input_dialect"),
+        gluon_feature_mode=feature_meta.get("gluon_feature_mode"),
+        allowed_output_dialects=feature_meta.get("allowed_output_dialects"),
+    ):
+        return ""
+
+    lines = [
+        "## Gluon Planning Contract",
+        "- Your job is to generate valid optimization tasks, not to fully implement the kernel yourself.",
+        "- Use Gluon knowledge as a planning constraint: decide what classes of tasks are viable, what order to try them in, and what failure modes to avoid.",
+        "- Do not turn the task list into an implementation tutorial or a prose design document.",
+        "- Do not let Gluon-specific guidance change the required output format: your `submit` payload must still be a JSON array of task objects and nothing else.",
+        "- Preserve source semantics first when planning Gluon work:",
+        "  - launcher shape",
+        "  - indexing",
+        "  - masks and boundary behavior",
+        "  - correctness oracle",
+        "  - benchmark intent",
+        "- Treat Gluon as a Triton-family extension, not as a new top-level kernel type.",
+        "- Prefer tasks that establish a correctness-passing AMD Gluon baseline before tasks that combine multiple difficult changes at once.",
+    ]
+    return "\n".join(lines)
+
+
+def _build_gluon_failure_guardrails(feature_meta: dict[str, Any]) -> str:
+    """Return high-level Gluon failure modes for planner use.
+
+    This block should help the planner avoid assigning high-probability dead-end
+    tasks without turning into a full execution guide.
+    """
+    if not feature_uses_gluon_guidance(
+        "triton",
+        input_dialect=feature_meta.get("input_dialect"),
+        gluon_feature_mode=feature_meta.get("gluon_feature_mode"),
+        allowed_output_dialects=feature_meta.get("allowed_output_dialects"),
+    ):
+        return ""
+
+    lines = [
+        "## Gluon Failure Guardrails",
+        "- Plan around these high-frequency Gluon constraints:",
+        "  - `zeros` and `full` often require explicit layout in AMD Gluon paths.",
+        "  - `expand_dims` and `[:, None]` require compatible sliced layout context.",
+        "  - `dot_fma` requires explicit accumulator and operand layout compatibility.",
+        "  - layout warp geometry must agree with the runtime warp-size contract.",
+        "  - cross-layout conversion is high-risk when parent distributed layouts do not match.",
+        "- When the kernel structure includes any of the following, prefer source-first reading and safer tasks:",
+        "  - `DistributedLinearLayout`",
+        "  - `PartitionedSharedLayout`",
+        "  - host `TensorDescriptor`",
+        "  - `reshape`, `permute`, or `trans` used to unshuffle tiles",
+        "  - nested 3D or 5D layout trees",
+        "  - JIT/AOT gating or prebuilt-kernel loading",
+        "  - scheduler, barrier, or priority hints that may affect correctness",
+        "- Avoid task prompts that assume NVIDIA-facing Gluon APIs translate by name, or that compile-only success is enough.",
+    ]
+    return "\n".join(lines)
 
 
 def _should_enable_skills(kernel_type: str) -> bool:
@@ -554,7 +718,9 @@ def _build_output_dialect_guidance(feature_meta: dict[str, Any]) -> str:
         lines = [
             "## Output Dialect Planning Policy",
             f"- Preferred output dialect order: {preferred_text}",
+            "- Treat output dialect selection as a planning constraint, not as a post-hoc preference.",
             "- Prefer an AMD Gluon candidate first for this Triton-family input whenever the structure and target backend make that path viable.",
+            "- Do not spend the whole first batch on fallback-only tuning when AMD Gluon remains viable.",
         ]
         if input_dialect == "nv_gluon":
             lines.append("- This input starts as NVIDIA-facing Gluon. Generate at least one early task that translates vendor-specific APIs, layout assumptions, or memory paths into AMD-facing Gluon before tuning.")
@@ -569,7 +735,9 @@ def _build_output_dialect_guidance(feature_meta: dict[str, Any]) -> str:
             [
                 "## Output Dialect Planning Policy",
                 f"- Preferred output dialect order: {preferred_text}",
+                "- Treat output dialect selection as a planning constraint, not as a post-hoc preference.",
                 "- AMD Gluon output is required for this run. Do not plan plain Triton-only fallback tasks as the main path.",
+                "- At least one earliest-priority task must target a compileable AMD Gluon path.",
             ]
         )
     return ""
@@ -654,7 +822,11 @@ def _run_task_agent(
     tmp_files: list[Path] = []
     try:
         env = LocalEnvironment(cwd=str(workspace))
-        knowledge_paths = _resolve_task_knowledge_paths(workspace)
+        knowledge_paths = _resolve_task_knowledge_paths(
+            workspace,
+            kernel_type=kernel_type,
+            feature_meta=feature_meta,
+        )
 
         prev_results_path: Path | None = None
         if previous_results_dir and Path(previous_results_dir).is_dir():
@@ -704,6 +876,7 @@ def _run_task_agent(
                 heading="## Gluon Feature Context",
             ),
             "output_dialect_guidance": _build_output_dialect_guidance(feature_meta),
+            "gluon_planning_contract": _build_gluon_planning_contract(feature_meta),
             "codebase_context_path": str(codebase_context_path) if codebase_context_path else "",
             "discovery_path": str(discovery_path) if discovery_path else "",
             "profiling_path": str(profiling_path) if profiling_path else "",
@@ -718,6 +891,8 @@ def _run_task_agent(
             "num_gpus": num_gpus,
             "memory_context": "",
             "workload_guidance": "",
+            "gluon_task_generation_guidance": _build_gluon_task_generation_guidance(feature_meta),
+            "gluon_failure_guardrails": _build_gluon_failure_guardrails(feature_meta),
         }
 
         _bm_dict: dict[str, Any] = {}
@@ -773,13 +948,17 @@ def _run_task_agent(
             _rag_section = ""
         system_prompt = _SYSTEM_PROMPT.replace("__RAG_TOOLS_SECTION__", _rag_section)
         system_prompt = system_prompt + _build_agent_restriction_addendum()
-        use_skills = _should_enable_skills(kernel_type)
+        use_skills = _should_enable_skills(kernel_type) and not feature_uses_gluon_guidance(
+            kernel_type,
+            input_dialect=feature_meta["input_dialect"],
+            gluon_feature_mode=feature_meta["gluon_feature_mode"],
+            allowed_output_dialects=feature_meta["allowed_output_dialects"],
+        )
         allowed_skill_tiers = allowed_skill_tiers_for_feature(
             kernel_type,
             gluon_feature_mode=feature_meta["gluon_feature_mode"],
             gluon_baseline_profile=feature_meta["gluon_baseline_profile"],
         )
-
         agent = DefaultAgent(
             model,
             env,

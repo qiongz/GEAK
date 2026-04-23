@@ -297,6 +297,39 @@ def derive_output_dialect_search_policy(
     return COMPARE_ALLOWED_OUTPUTS_WITHOUT_BIAS_POLICY
 
 
+def feature_uses_gluon_guidance(
+    kernel_type: str,
+    *,
+    input_dialect: Any = None,
+    gluon_feature_mode: Any = None,
+    allowed_output_dialects: Any = None,
+) -> bool:
+    """Return whether a task should receive Gluon-specific guidance.
+
+    This is a framework-level, metadata-driven decision and must stay generic:
+    it should not depend on any particular example kernel or task label.
+    """
+    if str(kernel_type).strip().lower() != "triton":
+        return False
+
+    normalized_input_dialect = _normalize_input_dialect(input_dialect) or PLAIN_TRITON_DIALECT
+    normalized_feature_mode = _normalize_gluon_feature_mode(
+        gluon_feature_mode,
+        input_dialect=normalized_input_dialect,
+    )
+    normalized_outputs = (
+        _normalize_allowed_output_dialects(allowed_output_dialects)
+        if allowed_output_dialects
+        else derive_allowed_output_dialects(normalized_input_dialect, normalized_feature_mode)
+    )
+
+    return (
+        normalized_feature_mode != GLUON_FEATURE_MODE_OFF
+        or normalized_input_dialect in {NV_GLUON_DIALECT, AMD_GLUON_DIALECT}
+        or AMD_GLUON_DIALECT in normalized_outputs
+    )
+
+
 def build_gluon_feature_metadata(
     kernel_path: Path,
     kernel_type: str = "unknown",
