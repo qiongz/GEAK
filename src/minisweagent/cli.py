@@ -657,8 +657,8 @@ def main(
     result_or_report = run_pipeline(ctx, mode=mode)  # type: ignore[arg-type]
     logger.info("Run completed in %.0fs.", time.monotonic() - _run_t0)
 
-    # Distinguish by return shape instead of the legacy ``heterogeneous``
-    # flag: FinalReport comes from the planned path.
+    # Distinguish by return shape instead of carrying a mode flag here:
+    # FinalReport comes from the planned path.
     from minisweagent.run.pipeline_types import FinalReport
 
     if isinstance(result_or_report, FinalReport) or (

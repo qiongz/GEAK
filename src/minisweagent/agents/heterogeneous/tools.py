@@ -1,7 +1,7 @@
 """Orchestrator tool implementations and dispatch router.
 
 Each tool function receives a shared ``ctx`` dict (built by
-``run_heterogeneous_orchestrator``) and returns a JSON string.
+``run_planned_orchestrator``) and returns a JSON string.
 ``dispatch_tool_call`` routes LLM tool calls to the correct function.
 """
 
@@ -117,7 +117,7 @@ def tool_generate_tasks(
     kwargs["rag_enabled"] = ctx.get("rag_enabled", False)
 
     emit_debug_log(
-        "heterogeneous_orchestrator:tool_generate_tasks:before_gen",
+        "planned_orchestrator:tool_generate_tasks:before_gen",
         "Invoking task generator with orchestrator model",
         {
             "round_num": round_num,
@@ -139,7 +139,7 @@ def tool_generate_tasks(
         raise
 
     emit_debug_log(
-        "heterogeneous_orchestrator:tool_generate_tasks:after_gen",
+        "planned_orchestrator:tool_generate_tasks:after_gen",
         "Task generator completed",
         {
             "round_num": round_num,

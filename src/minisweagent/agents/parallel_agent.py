@@ -111,12 +111,11 @@ class ParallelAgent(DefaultAgent):
         # Cross-N rollup: the per-worker artefacts (parallel_0/, parallel_1/, ...
         # each containing patch_*.patch + best_results.json) sit DIRECTLY under
         # ``base_patch_dir``.  The legacy hardcoded ``results/round_1`` subdir
-        # was a planned-mode artifact that doesn't exist in the homogeneous /
-        # fixed-mode layout, which caused ``SelectPatchAgent`` to come up
-        # empty even when individual workers had produced verified speedups.
-        # Prefer ``base_patch_dir`` directly; fall back to legacy
-        # ``results/round_1`` only when that layout actually exists (rare,
-        # planned-mode inheritance).
+        # was a planned-mode artifact that doesn't exist in the fixed-mode
+        # layout, which caused ``SelectPatchAgent`` to come up empty even when
+        # individual workers had produced verified speedups.  Prefer
+        # ``base_patch_dir`` directly; fall back to legacy ``results/round_1``
+        # only when that layout actually exists (rare, planned-mode inheritance).
         legacy_round_dir = base_patch_dir / "results" / "round_1"
         results_dir = legacy_round_dir if legacy_round_dir.is_dir() else base_patch_dir
         best_result = self._select_best_from_parallel_runs(results_dir, num_parallel, metric, model_factory)
@@ -376,14 +375,13 @@ class ParallelAgent(DefaultAgent):
         execution modes — fixed (identical copies), planned
         (planner-generated per-task bodies), translate — flow through
         this task-based entry point.  Identical-copies workloads use
-        ``pool_runner.build_homogeneous_tasks`` to materialise their
-        task list.
+        ``pool_runner.build_fixed_tasks`` to materialise their task list.
         """
         if not tasks:
             raise ValueError(
                 "ParallelAgent.run_parallel requires a non-empty `tasks` list; "
-                "use pool_runner.build_homogeneous_tasks to materialise one "
-                "for identical-copies workloads."
+                "use pool_runner.build_fixed_tasks to materialise one for "
+                "identical-copies (fixed-mode) workloads."
             )
         return run_pool(
             tasks=tasks,

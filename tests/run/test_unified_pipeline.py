@@ -105,13 +105,13 @@ def test_pipeline_fixed_composes_body_and_delegates():
 
     captured: dict = {}
 
-    def _fake_run_homogeneous_agent(**kwargs):
+    def _fake_run_fixed_mode(**kwargs):
         captured.update(kwargs)
         return "FAKE_RESULT"
 
     with patch(
-        "minisweagent.agents.homogeneous.homogeneous_agent.run_homogeneous_agent",
-        _fake_run_homogeneous_agent,
+        "minisweagent.agents.homogeneous.homogeneous_agent.run_fixed_mode",
+        _fake_run_fixed_mode,
     ), patch(
         "minisweagent.memory.integration.assemble_memory_context",
         return_value="",
@@ -150,9 +150,10 @@ def test_pipeline_planned_merges_addenda_into_commandment():
         result = run_pipeline(ctx, mode="planned")
 
     assert result == "PLANNED_RESULT"
-    # run_orchestrator still takes a legacy ``heterogeneous=True`` kwarg
-    # until its internals are renamed; verify unified.py bridges correctly.
-    assert captured["heterogeneous"] is True
+    # run_pipeline bridges the internal mode vocabulary to run_orchestrator:
+    # planned-mode pipelines call run_orchestrator with ``mode="planned"``.
+    assert captured["mode"] == "planned"
+    assert "heterogeneous" not in captured, "legacy kwarg must not be forwarded"
     pctx = captured["preprocess_ctx"]
     assert pctx["rag_enabled"] is True
     assert pctx["user_instructions"] == "Optimize kernel X"
@@ -182,7 +183,8 @@ def test_pipeline_auto_routes_triton_to_planned():
         result = run_pipeline(ctx, mode="auto")
 
     assert result == "PLANNED_RESULT"
-    assert captured["heterogeneous"] is True
+    assert captured["mode"] == "planned"
+    assert "heterogeneous" not in captured, "legacy kwarg must not be forwarded"
 
 
 def test_pipeline_auto_routes_hip_to_fixed():
@@ -195,13 +197,13 @@ def test_pipeline_auto_routes_hip_to_fixed():
 
     captured: dict = {}
 
-    def _fake_run_homogeneous_agent(**kwargs):
+    def _fake_run_fixed_mode(**kwargs):
         captured.update(kwargs)
         return "FIXED_RESULT"
 
     with patch(
-        "minisweagent.agents.homogeneous.homogeneous_agent.run_homogeneous_agent",
-        _fake_run_homogeneous_agent,
+        "minisweagent.agents.homogeneous.homogeneous_agent.run_fixed_mode",
+        _fake_run_fixed_mode,
     ), patch(
         "minisweagent.memory.integration.assemble_memory_context",
         return_value="",

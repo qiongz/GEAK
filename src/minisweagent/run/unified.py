@@ -1,22 +1,28 @@
 """Unified pipeline entry for fixed + planned + auto modes.
 
-Historically fixed (``run_homogeneous_agent``) and planned
-(``run_orchestrator``) took very different paths through the codebase even
-though they ultimately drove the same optimisation loop.  This module
-collapses the surface area exposed to the CLI:
+All three modes run the SAME ``OptimizationAgent`` class on each worker.
+The only thing that differs is the **task body** each worker receives:
 
-    final_report = run_pipeline(ctx, mode)
+  - ``fixed``   — one task body, replicated across ``num_parallel`` copies.
+                  Variance comes from LLM sampling alone.  Good when the
+                  language or problem already has strong priors (e.g. HIP
+                  kernels with a single obvious optimization axis).
+  - ``planned`` — A planner LLM emits N diverse strategy prompts, one
+                  per worker.  Good when the search space is large and
+                  distinct strategies are likely to find different optima
+                  (e.g. Triton kernels with many viable tiling choices).
+  - ``auto``    — Default.  Currently a static language-based router
+                  (Triton→planned, HIP→fixed); the next iteration will
+                  replace this with an adaptive mixed-mode controller
+                  (seed with 2 planned + 2 fixed in round 1, then pick
+                  the per-round ratio based on which variant produced
+                  the best speedup so far).
 
-Mode vocabulary (matches the execution plan end state):
-
-  - ``fixed``   — one task body, replicated across ``num_parallel`` copies
-                  (was "homogeneous" in the legacy vocabulary).
-  - ``planned`` — N planner-generated task bodies (one per strategy)
-                  dispatched in parallel (was "heterogeneous").
-  - ``auto``    — default.  Picks ``fixed`` or ``planned`` per kernel
-                  based on language heuristics (Triton→planned,
-                  HIP→fixed); future iterations will let the controller
-                  select per-round.
+The legacy "homogeneous" / "heterogeneous" terminology is an artifact of
+pre-refactor code that had separate agent CLASSES for each dispatch
+style.  With the unified ``OptimizationAgent`` those names no longer
+describe anything real — the worker class is the same; only the task
+body differs.  All public APIs and logs now use ``fixed`` / ``planned``.
 
 NOTE on translation: source→target language translation is NOT a
 ``run_pipeline`` mode.  It is a **conditional preprocess phase**
@@ -31,11 +37,9 @@ pipeline continues.
 
 ``run_pipeline`` is responsible for resolving the tool set, composing the
 task body (via ``run/compose.py``), and dispatching to the shared pool
-runner.  For the moment the body still delegates to the existing
-``run_orchestrator`` / ``run_homogeneous_agent`` helpers so behavior is byte
-compatible; those helpers will be collapsed into ``run/pool_runner.py`` in
-a later commit, after which this file becomes the only call site for
-ParallelAgent entry points.
+runner.  ``_run_fixed`` drives the round loop for fixed mode directly,
+while ``_run_planned`` delegates to ``run_orchestrator`` (whose
+``run_planned_orchestrator`` internals own the round loop already).
 """
 
 from __future__ import annotations
@@ -142,9 +146,11 @@ def run_pipeline(ctx: PipelineContext, mode: Mode):
 
     This is the canonical entry point.  It resolves ``auto`` to a concrete
     mode, resolves tools once, composes the task body once (for ``fixed``),
-    and dispatches.  For the moment it still delegates to the legacy
-    helpers (``run_orchestrator`` for ``planned``, ``run_homogeneous_agent``
-    for ``fixed``) but through the unified shape.
+    and dispatches.  Fixed mode is driven by ``_run_fixed`` (round loop
+    inline here); planned mode delegates to ``run_orchestrator``, which
+    in turn calls ``run_planned_orchestrator`` whose internals own the
+    planner loop.  Both paths ultimately instantiate the same
+    ``OptimizationAgent`` on each worker.
     """
     logger.info(
         "run_pipeline: mode=%s kernel_language=%s output_dir=%s max_rounds=%s rag_enabled=%s",
@@ -159,10 +165,9 @@ def run_pipeline(ctx: PipelineContext, mode: Mode):
         mode = _resolve_auto_mode(ctx)
 
     # Tool resolution happens once regardless of mode.  Planned mode still
-    # builds its own ToolRuntime inside
-    # ``agents/heterogeneous/orchestrator.py`` — we do not override it
-    # here yet to avoid behavior drift; the single-site guarantee becomes
-    # enforced once ``run/pool_runner.py`` lands.
+    # builds its own ToolRuntime inside ``run_planned_orchestrator`` — we
+    # do not override it here yet to avoid behavior drift; the single-
+    # site guarantee becomes enforced once ``run/pool_runner.py`` lands.
     _ = _resolve_tools(ctx, mode)
 
     if mode == "planned":
@@ -221,9 +226,6 @@ def _run_planned(ctx: PipelineContext):
                 except Exception as exc:
                     logger.warning("Failed to persist enriched commandment: %s", exc)
 
-    # run_orchestrator still takes the legacy ``heterogeneous=True`` kwarg
-    # until its internals are renamed in the orchestration PR.  The public
-    # API surface here uses the new mode vocabulary.
     return run_orchestrator(
         preprocess_ctx=pctx,
         gpu_ids=ctx.gpu_ids,
@@ -231,7 +233,7 @@ def _run_planned(ctx: PipelineContext):
         model_factory=ctx.model_factory,
         output_dir=ctx.output_dir,
         max_rounds=ctx.max_rounds,
-        heterogeneous=True,
+        mode="planned",
     )
 
 
@@ -241,7 +243,7 @@ def _run_fixed(ctx: PipelineContext):
     The round loop is the single most important structural difference
     between the legacy fixed-mode path and the diagram's end state:
 
-      - Legacy (pre-refactor): ``run_homogeneous_agent`` runs ONCE with
+      - Legacy (pre-refactor): the fixed runner ran ONCE with
         ``num_parallel`` copies.  Fixed mode was effectively "1 round ×
         N parallel agents".
       - Diagram (this implementation): iterate ``max_rounds`` times;
@@ -253,7 +255,7 @@ def _run_fixed(ctx: PipelineContext):
     (or diverge from) earlier wins.  Planned mode is unchanged — its
     planner already does explicit multi-round iteration.
     """
-    from minisweagent.agents.homogeneous.homogeneous_agent import run_homogeneous_agent
+    from minisweagent.agents.homogeneous.homogeneous_agent import run_fixed_mode
 
     max_rounds = max(1, int(ctx.max_rounds or 1))
     best_result = None
@@ -295,10 +297,10 @@ def _run_fixed(ctx: PipelineContext):
             )
         )
 
-        round_best = _invoke_homogeneous_runner(
+        round_best = _invoke_fixed_runner(
             ctx=ctx,
             body=body,
-            run_homogeneous_agent=run_homogeneous_agent,
+            run_fixed_mode=run_fixed_mode,
             round_num=round_num,
         )
         last_round_result = round_best
@@ -321,23 +323,23 @@ def _run_fixed(ctx: PipelineContext):
     # Prefer the best-by-speedup result across rounds.  When no round
     # produced a measurable speedup, fall back to the last round's raw
     # result so callers see the same shape as legacy single-round
-    # invocations (which always returned whatever ``run_homogeneous_agent``
+    # invocations (which always returned whatever ``run_fixed_mode``
     # gave them, with or without a ``best_speedup`` attribute).
     return best_result if best_result is not None else last_round_result
 
 
-def _invoke_homogeneous_runner(
+def _invoke_fixed_runner(
     *,
     ctx: PipelineContext,
     body: str,
-    run_homogeneous_agent: Callable[..., Any],
+    run_fixed_mode: Callable[..., Any],
     round_num: int,
 ) -> Any:
-    """Call ``run_homogeneous_agent`` with kwargs built from ``ctx``.
+    """Call ``run_fixed_mode`` with kwargs built from ``ctx``.
 
     Isolated so the round loop body stays readable and tests can mock
     just the invocation without tangling with kwarg plumbing.  Takes
-    ``round_num`` so the homogeneous runner writes per-round artefacts
+    ``round_num`` so the fixed-mode runner writes per-round artefacts
     into ``<output_dir>/round_N/`` subdirs (matching planned mode's
     convention).
     """
@@ -373,7 +375,7 @@ def _invoke_homogeneous_runner(
     if ctx.num_parallel is not None:
         kwargs["num_parallel"] = ctx.num_parallel
     if ctx.gpu_ids:
-        # run_homogeneous_agent takes a string and re-parses internally;
+        # run_fixed_mode takes a string and re-parses internally;
         # re-serialize the canonical list[int] form.
         kwargs["gpu_ids"] = ",".join(str(g) for g in ctx.gpu_ids)
     if round_output_dir is not None:
@@ -383,7 +385,7 @@ def _invoke_homogeneous_runner(
     if ctx.console is not None:
         kwargs["console"] = ctx.console
 
-    return run_homogeneous_agent(**kwargs)
+    return run_fixed_mode(**kwargs)
 
 
 __all__ = ["PipelineContext", "run_pipeline"]

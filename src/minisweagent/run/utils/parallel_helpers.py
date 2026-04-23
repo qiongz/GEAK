@@ -314,7 +314,7 @@ def run_pool(
     the next queued task starts immediately -- like ProcessPoolExecutor.
 
     This is the single scheduler for every execution mode; callers build
-    an ``AgentTask`` list (via ``pool_runner.build_homogeneous_tasks`` for
+    an ``AgentTask`` list (via ``pool_runner.build_fixed_tasks`` for
     fixed-mode identical copies or via the planner for planned-mode
     per-task bodies) and hand it here.
 

@@ -17,7 +17,7 @@ from rich.console import Console
 from minisweagent.agents.parallel_agent import BestPatchResult, ParallelAgent
 from minisweagent.agents.optimization_agent import OptimizationAgent
 from minisweagent.models import get_model
-from minisweagent.run.pool_runner import build_homogeneous_tasks
+from minisweagent.run.pool_runner import build_fixed_tasks
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ def parse_gpu_ids(gpu_ids_str: str | None) -> list[int]:
     return result if result else [0]
 
 
-def run_homogeneous_agent(
+def run_fixed_mode(
     config: dict,
     task_content: str,
     model,
@@ -59,11 +59,14 @@ def run_homogeneous_agent(
     model_name: str | None = None,
     console: Console | None = None,
 ) -> BestPatchResult | None:
-    """
-    Run homogeneous parallel agents.
+    """Run ``fixed`` mode: N identical copies of the same task body in parallel.
 
-    This function is called from ``cli.py`` via ``run_pipeline`` in fixed
-    mode.  Configuration is already loaded and merged upstream.
+    Every copy runs the same task prompt through its own ``OptimizationAgent``
+    instance on its own GPU slot.  Variance across copies comes from LLM
+    sampling alone (temperature > 0 or different tool-trajectory seeds).
+
+    Called from ``run/unified.py::_run_fixed`` inside the unified round
+    loop; not typically invoked directly.
 
     Args:
         config: Merged configuration dict
@@ -150,21 +153,20 @@ def run_homogeneous_agent(
     logger.info("  repo=%s, output_dir=%s", final_repo, final_output_dir)
     logger.info("[dim]Sub-agents are working — expect no output for several minutes.[/dim]")
 
-    # Build an identical-copies AgentTask list so every homogeneous run
-    # flows through the shared run_pool scheduler instead of ParallelAgent's
-    # inline identical-copies branch.  This unifies the homo and hetero
-    # execution paths at the pool boundary.
+    # Build an identical-copies AgentTask list so fixed mode flows through
+    # the shared ``run_pool`` scheduler.  Same pool, same worktrees, same
+    # logs as the planned-mode path — only the task body differs.
     task_body_with_wt = task_content + "\n\n" + "The current worktree is: " + str(final_repo)
-    homo_tasks = build_homogeneous_tasks(
+    fixed_tasks = build_fixed_tasks(
         num_parallel=final_num_parallel,
         agent_class=base_agent_class,
         task_body=task_body_with_wt,
         base_label="parallel",
     )
     # ParallelAgentConfig carries ``tasks`` alongside ``agent_class`` — when
-    # ``tasks`` is set, ParallelAgent.run_parallel skips the inline homo
+    # ``tasks`` is set, ParallelAgent.run_parallel skips its inline fixed
     # branch and calls run_pool directly.
-    agent_config["tasks"] = homo_tasks
+    agent_config["tasks"] = fixed_tasks
 
     agent = ParallelAgent(model, env, **agent_config)
 
@@ -224,3 +226,18 @@ def run_homogeneous_agent(
         raise
 
     return best_result
+
+
+# ------------------------------------------------------------------
+# Back-compat alias — deprecated naming.
+#
+# The "homogeneous" terminology is a legacy artifact of pre-refactor
+# code that used separate agent CLASSES for homogeneous vs
+# heterogeneous dispatch.  With the unified ``OptimizationAgent``,
+# the only difference is the task BODY (identical copies vs planner-
+# generated strategies), so "fixed" / "planned" is the accurate
+# naming.  This alias keeps old imports working for one release; new
+# code must use ``run_fixed_mode``.
+# ------------------------------------------------------------------
+
+run_homogeneous_agent = run_fixed_mode

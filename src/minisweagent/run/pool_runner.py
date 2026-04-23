@@ -12,10 +12,13 @@ module is the thin front door that pipeline code calls into.
 
 Two producers build task lists today:
 
-  - ``build_homogeneous_tasks(N, agent_class, body, ...)`` — N identical
+  - ``build_fixed_tasks(N, agent_class, body, ...)`` — N identical
     tasks sharing the same body, used by the ``fixed`` mode dispatcher.
-  - The planner (``agents/heterogeneous/task_generator``) builds its own
-    AgentTask list from LLM-generated per-task prompts in ``planned`` mode.
+  - The planner (``planned`` mode's task generator) builds its own
+    AgentTask list from LLM-generated per-task prompts.
+
+Both producers yield ``list[AgentTask]`` which ``run_pool`` treats
+identically; the only difference is the task body.
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ from minisweagent.run.unified import PipelineContext
 logger = logging.getLogger(__name__)
 
 
-def build_homogeneous_tasks(
+def build_fixed_tasks(
     num_parallel: int,
     agent_class: type,
     task_body: str,
@@ -71,12 +74,16 @@ def build_homogeneous_tasks(
             )
         )
     logger.debug(
-        "build_homogeneous_tasks: produced %d tasks (label prefix=%s, agent=%s)",
+        "build_fixed_tasks: produced %d tasks (label prefix=%s, agent=%s)",
         num_parallel,
         base_label,
         agent_class.__name__,
     )
     return tasks
+
+
+# Back-compat alias; remove in next release.
+build_homogeneous_tasks = build_fixed_tasks
 
 
 def execute(
@@ -158,6 +165,7 @@ def execute(
 
 
 __all__ = [
+    "build_fixed_tasks",
     "build_homogeneous_tasks",
     "execute",
 ]

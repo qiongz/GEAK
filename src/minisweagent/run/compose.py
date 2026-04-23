@@ -4,12 +4,12 @@ Before this module existed the task body was assembled in two very different
 places depending on mode:
 
   - **fixed**   — inside ``cli.py`` by concatenating the user prompt
-    with ``assemble_memory_context`` output (formerly "homogeneous" — one
-    prompt replicated across N parallel agents).
-  - **planned** — inside ``agents/heterogeneous/orchestrator.py`` and
-    ``agents/heterogeneous/task_generator.py`` by calling out to the planner
-    LLM, which produced per-task bodies that already included the commandment
-    and user constraints (formerly "heterogeneous" — N planned strategies).
+    with ``assemble_memory_context`` output.  One prompt replicated
+    across N parallel agents.  (Legacy name: "homogeneous".)
+  - **planned** — inside the planned-mode orchestrator and task generator,
+    by calling out to the planner LLM, which produced per-task bodies
+    that already included the commandment and user constraints.  N
+    planned strategies, one per worker.  (Legacy name: "heterogeneous".)
 
 Both modes eventually fed identical downstream stages (``ParallelAgent`` ->
 ``OptimizationAgent``), so the divergence was purely presentational.  This

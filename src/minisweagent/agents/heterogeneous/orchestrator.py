@@ -73,7 +73,7 @@ def run_llm_steps(
                 name in content_text for name in ("dispatch_tasks", "collect_results", "finalize")
             ):
                 emit_debug_log(
-                    "heterogeneous_orchestrator:run_llm_steps:no_tool_call",
+                    "planned_orchestrator:run_llm_steps:no_tool_call",
                     "Orchestrator produced text mentioning missing orchestration tools",
                     {
                         "phase": phase,
@@ -177,7 +177,7 @@ def _log_final_summary(report) -> None:
 # ── Main entry point ─────────────────────────────────────────────────
 
 
-def run_heterogeneous_orchestrator(
+def run_planned_orchestrator(
     preprocess_ctx: dict[str, Any],
     gpu_ids: list[int],
     model,
@@ -186,7 +186,7 @@ def run_heterogeneous_orchestrator(
     max_rounds: int,
     start_round: int,
 ) -> dict[str, Any]:
-    """Run the heterogeneous orchestrator with LLM-driven tool calling.
+    """Run ``planned`` mode: a planner LLM emits N diverse strategies, each dispatched to its own ``OptimizationAgent``.
 
     This is the main heterogeneous entry point, called by
     ``run/orchestrator.py:run_orchestrator`` when ``heterogeneous=True``.
@@ -491,3 +491,16 @@ def run_heterogeneous_orchestrator(
     report = finalize_run(ctx, output_dir)
     _log_final_summary(report)
     return report
+
+
+# ------------------------------------------------------------------
+# Back-compat alias — deprecated naming.
+#
+# "Heterogeneous" terminology predates the unified ``OptimizationAgent``
+# refactor — every worker now runs the same agent class; only the
+# task BODY differs (planner strategies vs identical copies).  New
+# code should import ``run_planned_orchestrator`` directly.  Alias
+# kept for one release so legacy callers don't break.
+# ------------------------------------------------------------------
+
+run_heterogeneous_orchestrator = run_planned_orchestrator

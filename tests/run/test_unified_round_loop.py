@@ -21,7 +21,7 @@ import pytest
 
 from minisweagent.run.unified import (
     PipelineContext,
-    _invoke_homogeneous_runner,
+    _invoke_fixed_runner,
     _run_fixed,
 )
 
@@ -71,7 +71,7 @@ class TestRoundCount:
         runner = MagicMock(return_value=_fake_round_result())
 
         with patch(
-            "minisweagent.agents.homogeneous.homogeneous_agent.run_homogeneous_agent",
+            "minisweagent.agents.homogeneous.homogeneous_agent.run_fixed_mode",
             runner,
         ):
             result = _run_fixed(ctx)
@@ -88,7 +88,7 @@ class TestRoundCount:
         ])
 
         with patch(
-            "minisweagent.agents.homogeneous.homogeneous_agent.run_homogeneous_agent",
+            "minisweagent.agents.homogeneous.homogeneous_agent.run_fixed_mode",
             runner,
         ):
             result = _run_fixed(ctx)
@@ -103,7 +103,7 @@ class TestRoundCount:
         runner = MagicMock(return_value=_fake_round_result())
 
         with patch(
-            "minisweagent.agents.homogeneous.homogeneous_agent.run_homogeneous_agent",
+            "minisweagent.agents.homogeneous.homogeneous_agent.run_fixed_mode",
             runner,
         ):
             _run_fixed(ctx)
@@ -127,7 +127,7 @@ class TestBestSelection:
         runner = MagicMock(side_effect=results)
 
         with patch(
-            "minisweagent.agents.homogeneous.homogeneous_agent.run_homogeneous_agent",
+            "minisweagent.agents.homogeneous.homogeneous_agent.run_fixed_mode",
             runner,
         ):
             result = _run_fixed(ctx)
@@ -140,7 +140,7 @@ class TestBestSelection:
         runner = MagicMock(side_effect=[None, None])
 
         with patch(
-            "minisweagent.agents.homogeneous.homogeneous_agent.run_homogeneous_agent",
+            "minisweagent.agents.homogeneous.homogeneous_agent.run_fixed_mode",
             runner,
         ):
             result = _run_fixed(ctx)
@@ -152,7 +152,7 @@ class TestBestSelection:
         runner = MagicMock(side_effect=[None, winner, None])
 
         with patch(
-            "minisweagent.agents.homogeneous.homogeneous_agent.run_homogeneous_agent",
+            "minisweagent.agents.homogeneous.homogeneous_agent.run_fixed_mode",
             runner,
         ):
             result = _run_fixed(ctx)
@@ -175,7 +175,7 @@ class TestPerRoundArtefactDirs:
             return _fake_round_result()
 
         with patch(
-            "minisweagent.agents.homogeneous.homogeneous_agent.run_homogeneous_agent",
+            "minisweagent.agents.homogeneous.homogeneous_agent.run_fixed_mode",
             _runner,
         ):
             _run_fixed(ctx)
@@ -193,7 +193,7 @@ class TestPerRoundArtefactDirs:
             return _fake_round_result()
 
         with patch(
-            "minisweagent.agents.homogeneous.homogeneous_agent.run_homogeneous_agent",
+            "minisweagent.agents.homogeneous.homogeneous_agent.run_fixed_mode",
             _runner,
         ):
             _run_fixed(ctx)
@@ -220,7 +220,7 @@ class TestPreviousBestInTaskBody:
             return _fake_round_result(1.5)
 
         with patch(
-            "minisweagent.agents.homogeneous.homogeneous_agent.run_homogeneous_agent",
+            "minisweagent.agents.homogeneous.homogeneous_agent.run_fixed_mode",
             _runner,
         ):
             _run_fixed(ctx)
@@ -237,7 +237,7 @@ class TestPreviousBestInTaskBody:
             return _fake_round_result(1.5)
 
         with patch(
-            "minisweagent.agents.homogeneous.homogeneous_agent.run_homogeneous_agent",
+            "minisweagent.agents.homogeneous.homogeneous_agent.run_fixed_mode",
             _runner,
         ):
             _run_fixed(ctx)
@@ -258,7 +258,7 @@ class TestPreviousBestInTaskBody:
             return None  # round 1 produces no best
 
         with patch(
-            "minisweagent.agents.homogeneous.homogeneous_agent.run_homogeneous_agent",
+            "minisweagent.agents.homogeneous.homogeneous_agent.run_fixed_mode",
             _runner,
         ):
             _run_fixed(ctx)
@@ -284,7 +284,7 @@ class TestKwargsPlumbing:
             return _fake_round_result()
 
         with patch(
-            "minisweagent.agents.homogeneous.homogeneous_agent.run_homogeneous_agent",
+            "minisweagent.agents.homogeneous.homogeneous_agent.run_fixed_mode",
             _runner,
         ):
             _run_fixed(ctx)
@@ -302,10 +302,10 @@ class TestKwargsPlumbing:
         ctx.num_parallel = 4
         captured_kwargs: list[dict] = []
 
-        _invoke_homogeneous_runner(
+        _invoke_fixed_runner(
             ctx=ctx,
             body="hello",
-            run_homogeneous_agent=lambda **kwargs: captured_kwargs.append(kwargs) or None,
+            run_fixed_mode=lambda **kwargs: captured_kwargs.append(kwargs) or None,
             round_num=1,
         )
         assert captured_kwargs[0]["num_parallel"] == 4

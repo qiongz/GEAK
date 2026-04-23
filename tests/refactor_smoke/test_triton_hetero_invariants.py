@@ -35,9 +35,9 @@ EXPECTED_MARKERS_TRITON = [
     r"Step 5/7:\s*Kernel [Pp]rofiling",
     r"Step 6/7:\s*Baseline [Mm]etrics",
     r"Step 7/7:\s*Commandment",
-    r"Using heterogeneous mode based on discovery",
+    r"Using (heterogeneous|planned) mode based on discovery",
     r"run_orchestrator:",                      # line continues on next log line
-    r"heterogeneous=True",                     # assert separately (the two may be on diff log lines)
+    r"mode=planned",                           # log line: run_orchestrator: ... mode=planned
     r"Cross-session memory",
     r"Exploration Phase",
 ]
