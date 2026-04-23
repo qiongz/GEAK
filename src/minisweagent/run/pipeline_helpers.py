@@ -183,10 +183,17 @@ def extract_harness_path(test_command: str) -> str:
 
 
 def _preferred_harness_path(log_dir: Path, kernel_path: Path | None) -> Path:
+    """Resolve the on-disk path for a MATERIALIZED harness.
+
+    Uses the ``_geak_`` ownership-prefixed naming convention so the
+    output cannot collide with user files (a user may legitimately
+    have a hand-written ``test_<stem>_harness.py`` in the same
+    directory).
+    """
     if kernel_path is not None:
         stem = kernel_path.stem or "kernel"
-        return log_dir / f"test_{stem}_harness.py"
-    return log_dir / "geak_test_harness.py"
+        return log_dir / f"_geak_materialized_harness_{stem}.py"
+    return log_dir / "_geak_materialized_harness.py"
 
 
 def _materialized_harness_bootstrap(

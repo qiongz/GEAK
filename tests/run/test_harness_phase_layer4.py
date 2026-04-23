@@ -176,7 +176,9 @@ class TestLayer5HarnessBuilder:
 
         HarnessPhase().run(ctx)
 
-        expected = tmp_path / "harness.py"
+        # Auto-generated harness uses the ``_geak_`` ownership prefix
+        # so it can never collide with a user file named ``harness.py``.
+        expected = tmp_path / "_geak_auto_harness.py"
         assert ctx.harness_path == str(expected)
         assert ctx.test_command is not None
         assert "--correctness" in ctx.test_command
@@ -229,7 +231,7 @@ class TestLayer5HarnessBuilder:
         ctx.model_factory = lambda: factory_model
 
         HarnessPhase().run(ctx)
-        assert ctx.harness_path == str(tmp_path / "harness.py")
+        assert ctx.harness_path == str(tmp_path / "_geak_auto_harness.py")
 
 
 # ──────────────────────────────────────────────────────────────────────

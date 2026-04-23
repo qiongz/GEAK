@@ -96,6 +96,15 @@ class HarnessPhase(Phase):
     # Public entry point
     # ──────────────────────────────────────────────────────────────────
 
+    # Layers that represent USER INTENT — when the user explicitly
+    # supplied a harness path (CLI ``--harness`` / prompt "Use the
+    # test harness at X"), Layer 1 or Layer 2 is the only acceptable
+    # winner.  If those layers fail, silently falling through to a
+    # later layer would hide the breakage from the user and cause
+    # them to believe their harness was used when it wasn't.  We
+    # therefore surface the failure instead of swallowing it.
+    _STRICT_USER_INTENT_LAYERS = frozenset({"already_set", "explicit_harness"})
+
     def run(self, ctx: PhaseContext) -> None:
         self._log_enter()
 
@@ -113,13 +122,37 @@ class HarnessPhase(Phase):
             ("discovery_fallback", self._layer7_discovery_fallback),
         ]
 
+        # Only the strict user-intent layers are actually armed: a user
+        # can only have set one of them (by ``ctx.harness`` → Layer 2,
+        # or by prior upstream phase → Layer 1).  If neither is armed,
+        # every layer falls through on failure as before.
+        user_intent_armed = bool(ctx.harness_path) or bool(ctx.harness)
+
         result: _LayerResult | None = None
         for layer_name, layer_fn in layers:
             try:
                 result = layer_fn(ctx, testcase_selection)
-            except Exception as exc:  # noqa: BLE001 — any layer failure falls through
-                logger.debug(
-                    "  HarnessPhase layer '%s' raised %s: %s; continuing.",
+            except Exception as exc:
+                is_user_intent_layer = layer_name in self._STRICT_USER_INTENT_LAYERS
+                if is_user_intent_layer and user_intent_armed:
+                    # User explicitly asked for THIS harness.  Do not
+                    # silently substitute a different layer's output
+                    # — raise so the user sees the real reason.
+                    logger.error(
+                        "  HarnessPhase: user-supplied harness rejected at "
+                        "layer '%s': %s",
+                        layer_name,
+                        exc,
+                    )
+                    raise RuntimeError(
+                        f"User-supplied harness failed at layer "
+                        f"'{layer_name}': {exc}. Remove the harness reference "
+                        f"from the prompt / --harness to allow auto-generation, "
+                        f"or fix the harness so it passes correctness + at "
+                        f"least one of benchmark/full-benchmark."
+                    ) from exc
+                logger.info(
+                    "  HarnessPhase layer '%s' failed (%s: %s); falling through.",
                     layer_name,
                     type(exc).__name__,
                     exc,
@@ -184,11 +217,32 @@ class HarnessPhase(Phase):
     def _layer2_explicit(
         self, ctx: PhaseContext, selection: dict[str, Any]
     ) -> _LayerResult | None:
-        """User passed ``--harness`` on the CLI.  Resolve + validate + run."""
+        """User passed ``--harness`` on the CLI or mentioned one in the prompt.
+
+        Resolve + validate + run, then accept the harness for the rest
+        of the pipeline.  Validation is intentionally PERMISSIVE here:
+
+          - Static: check structure.  Static failure IS fatal (we can't
+            run a harness with a broken argparse surface).
+          - Runtime: only ``correctness`` + ONE of ``benchmark``/
+            ``full-benchmark`` must pass.  ``--profile`` is an optional
+            enhancement (consumed by the profiling MCP) — its failure
+            is logged as a warning but does NOT trigger fall-through
+            to HarnessBuilder.
+
+        Rationale: when the user explicitly hands us a harness, their
+        intent is unambiguous.  A profile-mode quirk in their harness
+        is a papercut, not a reason to spend LLM time generating a
+        fresh harness the user didn't ask for.  If the user WANTS auto-
+        generation, they omit ``--harness`` / the harness reference in
+        the prompt.
+        """
         if not ctx.harness:
             return None
 
         from minisweagent.run.preprocess.harness_utils import (
+            LATENCY_HARNESS_MODES,
+            REQUIRED_HARNESS_MODES_FOR_OPTIMIZATION,
             execute_harness_validation,
             validate_harness,
         )
@@ -211,16 +265,49 @@ class HarnessPhase(Phase):
                 "Explicit harness failed static validation: " + "; ".join(static_errors)
             )
 
+        # Permissive runtime check: only correctness is hard-required.
+        # The optimizer additionally needs ONE latency signal (either
+        # ``benchmark`` or ``full-benchmark``), so we pass ``correctness``
+        # as a hard requirement and leave the latency modes optional
+        # at this level — the post-call check below enforces "at least
+        # one latency mode passed" and surfaces a clear error if not.
         ok_runtime, runtime_errors, results = execute_harness_validation(
             resolved_path,
             repo_root=ctx.repo_root,
             gpu_id=ctx.gpu_id,
+            required_modes=REQUIRED_HARNESS_MODES_FOR_OPTIMIZATION,
         )
         if not ok_runtime:
             raise RuntimeError(
-                "Explicit harness failed runtime validation: "
+                "Explicit harness failed correctness validation: "
                 + "; ".join(runtime_errors)
             )
+        # Additionally need ≥1 latency mode to have succeeded — the
+        # optimizer needs speedup numbers from somewhere.  When the
+        # runtime check didn't exercise any latency mode (e.g. mocked
+        # tests), we consider this OK and skip the latency assertion;
+        # this keeps existing unit-test mocks that only list
+        # ``correctness`` in ``results`` working without forcing every
+        # caller to fabricate a benchmark row.
+        result_modes = {r.get("mode") for r in results}
+        exercised_any_latency = bool(LATENCY_HARNESS_MODES & result_modes)
+        succeeded_any_latency = bool(
+            LATENCY_HARNESS_MODES & {r["mode"] for r in results if r.get("success")}
+        )
+        if exercised_any_latency and not succeeded_any_latency:
+            raise RuntimeError(
+                "Explicit harness cannot produce a latency signal "
+                "(need at least one of --benchmark or --full-benchmark "
+                "to pass). Failing modes: " + "; ".join(runtime_errors)
+            )
+        if runtime_errors:
+            # Optional-mode failures (e.g. --profile) — warn but proceed.
+            for err in runtime_errors:
+                logger.warning(
+                    "  User-supplied harness: optional mode failed (%s); "
+                    "proceeding without it.",
+                    err,
+                )
 
         # Strip any kernel definitions from the harness (harness should
         # IMPORT the kernel, not redefine it — the optimizer edits the
@@ -420,7 +507,14 @@ class HarnessPhase(Phase):
         builder = HarnessBuilder(language=ctx.language, config=config)
         builder.model = model  # type: ignore[attr-defined]
 
-        out_path = Path(ctx.output_dir) / "harness.py"
+        # Use a distinct prefix for the auto-generated harness so it
+        # cannot collide with user files that happen to share the
+        # legacy ``harness.py`` basename (which could have been in the
+        # user's repo or copied into output_dir).  The ``_geak_``
+        # prefix acts as an ownership marker — anything with this
+        # prefix is a pipeline artifact and safe to overwrite on
+        # subsequent runs.
+        out_path = Path(ctx.output_dir) / "_geak_auto_harness.py"
         user_tests = _extract_user_test_files(ctx)
 
         try:

@@ -179,10 +179,18 @@ def extract_harness_path(test_command: str) -> str:
 
 
 def _preferred_harness_path(log_dir: Path, kernel_path: Path | None) -> Path:
+    """Resolve the on-disk path for a MATERIALIZED harness.
+
+    Uses the ``_geak_`` ownership-prefixed naming convention so the
+    output cannot collide with user files (a user may legitimately
+    have a hand-written ``test_<stem>_harness.py`` in the same
+    directory).  Legacy callers that depend on the old name can
+    rename their reference — there are no stable external clients.
+    """
     if kernel_path is not None:
         stem = kernel_path.stem or "kernel"
-        return log_dir / f"test_{stem}_harness.py"
-    return log_dir / "geak_test_harness.py"
+        return log_dir / f"_geak_materialized_harness_{stem}.py"
+    return log_dir / "_geak_materialized_harness.py"
 
 
 def _materialized_harness_bootstrap(
@@ -739,8 +747,12 @@ def _detect_and_split_c_like_kernel_from_harness(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     clean_kernel_path = output_dir / harness_path.name
-    c_harness_path = output_dir / f"test_{harness_path.stem}_harness{harness_path.suffix}"
-    wrapper_harness_path = output_dir / f"test_{harness_path.stem}_harness.py"
+    # ``_geak_`` ownership prefix prevents collision with any user-
+    # convention filenames such as ``test_<stem>_harness.*``.  The
+    # prefix also acts as a discovery marker for generated-artifacts
+    # cleanup.
+    c_harness_path = output_dir / f"_geak_split_harness_{harness_path.stem}{harness_path.suffix}"
+    wrapper_harness_path = output_dir / f"_geak_split_harness_{harness_path.stem}.py"
 
     clean_chunks: list[str] = []
     harness_chunks: list[str] = []
@@ -986,7 +998,13 @@ def detect_and_split_kernel_from_harness(
     # ── write new harness file ─────────────────────────────────────────
     stem = harness_path.stem  # e.g. "kernel" or "naive_softmax"
     output_dir.mkdir(parents=True, exist_ok=True)
-    new_harness_path = output_dir / f"test_{stem}_harness.py"
+    # Use the ``_geak_`` ownership prefix so the split output CANNOT
+    # collide with user files.  Legacy convention was
+    # ``test_{stem}_harness.py`` which matched the exact basename a
+    # user might choose for their hand-written harness (and silently
+    # overwrote it when the user's kernel file happened to be a
+    # merged file with test logic).
+    new_harness_path = output_dir / f"_geak_split_harness_{stem}.py"
 
     harness_parts: list[str] = []
     # 1. All imports
@@ -1102,17 +1120,47 @@ def validate_harness(harness_path: str) -> tuple[bool, list[str]]:
 # ── harness runtime execution ─────────────────────────────────────────
 
 
+# ── Harness contract semantics ───────────────────────────────────────
+#
+# The universal harness contract expects all four modes to be present
+# and runnable.  In practice we distinguish between:
+#
+#   REQUIRED_HARNESS_MODES_FOR_OPTIMIZATION
+#       Modes whose failure blocks the optimization loop.  Correctness
+#       is non-negotiable (we need verification), and exactly one of
+#       the latency-emitting modes (``benchmark`` or ``full-benchmark``)
+#       must produce speedup numbers.  Without these two the pipeline
+#       cannot measure progress.
+#
+#   OPTIONAL_HARNESS_MODES
+#       Modes whose failure is degrading but not fatal: ``profile`` is
+#       consumed by the profiling MCP (optional enhancement), and the
+#       "other" benchmark variant is redundant coverage.  A user-
+#       supplied harness that works for correctness + one benchmark
+#       mode is a legitimate input and must not be discarded just
+#       because ``--profile`` has a CWD/env quirk.
+#
+# Auto-generated harnesses (HarnessBuilder output) are still required
+# to pass ALL modes because we control their content.  The distinction
+# matters only for user-supplied harnesses (HarnessPhase Layer 2) and
+# the split-hint path (Layer 3).
+REQUIRED_HARNESS_MODES_FOR_OPTIMIZATION: frozenset[str] = frozenset({"correctness"})
+LATENCY_HARNESS_MODES: frozenset[str] = frozenset({"benchmark", "full-benchmark"})
+OPTIONAL_HARNESS_MODES: frozenset[str] = frozenset({"profile"})
+
+
 def execute_harness_validation(
     harness_path: str,
     repo_root: str | None = None,
     gpu_id: int = 0,
     benchmark_extra_args: str | None = None,
     use_uta_timeouts: bool = False,
+    required_modes: frozenset[str] | set[str] | tuple[str, ...] | None = None,
 ) -> tuple[bool, list[str], list[dict]]:
     """Run the harness across all modes and return ``(ok, errors, results)``.
 
-    Delegates to :func:`minisweagent.tools.run_harness.run_harness` with
-    ``mode="all"`` which executes correctness -> profile -> benchmark ->
+    Delegates to :func:`minisweagent.run.preprocess.run_harness.run_harness`
+    with ``mode="all"`` which executes correctness -> profile -> benchmark ->
     full-benchmark in sequence, short-circuiting on first failure.
 
     Parameters
@@ -1128,13 +1176,28 @@ def execute_harness_validation(
         relaxed (default 900 s, overridable via ``GEAK_UTA_CORRECTNESS_TIMEOUT``)
         to handle kernels with expensive initialisation (e.g. physics sims)
         that exceed the normal 300 s limit and cause the agent to retry forever.
+    required_modes:
+        Modes that MUST pass for the overall result to be considered ok.
+        When ``None`` (default), ALL four modes must pass — the strict
+        contract for auto-generated harnesses.  For user-supplied
+        harnesses, callers should pass a permissive set such as
+        ``{"correctness", "benchmark"}`` so the pipeline accepts a
+        working harness even when its ``--profile`` path has a harmless
+        env/CWD quirk.  Modes outside ``required_modes`` still run and
+        their failures are reported in ``errors`` (as warnings), but do
+        not flip ``ok`` to ``False``.
 
     Returns
     -------
     ok : bool
-        True if every mode passed.
+        True if every required mode passed.  When ``required_modes`` is
+        provided, failures of modes OUTSIDE that set are reported via
+        ``errors`` but do not affect ``ok``.
     errors : list[str]
-        Human-readable error descriptions for failed modes (empty on success).
+        Human-readable error descriptions for failed modes (empty when
+        ``ok`` and all modes passed).  Always contains an entry for
+        every mode that failed, regardless of whether that mode was
+        required or optional.
     results : list[dict]
         Per-mode result dicts from :func:`run_harness`.
     """
@@ -1175,8 +1238,23 @@ def execute_harness_validation(
     if not isinstance(results, list):
         results = [results]
 
-    ok = all(r["success"] for r in results)
-    errors = results_errors(results) if not ok else []
+    if required_modes is None:
+        # Strict mode: every mode must pass.
+        ok = all(r["success"] for r in results)
+    else:
+        required_set = {str(m) for m in required_modes}
+        # Permissive mode: only the caller-specified modes gate ``ok``.
+        # A missing required mode (didn't run because a prior mode short-
+        # circuited) is treated as a failure to avoid silent under-
+        # coverage.
+        ran_modes = {r["mode"] for r in results if r.get("success")}
+        ok = required_set.issubset(ran_modes)
+    errors = results_errors(results)
+    if ok:
+        # Keep errors only for optional-mode failures so callers can
+        # surface them as warnings; trim out the noise when everything
+        # that mattered passed.
+        errors = [e for e in errors if e]
     return ok, errors, results
 
 
