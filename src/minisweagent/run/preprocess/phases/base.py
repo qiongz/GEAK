@@ -132,6 +132,15 @@ class PhaseContext:
     them.  HarnessPhase uses this as a candidate harness when
     ``ctx.harness`` is unset.  §13.2-A row 6."""
 
+    harness_seed: str | None = None
+    """Absolute path to a USER-SUPPLIED harness that failed to satisfy
+    the language's full contract (Layer 2 set it on its way out).
+    HarnessBuilder (Layer 5) consumes this as a starting template for
+    its validate-retry loop — the LLM gets the user's harness in the
+    prompt with a "fix this to pass the universal contract" directive,
+    which converges faster than generating from scratch.  None when
+    the user didn't supply a harness or their harness already passed."""
+
     # ── Status ──────────────────────────────────────────────────────────
     phases_run: list[str] = field(default_factory=list)
     phases_skipped: list[tuple[str, str]] = field(default_factory=list)

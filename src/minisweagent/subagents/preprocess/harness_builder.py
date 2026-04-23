@@ -201,6 +201,18 @@ class HarnessBuilder(SubagentBase):
                                           (only the wallclock terminates).
                                           Tests pin small values for
                                           deterministic termination.
+          - ``seed_harness_source``      (str | None): existing harness
+                                          source to hand the LLM as a
+                                          starting point ("fix the contract
+                                          violations in this" rather than
+                                          "build from scratch").  When the
+                                          user supplies a harness that's
+                                          close-but-not-quite compliant,
+                                          seeding preserves their domain
+                                          knowledge (shape tables,
+                                          reference impls, tolerances)
+                                          and converges faster than a
+                                          cold start.
 
         Returns:
           A dict ``{"harness_path": str, "attempts_used": int, "ok": bool}``
@@ -227,6 +239,32 @@ class HarnessBuilder(SubagentBase):
         user_test_files_raw = inputs.get("user_test_files") or []
         user_test_files = [Path(p) for p in user_test_files_raw]
         discovery_context = str(inputs.get("discovery_context") or "")
+        # Seed can come via raw source string (``seed_harness_source``)
+        # or a path to read from (``seed_harness_path``).  The path
+        # variant is what HarnessPhase uses to forward a user's
+        # non-compliant harness; the source variant is for tests and
+        # direct programmatic calls.
+        seed_harness_source_raw = inputs.get("seed_harness_source")
+        seed_harness_source = (
+            str(seed_harness_source_raw) if seed_harness_source_raw else ""
+        )
+        seed_harness_path_raw = inputs.get("seed_harness_path")
+        if seed_harness_path_raw and not seed_harness_source:
+            _sp = Path(seed_harness_path_raw)
+            if _sp.is_file():
+                try:
+                    seed_harness_source = _sp.read_text(encoding="utf-8")
+                    logger.info(
+                        "HarnessBuilder: seeded with %s (%d bytes)",
+                        _sp,
+                        len(seed_harness_source),
+                    )
+                except OSError as exc:
+                    logger.warning(
+                        "HarnessBuilder: could not read seed path %s: %s",
+                        _sp,
+                        exc,
+                    )
 
         # Resolve wallclock + retry caps.  Precedence (highest first):
         #   1. ``run`` kwargs
@@ -265,6 +303,7 @@ class HarnessBuilder(SubagentBase):
             repo_root=repo_root,
             max_wallclock_seconds=max_wallclock_seconds,
             max_retries=max_retries,
+            seed_harness_source=seed_harness_source,
         )
 
         if not result.ok:
@@ -294,6 +333,7 @@ class HarnessBuilder(SubagentBase):
         repo_root: Path | None,
         max_wallclock_seconds: float,
         max_retries: int | None,
+        seed_harness_source: str = "",
     ) -> HarnessBuildResult:
         """Validate-retry loop bounded by wallclock + optional attempt cap.
 
@@ -307,6 +347,13 @@ class HarnessBuilder(SubagentBase):
         next prompt so the LLM can fix them.  This is the "loop until
         the universal contract is satisfied" behaviour from execution
         plan §0.5(b) Harness phase.
+
+        When ``seed_harness_source`` is non-empty it's threaded into
+        every prompt as the "starting point" — the LLM is asked to
+        FIX the seed to satisfy the contract rather than generate a
+        harness from scratch.  This preserves the user's domain
+        knowledge (shape tables, reference impls, tolerances) and
+        converges faster than a cold start.
         """
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -350,6 +397,7 @@ class HarnessBuilder(SubagentBase):
                 repo_root=repo_root,
                 last_errors=last_errors,
                 attempt=attempt,
+                seed_harness_source=seed_harness_source,
             )
 
             cap_str = (
@@ -417,6 +465,7 @@ class HarnessBuilder(SubagentBase):
         repo_root: Path | None,
         last_errors: list[str],
         attempt: int,
+        seed_harness_source: str = "",
     ) -> tuple[str, str]:
         """Render (system, instance) prompts for one attempt.
 
@@ -430,6 +479,11 @@ class HarnessBuilder(SubagentBase):
           - the kernel source being wrapped
           - any user test files (informational — shape / reference hints)
           - discovery context (optional codebase hint)
+          - when ``seed_harness_source`` is non-empty: the user's
+            existing harness as a starting template with an explicit
+            "fix the contract violations in this" directive.  This
+            converges dramatically faster than generating from scratch
+            when the user's harness is close-to-compliant.
           - on retry: the contract-validation errors from the previous
             attempt as explicit "fix these" directives.
         """
@@ -498,6 +552,22 @@ class HarnessBuilder(SubagentBase):
         if repo_root is not None:
             parts += [
                 f"REPO ROOT: {repo_root}",
+                "",
+            ]
+
+        if seed_harness_source.strip():
+            parts += [
+                "STARTING HARNESS (user-provided — fix contract violations "
+                "in this file, DO NOT rewrite from scratch):",
+                "```",
+                seed_harness_source.rstrip(),
+                "```",
+                "",
+                "Preserve the user's domain knowledge (shape tables, "
+                "reference implementations, tolerances) from the starting "
+                "harness.  Only change what's necessary to satisfy the "
+                "universal contract (all four argparse flags + both "
+                "GEAK_RESULT markers + runtime pass on every mode).",
                 "",
             ]
 

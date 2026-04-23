@@ -275,6 +275,74 @@ class TestStripsCodeFences:
 # ──────────────────────────────────────────────────────────────────────
 
 
+class TestSeedHarness:
+    """When Layer 2 hands off a user's non-compliant harness as a seed,
+    HarnessBuilder must include the seed text in every prompt so the
+    LLM iterates on it instead of regenerating from scratch."""
+
+    def test_seed_source_appears_in_prompt(self, tmp_path: Path) -> None:
+        kernel = tmp_path / "kernel.py"
+        kernel.write_text("pass\n")
+        out = tmp_path / "harness.py"
+
+        seed_src = (
+            "# User's partial harness — missing --profile mode\n"
+            "import argparse\n"
+            "p = argparse.ArgumentParser()\n"
+            "p.add_argument('--correctness', action='store_true')\n"
+        )
+
+        captured_prompts: list[str] = []
+        builder = _make_builder(
+            tmp_path,
+            model_responses=[_valid_harness_source()],
+        )
+
+        def _q(messages):
+            captured_prompts.append(messages[1]["content"])
+            return _valid_harness_source()
+
+        builder.model.query = _q  # type: ignore[attr-defined]
+        result = builder.run(
+            kernel_path=kernel,
+            out_path=out,
+            seed_harness_source=seed_src,
+        )
+        assert result["ok"] is True
+        assert "STARTING HARNESS (user-provided" in captured_prompts[0]
+        # Seed contents are embedded verbatim
+        assert "User's partial harness" in captured_prompts[0]
+        assert "--correctness" in captured_prompts[0]
+
+    def test_seed_path_is_read_and_injected(self, tmp_path: Path) -> None:
+        """Phase layer passes the seed as a Path; builder must read it
+        and thread the contents into the prompt."""
+        kernel = tmp_path / "k.py"
+        kernel.write_text("pass\n")
+        out = tmp_path / "harness.py"
+        seed_file = tmp_path / "user_harness.py"
+        seed_file.write_text("# unique marker: user_wrote_this_harness\n")
+
+        captured_prompts: list[str] = []
+        builder = _make_builder(
+            tmp_path,
+            model_responses=[_valid_harness_source()],
+        )
+
+        def _q(messages):
+            captured_prompts.append(messages[1]["content"])
+            return _valid_harness_source()
+
+        builder.model.query = _q  # type: ignore[attr-defined]
+        result = builder.run(
+            kernel_path=kernel,
+            out_path=out,
+            seed_harness_path=seed_file,
+        )
+        assert result["ok"] is True
+        assert "user_wrote_this_harness" in captured_prompts[0]
+
+
 class TestWallclockBoundedLoop:
     def test_loop_terminates_when_budget_exhausted(self, tmp_path: Path) -> None:
         """When validation never passes, the loop must terminate cleanly

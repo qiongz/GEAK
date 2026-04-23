@@ -234,21 +234,12 @@ class TestRow6SplitHarnessHintPickup:
         # discovery) -> ctx.harness_path stays unset.
         assert not ctx.harness_path
 
-    def test_layer2_accepts_user_harness_when_profile_fails_but_correctness_and_benchmark_pass(
+    def test_layer2_uses_user_harness_when_full_contract_passes(
         self, tmp_path: Path
     ) -> None:
-        """Permissive Layer 2: a user-supplied harness where ``--profile``
-        has a harmless env/CWD quirk but ``--correctness`` and
-        ``--benchmark`` work MUST be accepted, not silently replaced
-        with a HarnessBuilder-generated one.
-
-        This is the production failure mode: user's harness works
-        standalone, but the pipeline's runtime check invokes ``--profile``
-        in a subtly different env and it returns rc=1.  The strict
-        all-modes-must-pass semantic would discard the user's harness
-        and spend LLM time regenerating one, defeating the whole point
-        of supplying a harness in the first place.
-        """
+        """Happy path: a user-supplied harness that passes all four
+        modes of the language contract is adopted as-is, short-
+        circuiting the rest of the chain."""
         harness = tmp_path / "user_harness.py"
         harness.write_text("# dummy\n")
         ctx = PhaseContext(output_dir=tmp_path)
@@ -256,9 +247,9 @@ class TestRow6SplitHarnessHintPickup:
         (tmp_path / "k.py").write_text("pass")
         ctx.harness = str(harness)
 
-        mixed_results = [
+        all_pass = [
             {"mode": "correctness", "success": True, "duration_s": 0.1},
-            {"mode": "profile", "success": False, "duration_s": 0.1},
+            {"mode": "profile", "success": True, "duration_s": 0.1},
             {"mode": "benchmark", "success": True, "duration_s": 0.2},
             {"mode": "full-benchmark", "success": True, "duration_s": 0.3},
         ]
@@ -268,7 +259,7 @@ class TestRow6SplitHarnessHintPickup:
             return_value=(True, []),
         ), patch(
             "minisweagent.run.preprocess.harness_utils.execute_harness_validation",
-            return_value=(True, ["profile: rc=1"], mixed_results),
+            return_value=(True, [], all_pass),
         ), patch(
             "minisweagent.run.preprocess.testcase_cache.get_testcase_cache_entry",
             return_value=None,
@@ -281,25 +272,33 @@ class TestRow6SplitHarnessHintPickup:
         ):
             HarnessPhase().run(ctx)
 
-        # Layer 2 wins despite profile-mode failure — the user's
-        # harness is used as-is.
         assert ctx.harness_path == str(harness.resolve())
+        # Seed field stays None because Layer 2 succeeded.
+        assert ctx.harness_seed is None
 
-    def test_layer2_rejects_user_harness_when_correctness_fails(
+    def test_layer2_hands_off_user_harness_as_seed_when_contract_fails(
         self, tmp_path: Path
     ) -> None:
-        """Even in permissive mode, a user harness that fails
-        correctness is unusable — raise a clear error rather than
-        silently substituting a different layer's output."""
-        harness = tmp_path / "broken_harness.py"
-        harness.write_text("# dummy\n")
+        """Architectural contract: when the user's harness doesn't
+        satisfy the full language contract, Layer 2 MUST NOT raise.
+        Instead it stashes the harness on ``ctx.harness_seed`` and
+        returns None so Layer 5 (HarnessBuilder) can iterate on it
+        as a starting template.
+
+        This preserves the user's domain knowledge (shape tables,
+        reference impls) while converging to a contract-compliant
+        harness via HarnessBuilder's wallclock-bounded retry loop.
+        """
+        harness = tmp_path / "partial_harness.py"
+        harness.write_text("# missing profile\n")
         ctx = PhaseContext(output_dir=tmp_path)
         ctx.kernel_path = str(tmp_path / "k.py")
         (tmp_path / "k.py").write_text("pass")
         ctx.harness = str(harness)
 
-        broken_results = [
-            {"mode": "correctness", "success": False, "duration_s": 0.1},
+        partial_results = [
+            {"mode": "correctness", "success": True, "duration_s": 0.1},
+            {"mode": "profile", "success": False, "duration_s": 0.1},
         ]
 
         with patch(
@@ -307,16 +306,20 @@ class TestRow6SplitHarnessHintPickup:
             return_value=(True, []),
         ), patch(
             "minisweagent.run.preprocess.harness_utils.execute_harness_validation",
-            return_value=(False, ["correctness: mismatch"], broken_results),
+            return_value=(False, ["profile: rc=1"], partial_results),
+        ), patch(
+            "minisweagent.run.preprocess.testcase_cache.get_testcase_cache_entry",
+            return_value=None,
         ), patch(
             "minisweagent.run.preprocess.preprocessor._resolve_deterministic_harness",
             return_value=(str(harness.resolve()), {"source": "local_path"}),
         ):
-            with pytest.raises(
-                RuntimeError,
-                match="User-supplied harness failed at layer 'explicit_harness'",
-            ):
-                HarnessPhase().run(ctx)
+            HarnessPhase().run(ctx)
+
+        # Layer 2 returned None so ctx.harness_path wasn't set by Layer 2,
+        # but the user's harness is preserved as seed for downstream
+        # HarnessBuilder consumption.
+        assert ctx.harness_seed == str(harness.resolve())
 
     def test_harness_phase_does_not_override_explicit_harness(self, tmp_path: Path) -> None:
         """Layer 2 (explicit) wins over Layer 3 (split-hint).  When both
