@@ -382,6 +382,17 @@ def main(
     if test_command is None and parsed_config.get("test_command"):
         test_command = parsed_config["test_command"]
         logger.info("Using test command from task content: %s", test_command)
+
+    # User-supplied harness path from natural-language prompt
+    # ("Use the test harness at <path>" / "with harness <path>" / etc.).
+    # This wires straight to ctx.harness so HarnessPhase Layer 2 fires —
+    # no HarnessBuilder LLM call needed when the user already has a
+    # working harness file.  CLI's ``patch.harness`` config key still
+    # wins if explicitly set elsewhere.
+    parsed_harness = parsed_config.get("test_harness")
+    if parsed_harness and not config.get("patch", {}).get("harness"):
+        config.setdefault("patch", {})["harness"] = parsed_harness
+        logger.info("Using test harness from task content: %s", parsed_harness)
     if gpu_ids is None and parsed_config.get("gpu_ids") is not None:
         _parsed_gpu_ids = parsed_config["gpu_ids"]
         if isinstance(_parsed_gpu_ids, list):
@@ -458,6 +469,8 @@ def main(
         _display_cfg["repo"] = str(repo)
     if test_command is not None:
         _display_cfg["test_command"] = test_command
+    if config.get("patch", {}).get("harness"):
+        _display_cfg["test_harness"] = config["patch"]["harness"]
     if num_parallel is not None:
         _display_cfg["num_parallel"] = num_parallel
     if gpu_ids is not None:

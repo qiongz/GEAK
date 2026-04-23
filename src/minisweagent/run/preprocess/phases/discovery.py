@@ -92,11 +92,27 @@ class DiscoveryPhase(Phase):
         # If the kernel file is a merged file (kernel defs + test logic
         # in one), split the test logic out so agents only patch the
         # clean kernel.
+        #
+        # Skip this when the user has explicitly supplied a harness
+        # (``ctx.harness`` set by CLI/prompt parser): the user's harness
+        # is canonical, and the auto-split would clobber any harness
+        # file in ``output_dir`` that happens to share a stem with the
+        # split target (e.g. user passes ``test_kernel_harness.py`` AND
+        # the kernel's stem is ``kernel`` → split writes to
+        # ``output_dir/test_kernel_harness.py``, overwriting the user's
+        # file).
         from minisweagent.run.preprocess.harness_utils import (
             detect_and_split_kernel_from_harness,
         )
 
-        split_result = detect_and_split_kernel_from_harness(kernel_path, output_dir)
+        if ctx.harness:
+            logger.info(
+                "  Skipping kernel split (user supplied harness: %s)",
+                ctx.harness,
+            )
+            split_result = None
+        else:
+            split_result = detect_and_split_kernel_from_harness(kernel_path, output_dir)
         if split_result is not None:
             new_harness, clean_kernel = split_result
             logger.info(

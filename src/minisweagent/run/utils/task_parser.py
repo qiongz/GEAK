@@ -21,6 +21,7 @@ _EMPTY_TASK_INFO: dict = {
     "kernel_type": "other",
     "repo": None,
     "test_command": None,
+    "test_harness": None,
     "metric": None,
     "num_parallel": None,
     "gpu_ids": None,
@@ -118,6 +119,7 @@ def _normalize_parsed_task_info(parsed: dict) -> dict:
         "kernel_type": kernel_type,
         "repo": parsed.get("repo"),
         "test_command": parsed.get("test_command"),
+        "test_harness": parsed.get("test_harness"),
         "metric": parsed.get("metric"),
         "num_parallel": parsed.get("num_parallel"),
         "gpu_ids": parsed.get("gpu_ids"),
@@ -125,6 +127,12 @@ def _normalize_parsed_task_info(parsed: dict) -> dict:
         "model": parsed.get("model"),
         "config": parsed.get("config"),
     }
+
+    # User-provided harness paths get the same treatment as repo/output_dir:
+    # if it points at an existing file we resolve it; if it's a relative path
+    # we leave it alone (CLI will resolve against repo_root downstream).
+    if result["test_harness"]:
+        result["test_harness"] = _normalize_path(result["test_harness"]) or result["test_harness"]
 
     # Normalize repo path and preserve filesystem case (LLM often returns lowercase)
     if result["repo"]:
@@ -452,6 +460,11 @@ def display_parsed_config(parsed_info: dict, patch_output_dir: str) -> str:
             "test_command",
             parsed_info["test_command"]
             or "Not detected. Automatically search or create the test command via UnitTestAgent",
+        ),
+        (
+            "test_harness",
+            parsed_info.get("test_harness")
+            or "Not detected. HarnessBuilder/UnitTestAgent will materialise one.",
         ),
         (
             "metric",

@@ -15,6 +15,15 @@ Extract the following information (return null if not found):
 3. kernel_type: Kernel type, strictly one of "hip", "triton", or "other"
 4. repo: The repository path mentioned in the task (absolute path or relative path)
 5. test_command: The command to run tests or benchmarks
+5b. test_harness: Path or URL to a USER-PROVIDED test/benchmark HARNESS FILE.
+   Look for phrases like "Use the test harness at <path>", "test harness:
+   <path>", "use harness <path>", "harness file <path>", "with the harness
+   at <path>".  This is a SINGLE FILE the user wants the pipeline to use
+   verbatim — DIFFERENT from test_command (which is a shell command).
+   Set null if the user only described a command but no harness file.
+   When BOTH a test_command and a test_harness are mentioned, populate
+   both — they're complementary (the harness is the file; the command
+   is one way to invoke it).
 6. metric: The performance metric to measure (e.g., "bandwidth in GB/s", "latency in ms", "throughput")
 7. num_parallel: Number of parallel optimization agents to run (integer).
    If the user did not explicitly state a number but specified a GPU list,
@@ -40,6 +49,7 @@ Return ONLY a valid JSON object with these keys. Example:
   "kernel_type": "triton",
   "repo": "/path/to/repo",
   "test_command": "python test.py",
+  "test_harness": "/path/to/test_kernel_harness.py",
   "metric": "Extract throughput in GFLOPS",
   "num_parallel": 4,
   "gpu_ids": "0,1,2,3",
