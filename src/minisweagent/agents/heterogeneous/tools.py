@@ -31,8 +31,6 @@ def tool_generate_tasks(
 
     Returns a JSON string with a ``tasks`` key listing the created task file paths.
     """
-    from minisweagent.agents.heterogeneous.task_generator import generate_tasks as _gen
-
     output_dir = Path(ctx["output_dir"]) / "tasks" / f"round_{round_num}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -122,12 +120,21 @@ def tool_generate_tasks(
         {
             "round_num": round_num,
             "previous_results_dir": str(kwargs.get("previous_results_dir")),
+            "task_generation": ctx.get("task_generation", "planned"),
         },
         hypothesis_id="H0",
     )
 
     try:
-        tasks = _gen(**kwargs)
+        from minisweagent.agents.heterogeneous.pipeline_task_generation import (
+            orchestrator_tasks_for_mode,
+        )
+
+        tasks = orchestrator_tasks_for_mode(
+            task_generation=str(ctx.get("task_generation") or "planned"),
+            ctx=ctx,
+            kwargs_for_planned=kwargs,
+        )
     except Exception as gen_exc:
         if "LimitsExceeded" in type(gen_exc).__name__ or "LimitsExceeded" in str(gen_exc):
             logger.warning(
