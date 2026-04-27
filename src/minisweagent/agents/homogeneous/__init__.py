@@ -1,22 +1,19 @@
-"""Fixed-mode dispatch: N identical task bodies across GPUs.
+"""Fixed-mode helpers and direct ParallelAgent entry (tests / rare use).
 
-This package implements "fixed" mode from the execution plan: the same
-task body is replicated across ``num_parallel`` worker slots.  Variance
-across workers comes from LLM sampling alone (temperature > 0 or
-trajectory seed differences).
+Production ``geak -t`` fixed mode goes through ``cli`` → ``run_pipeline``
+→ ``run_orchestrator(..., mode="fixed")`` — not through this package.
 
-Every worker runs the same ``OptimizationAgent`` class — only the
-number of copies differs from planned mode (where each worker gets a
-distinct planner-generated body).
+``run_fixed_mode`` / ``run_homogeneous_agent`` remain for unit tests and
+for callers that want the thin ParallelAgent path without the LLM
+orchestrator shell.  Shared utilities such as ``parse_gpu_ids`` live in
+``run.utils.gpu_ids``; this module re-exports them for backward-compatible
+imports.
 
-Key entry points:
-- ``run_fixed_mode`` (in ``homogeneous_agent``) -- public dispatch
-  function called from ``run/unified.py::_run_fixed``.
-
-Historical note: this package was named ``homogeneous`` when the
-codebase had distinct agent classes per dispatch style.  With the
-unified ``OptimizationAgent``, the directory name is retained as a
-compatibility shim; new code should reach this logic through
-``run_pipeline(ctx, mode="fixed")`` in ``run/unified.py`` rather than
-importing from here directly.
+Historical note: the ``homogeneous`` directory name predates the unified
+``OptimizationAgent``; prefer ``run_pipeline(..., mode=\"fixed\")`` for
+new code.
 """
+
+from minisweagent.run.utils.gpu_ids import parse_gpu_ids
+
+__all__ = ["parse_gpu_ids"]

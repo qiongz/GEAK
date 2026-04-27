@@ -72,7 +72,7 @@ def orchestrator_tasks_for_mode(
                     num_tasks=n_fixed,
                     kernel_language=kernel_language,
                     priority=5,
-                    label_prefix="legacy-parallel",
+                    label_prefix="fixed-parallel",
                 )
             )
 

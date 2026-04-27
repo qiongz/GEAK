@@ -1,6 +1,6 @@
-"""Heterogeneous orchestrator: LLM-driven multi-round optimization.
+"""Planned-mode orchestrator (package path still ``heterogeneous``): LLM-driven multi-round optimization.
 
-In heterogeneous mode, an LLM agent drives the optimization loop by
+In planned mode, an LLM agent drives the optimization loop by
 calling tools in sequence each round:
 
 1. ``generate_tasks`` -- create diverse optimization task files
@@ -157,7 +157,7 @@ def run_llm_steps(
 
 
 def _log_final_summary(report) -> None:
-    """Log a human-readable conclusion at the end of a heterogeneous run."""
+    """Log a human-readable conclusion at the end of a planned-mode run."""
     if report is None:
         return
     best_speedup = getattr(report, "best_speedup", None) or 0
@@ -165,7 +165,7 @@ def _log_final_summary(report) -> None:
     best_round = getattr(report, "best_round", None) or "unknown"
     summary = getattr(report, "summary", "") or ""
     logger.info(
-        "Heterogeneous run completed. Best patch: %s (round %s, %.4fx speedup)",
+        "Planned-mode run completed. Best patch: %s (round %s, %.4fx speedup)",
         best_patch,
         best_round,
         best_speedup,
@@ -185,11 +185,15 @@ def run_planned_orchestrator(
     output_dir: Path,
     max_rounds: int,
     start_round: int,
+    task_generation: str = "planned",
 ) -> dict[str, Any]:
-    """Run ``planned`` mode: a planner LLM emits N diverse strategies, each dispatched to its own ``OptimizationAgent``.
+    """Run COMMANDMENT + orchestrator loop (shared for planned and fixed).
 
-    This is the main heterogeneous entry point, called by
-    ``run/orchestrator.py:run_orchestrator`` when ``heterogeneous=True``.
+    * ``task_generation="planned"`` — strategy LLM emits diverse per-worker tasks.
+    * ``task_generation="fixed"`` — N identical copies of the user objective
+      (legacy homogeneous HIP / fixed-mode shape).
+
+    Called from ``run/orchestrator.py:run_orchestrator``.
     """
     from minisweagent.agents.heterogeneous.task_generator import _extract_kernel_meta
     from minisweagent.agents.optimization_agent import OptimizationAgent
@@ -220,6 +224,10 @@ def run_planned_orchestrator(
         except Exception as e:
             logger.warning("Failed to wrap RAG tools with RAG postprocessor: %s", e)
 
+    _tg = str(task_generation or "planned").strip().lower()
+    if _tg not in {"planned", "fixed", "mixed"}:
+        raise ValueError(f"task_generation must be 'planned', 'fixed', or 'mixed', got {_tg!r}")
+
     ctx: dict[str, Any] = {
         **preprocess_ctx,
         "kernel_meta": kernel_meta,
@@ -230,6 +238,7 @@ def run_planned_orchestrator(
         "model_factory": model_factory,
         "agent_class": OptimizationAgent,
         "toolruntime": toolruntime,
+        "task_generation": _tg,
     }
 
     tools_schema = build_tools_schema(toolruntime)
@@ -325,9 +334,16 @@ def run_planned_orchestrator(
     )
 
     start_label = f"rounds {start_round}-{max_rounds}" if start_round > 1 else f"{max_rounds} rounds"
+    if _tg == "fixed":
+        _mode_banner = "Fixed-mode orchestrator (identical worker tasks)"
+    elif _tg == "mixed":
+        _mode_banner = "Mixed-mode orchestrator (half legacy + half planned)"
+    else:
+        _mode_banner = "Planned-mode orchestrator"
     logger.info(
-        "\n[bold cyan]%s[/bold cyan]\n  [bold]Heterogeneous Orchestrator[/bold] (%s, %d GPUs)\n[bold cyan]%s[/bold cyan]",
+        "\n[bold cyan]%s[/bold cyan]\n  [bold]%s[/bold] (%s, %d GPUs)\n[bold cyan]%s[/bold cyan]",
         "=" * 60,
+        _mode_banner,
         start_label,
         len(gpu_ids),
         "=" * 60,
@@ -493,14 +509,5 @@ def run_planned_orchestrator(
     return report
 
 
-# ------------------------------------------------------------------
-# Back-compat alias — deprecated naming.
-#
-# "Heterogeneous" terminology predates the unified ``OptimizationAgent``
-# refactor — every worker now runs the same agent class; only the
-# task BODY differs (planner strategies vs identical copies).  New
-# code should import ``run_planned_orchestrator`` directly.  Alias
-# kept for one release so legacy callers don't break.
-# ------------------------------------------------------------------
-
+# Deprecated alias — no in-tree callers; kept for external scripts only.
 run_heterogeneous_orchestrator = run_planned_orchestrator

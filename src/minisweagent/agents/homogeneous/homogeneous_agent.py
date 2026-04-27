@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""
-Homogeneous Agent Runner - Run multiple identical agents in parallel.
+"""Direct ParallelAgent runner for N identical task bodies (tests / rare entry).
 
-This module provides a simplified interface to run ParallelAgent with
-homogeneous configuration (all agents run the same task with identical settings).
+Production fixed mode uses ``run_pipeline`` → ``run_orchestrator``; see
+``run/unified.py``.  Shared GPU parsing: ``run/utils/gpu_ids.py``.
 """
 
 import copy
@@ -18,30 +17,9 @@ from minisweagent.agents.parallel_agent import BestPatchResult, ParallelAgent
 from minisweagent.agents.optimization_agent import OptimizationAgent
 from minisweagent.models import get_model
 from minisweagent.run.pool_runner import build_fixed_tasks
+from minisweagent.run.utils.gpu_ids import parse_gpu_ids
 
 logger = logging.getLogger(__name__)
-
-
-def parse_gpu_ids(gpu_ids_str: str | None) -> list[int]:
-    """Parse a gpu_ids spec into a list of ints.
-
-    Accepts multiple human-friendly forms, all seen in the wild from
-    both the LLM-extracted task config AND explicit ``--gpu-ids`` CLI:
-
-      - ``"4,5,6,7"``      — comma-separated list
-      - ``"4-7"``           — range (inclusive)
-      - ``"0,1,4-7"``       — mixed
-      - ``"4"``             — single GPU
-      - ``None`` / ``""``   — defaults to ``[0]``
-
-    Delegates to ``run/utils/config_editor._parse_gpu_ids_string`` for
-    the parse; that same helper is the source of truth for
-    ``num_parallel = len(gpu_ids)`` auto-derivation in apply_config_changes.
-    """
-    from minisweagent.run.utils.config_editor import _parse_gpu_ids_string
-
-    result = _parse_gpu_ids_string(gpu_ids_str)
-    return result if result else [0]
 
 
 def run_fixed_mode(
@@ -53,64 +31,26 @@ def run_fixed_mode(
     env_kwargs: dict,
     agent_config: dict,
     repo: Path | None = None,
-    num_parallel: int | None = None,
     gpu_ids: str | None = None,
     output_dir: Path | None = None,
     model_name: str | None = None,
     console: Console | None = None,
 ) -> BestPatchResult | None:
-    """Run ``fixed`` mode: N identical copies of the same task body in parallel.
+    """Run ``fixed`` mode: one identical task body per GPU (``len(gpu_ids)`` workers).
 
-    Every copy runs the same task prompt through its own ``OptimizationAgent``
-    instance on its own GPU slot.  Variance across copies comes from LLM
-    sampling alone (temperature > 0 or different tool-trajectory seeds).
+    Dispatch width always matches the GPU list.  Variance across workers
+    comes from LLM sampling alone (temperature > 0 or trajectory seeds).
 
-    Called from ``run/unified.py::_run_fixed`` inside the unified round
-    loop; not typically invoked directly.
-
-    Args:
-        config: Merged configuration dict
-        task_content: Task description
-        model: Model instance
-        env: Environment instance
-        env_class: Environment class for factory
-        env_kwargs: Environment kwargs for factory
-        tools_settings: Tools settings from config
-        agent_config: Base agent configuration
-        repo: Repository path for git worktree management
-        num_parallel: Number of parallel agents
-        gpu_ids: Comma-separated GPU IDs
-        output_dir: Output directory
-        model_name: Model name for factory
-        console: Rich console for output
-
-    Returns:
-        The ParallelAgent instance after execution
+    Prefer ``run_pipeline(..., mode=\"fixed\")``; direct calls are rare.
     """
     if console is None:
         console = Console(highlight=False)
 
-    # Parse configuration values
     parallel_config = config.get("parallel", {})
 
-    # Number of parallel agents
-    final_num_parallel = (
-        num_parallel or parallel_config.get("num_parallel") or config.get("agent", {}).get("num_parallel") or 1
-    )
-    _np_source = (
-        "arg"
-        if num_parallel
-        else "parallel config"
-        if parallel_config.get("num_parallel")
-        else "agent config"
-        if config.get("agent", {}).get("num_parallel")
-        else "default"
-    )
-    logger.debug("num_parallel=%d (source=%s)", final_num_parallel, _np_source)
-
-    # GPU IDs
     final_gpu_ids = parse_gpu_ids(gpu_ids or parallel_config.get("gpu_ids") or config.get("agent", {}).get("gpu_ids"))
-    logger.debug("gpu_ids=%s", final_gpu_ids)
+    parallel_workers = max(1, len(final_gpu_ids))
+    logger.debug("gpu_ids=%s parallel_workers=%d", final_gpu_ids, parallel_workers)
 
     # Repository path
     final_repo = repo
@@ -128,7 +68,6 @@ def run_fixed_mode(
     agent_config["mode"] = "yolo"
     agent_config["confirm_exit"] = False
     agent_config.setdefault("use_strategy_manager", True)
-    agent_config["num_parallel"] = final_num_parallel
     agent_config["gpu_ids"] = final_gpu_ids
     agent_config["repo"] = str(final_repo)
     agent_config["agent_class"] = base_agent_class
@@ -144,9 +83,9 @@ def run_fixed_mode(
     model_config = config.get("model", {})
 
     logger.info(
-        "\n[bold cyan]%s[/bold cyan]\n  [bold]Homogeneous Agent[/bold] (%d agents, GPUs %s)\n[bold cyan]%s[/bold cyan]",
+        "\n[bold cyan]%s[/bold cyan]\n  [bold]Fixed-mode parallel run[/bold] (%d workers, GPUs %s)\n[bold cyan]%s[/bold cyan]",
         "=" * 60,
-        final_num_parallel,
+        parallel_workers,
         final_gpu_ids,
         "=" * 60,
     )
@@ -158,9 +97,9 @@ def run_fixed_mode(
     # logs as the planned-mode path — only the task body differs.
     task_body_with_wt = task_content + "\n\n" + "The current worktree is: " + str(final_repo)
     fixed_tasks = build_fixed_tasks(
-        num_parallel=final_num_parallel,
-        agent_class=base_agent_class,
-        task_body=task_body_with_wt,
+        parallel_workers,
+        base_agent_class,
+        task_body_with_wt,
         base_label="parallel",
     )
     # ParallelAgentConfig carries ``tasks`` alongside ``agent_class`` — when
@@ -227,17 +166,5 @@ def run_fixed_mode(
 
     return best_result
 
-
-# ------------------------------------------------------------------
-# Back-compat alias — deprecated naming.
-#
-# The "homogeneous" terminology is a legacy artifact of pre-refactor
-# code that used separate agent CLASSES for homogeneous vs
-# heterogeneous dispatch.  With the unified ``OptimizationAgent``,
-# the only difference is the task BODY (identical copies vs planner-
-# generated strategies), so "fixed" / "planned" is the accurate
-# naming.  This alias keeps old imports working for one release; new
-# code must use ``run_fixed_mode``.
-# ------------------------------------------------------------------
 
 run_homogeneous_agent = run_fixed_mode

@@ -3,7 +3,7 @@
 """The single GEAK CLI entry point.
 
 Exposes ``geak -t "<prompt>"`` and delegates every execution mode
-(``fixed`` / ``planned`` / ``auto``) through
+(``fixed`` / ``planned`` / ``mixed``) through
 ``run/unified.py::run_pipeline(ctx, mode)``.  Discovery, harness building,
 baseline measurement, and optimization are all reachable from here; the
 underlying modules remain callable programmatically.
@@ -33,7 +33,7 @@ from prompt_toolkit.shortcuts import PromptSession
 from rich.console import Console
 
 from minisweagent import global_config_dir
-from minisweagent.agents.homogeneous.homogeneous_agent import parse_gpu_ids
+from minisweagent.run.utils.gpu_ids import parse_gpu_ids
 from minisweagent.agents.parallel_agent import BestPatchResult
 from minisweagent.config import builtin_config_dir, get_config_path
 from minisweagent.environments import get_environment_class
@@ -64,13 +64,6 @@ def _deep_merge(base: dict, override: dict) -> dict:
         else:
             result[key] = value
     return result
-
-
-def _as_int(value: Any) -> int | None:
-    try:
-        return int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
 
 
 def _normalize_kernel_type(value: Any) -> str:
@@ -168,7 +161,6 @@ def main(
     exit_immediately: bool = typer.Option(False, "--exit-immediately", help="Exit immediately", rich_help_panel="Advanced"),
     repo: Path | None = typer.Option(None, "--repo", help="Target Repository path."),
     kernel_url: str | None = typer.Option(None, "--kernel-url", "--kernel-path", help="Target kernel source (path or URL)."),
-    num_parallel: int | None = typer.Option(None, "--num-parallel", help="Number of parallel patch agents."),
     gpu_ids: str | None = typer.Option(None, "--gpu-ids", help="Comma-separated GPU IDs."),
     test_command: str | None = typer.Option(None, "--test_command", "--test-command", help="Test command"),
     target_language: str | None = typer.Option(
@@ -328,12 +320,7 @@ def main(
         logger.debug("pipeline_params: %s", pipeline_params)
 
         # Apply non-None extracted values (CLI flags still take priority).
-        # The LLM extractor emits ``mode`` directly; for backward
-        # compatibility with older prompts it may also emit
-        # ``heterogeneous: bool`` which we translate.
         extracted_mode = pipeline_params.get("mode")
-        if extracted_mode is None and pipeline_params.get("heterogeneous") is not None:
-            extracted_mode = "planned" if pipeline_params["heterogeneous"] else "fixed"
         if extracted_mode is not None and mode is None:
             mode = str(extracted_mode).strip().lower()
             logger.info("Using mode=%s from task content.", mode)
@@ -435,13 +422,6 @@ def main(
 
     parsed_gpu_ids = parse_gpu_ids(gpu_ids)
 
-    # Auto-detect num_parallel from gpu_ids when not explicitly provided.
-    if num_parallel is None:
-        num_parallel = _as_int(parsed_config.get("num_parallel"))
-    if num_parallel is None and parsed_gpu_ids:
-        num_parallel = len(parsed_gpu_ids)
-        logger.info("Auto-setting num_parallel=%s from gpu_ids.", num_parallel)
-
     kernel_name_for_output = parsed_config.get("kernel_name")
     if not kernel_name_for_output and kernel_url:
         kernel_name_for_output = Path(kernel_url).stem
@@ -471,8 +451,6 @@ def main(
         _display_cfg["test_command"] = test_command
     if config.get("patch", {}).get("harness"):
         _display_cfg["test_harness"] = config["patch"]["harness"]
-    if num_parallel is not None:
-        _display_cfg["num_parallel"] = num_parallel
     if gpu_ids is not None:
         _display_cfg["gpu_ids"] = gpu_ids
     if model_name is not None:
@@ -503,6 +481,7 @@ def main(
         repo=repo,
         output_dir=preprocess_output_dir,
         gpu_id=parsed_gpu_ids[0] if parsed_gpu_ids else 0,
+        model=model,
         model_factory=lambda: get_model(model_name, config.get("model", {})),
         console=console,
         target_language=target_language,
@@ -565,19 +544,17 @@ def main(
             target_language,
         )
 
-    # Mode resolution:
-    #   - If the LLM / CLI did not specify a mode, default to ``auto``.
-    #   - ``auto`` is resolved inside run_pipeline by ``_resolve_auto_mode``
-    #     (Triton → planned, everything else → fixed).  We still set the
-    #     discovery hint here so that resolution has the kernel type to
-    #     dispatch on even when preprocessor discovery is partial.
+    # Mode resolution: if the LLM / CLI did not specify a mode, default to ``mixed``.
     if mode is None:
-        mode = "auto"
-        logger.info("mode not specified; defaulting to auto (resolved inside run_pipeline).")
+        mode = "mixed"
+        logger.info(
+            "mode not specified; defaulting to mixed (half legacy-homogeneous + half planned). "
+            "Explicit planned/fixed/mixed in the task (via parse_pipeline_params) overrides this.",
+        )
 
-    # Backfill discovery.kernel.type for run_pipeline's auto-resolver when
-    # preprocessor left it blank — saves an extra file probe in the hot path.
-    if mode == "auto":
+    # Backfill discovery.kernel.type when preprocessor left it blank — saves
+    # an extra file probe in the hot path (useful for mixed and other modes).
+    if mode == "mixed":
         _discovery = preprocess_ctx.get("discovery") or {}
         _kernel_info = _discovery.get("kernel") or {}
         if (not _kernel_info.get("type") or _kernel_info.get("type") == "unknown") and preprocess_ctx.get("kernel_path"):
@@ -591,13 +568,12 @@ def main(
                 _discovery["kernel"] = _kernel_info
                 preprocess_ctx = dict(preprocess_ctx)
                 preprocess_ctx["discovery"] = _discovery
-                logger.info("auto-mode kernel_type backfilled from kernel path: %s", inferred)
+                logger.info("kernel_type backfilled from kernel path (mixed default path): %s", inferred)
 
-    # Extract user constraints + directives regardless of mode; they are
-    # useful context for both fixed (prepended to task body) and planned
-    # (folded into the commandment so every sub-task sees them) paths.
-    # The commandment-presence check lives inside run_pipeline's
-    # ``_run_planned`` because fixed-mode runs do not need a commandment.
+    # Extract user constraints + directives regardless of mode.  Both
+    # planned and fixed pipelines fold these into COMMANDMENT.md inside
+    # ``run_pipeline`` (`_run_planned` / `_run_fixed`) so every worker sees them.
+    # Preprocessor must still produce a base ``commandment`` for both modes.
     preprocess_ctx["user_instructions"] = task_content
     preprocess_ctx["rag_enabled"] = rag_enabled
 
@@ -658,15 +634,12 @@ def main(
         metric=metric,
         rag_enabled=rag_enabled,
         extra_addenda=extra_addenda,
-        num_parallel=num_parallel,
         model_name=model_name,
         console=console,
     )
 
-    # ``run_pipeline`` resolves ``auto`` -> ``fixed``/``planned`` internally.
-    # Planned mode returns a FinalReport that we convert to BestPatchResult
-    # for the CLI's existing return contract; fixed mode already returns
-    # BestPatchResult.
+    # ``fixed`` / ``planned`` / ``mixed`` all use the orchestrator.  Planned/mixed may return a FinalReport converted
+    # to BestPatchResult; fixed returns BestPatchResult directly when applicable.
     result_or_report = run_pipeline(ctx, mode=mode)  # type: ignore[arg-type]
     logger.info("Run completed in %.0fs.", time.monotonic() - _run_t0)
 
