@@ -222,7 +222,8 @@ def parse_task_info(task_content: str, model) -> dict:
     - model: Model name/identifier to use
     - config: Path to a config YAML file
     - input_dialect: plain_triton / nv_gluon / amd_gluon
-    - gluon_feature_mode: current explicit gluon-on switch (off / auto / force)
+    - gluon_feature_mode: optional Gluon control (off / auto / force);
+      leave unset for the default Triton auto behavior
     - gluon_baseline_profile: raw / mi3xx
     - target_backend: target backend string such as hip/gfx942
 

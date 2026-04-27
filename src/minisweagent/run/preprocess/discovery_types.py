@@ -105,11 +105,21 @@ def _normalize_input_dialect(value: Any) -> str | None:
     return aliases.get(text, text if text in ALL_INPUT_DIALECTS else None)
 
 
-def _normalize_gluon_feature_mode(value: Any, *, input_dialect: str) -> str:
-    """Normalize the Gluon feature gate, defaulting Gluon inputs to auto."""
+def _normalize_gluon_feature_mode(
+    value: Any,
+    *,
+    input_dialect: str,
+    kernel_type: str = "triton",
+) -> str:
+    """Normalize the Gluon feature gate.
+
+    Triton-family kernels default to ``auto`` so AMD Gluon is explored as a
+    candidate output. Non-Triton kernels stay ``off`` because Gluon guidance
+    only applies on the Triton route.
+    """
     default_mode = (
         GLUON_FEATURE_MODE_AUTO
-        if input_dialect in {NV_GLUON_DIALECT, AMD_GLUON_DIALECT}
+        if str(kernel_type).strip().lower() == "triton"
         else GLUON_FEATURE_MODE_OFF
     )
     text = str(value or "").strip().lower()
@@ -249,8 +259,6 @@ def derive_allowed_output_dialects(input_dialect: str, gluon_feature_mode: str) 
         return [AMD_GLUON_DIALECT]
     if gluon_feature_mode != GLUON_FEATURE_MODE_OFF:
         return [PLAIN_TRITON_DIALECT, AMD_GLUON_DIALECT]
-    if input_dialect in {NV_GLUON_DIALECT, AMD_GLUON_DIALECT}:
-        return [PLAIN_TRITON_DIALECT, AMD_GLUON_DIALECT]
     return [PLAIN_TRITON_DIALECT]
 
 
@@ -265,10 +273,7 @@ def derive_preferred_output_dialects(
         return [AMD_GLUON_DIALECT]
     if (
         AMD_GLUON_DIALECT in outputs
-        and (
-            gluon_feature_mode != GLUON_FEATURE_MODE_OFF
-            or input_dialect in {NV_GLUON_DIALECT, AMD_GLUON_DIALECT}
-        )
+        and gluon_feature_mode != GLUON_FEATURE_MODE_OFF
     ):
         return [AMD_GLUON_DIALECT] + [dialect for dialect in outputs if dialect != AMD_GLUON_DIALECT]
     return outputs
@@ -316,7 +321,10 @@ def feature_uses_gluon_guidance(
     normalized_feature_mode = _normalize_gluon_feature_mode(
         gluon_feature_mode,
         input_dialect=normalized_input_dialect,
+        kernel_type=kernel_type,
     )
+    if normalized_feature_mode == GLUON_FEATURE_MODE_OFF:
+        return False
     normalized_outputs = (
         _normalize_allowed_output_dialects(allowed_output_dialects)
         if allowed_output_dialects
@@ -325,7 +333,6 @@ def feature_uses_gluon_guidance(
 
     return (
         normalized_feature_mode != GLUON_FEATURE_MODE_OFF
-        or normalized_input_dialect in {NV_GLUON_DIALECT, AMD_GLUON_DIALECT}
         or AMD_GLUON_DIALECT in normalized_outputs
     )
 
@@ -352,16 +359,22 @@ def build_gluon_feature_metadata(
     normalized_feature_mode = _normalize_gluon_feature_mode(
         gluon_feature_mode,
         input_dialect=normalized_input_dialect,
+        kernel_type=kernel_type,
     )
     normalized_profile = _normalize_gluon_baseline_profile(gluon_baseline_profile)
     if normalized_feature_mode == GLUON_FEATURE_MODE_OFF:
         normalized_profile = GLUON_BASELINE_PROFILE_RAW
     normalized_target_backend = str(target_backend or DEFAULT_TARGET_BACKEND).strip() or DEFAULT_TARGET_BACKEND
-    normalized_outputs = (
-        _normalize_allowed_output_dialects(allowed_output_dialects)
-        if allowed_output_dialects
-        else derive_allowed_output_dialects(normalized_input_dialect, normalized_feature_mode)
-    )
+    if normalized_feature_mode == GLUON_FEATURE_MODE_FORCE:
+        normalized_outputs = [AMD_GLUON_DIALECT]
+    elif normalized_feature_mode == GLUON_FEATURE_MODE_OFF:
+        normalized_outputs = [PLAIN_TRITON_DIALECT]
+    else:
+        normalized_outputs = (
+            _normalize_allowed_output_dialects(allowed_output_dialects)
+            if allowed_output_dialects
+            else derive_allowed_output_dialects(normalized_input_dialect, normalized_feature_mode)
+        )
     normalized_preferred_outputs = (
         _normalize_preferred_output_dialects(
             preferred_output_dialects,
