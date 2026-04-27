@@ -1449,13 +1449,13 @@ def main() -> None:
         "--input-dialect",
         default=None,
         choices=("plain_triton", "nv_gluon", "amd_gluon"),
-        help="Optional Triton-family input dialect override. Keep kernel_type on the Triton route.",
+        help="Optional Triton-family input dialect override. By default GEAK infers it from source.",
     )
     parser.add_argument(
         "--gluon-feature-mode",
         default=None,
         choices=("off", "auto", "force"),
-        help="Optional current explicit Triton-family gluon-on gate override.",
+        help="Optional Gluon control. Triton defaults to auto; use off for no-Gluon ablation or force for AMD-Gluon-only debugging.",
     )
     parser.add_argument(
         "--gluon-baseline-profile",

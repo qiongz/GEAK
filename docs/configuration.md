@@ -21,15 +21,16 @@ Gluon does **not** create a new top-level `kernel_type`. The product model stays
 - `triton`
 - `other`
 
-Within the Triton path, the current explicit feature gate is
-**`gluon_feature_mode`** (the docs refer to `auto` / `force` as **`gluon-on`**).
+Within the Triton path, GEAK now treats AMD Gluon as a default candidate
+strategy. The explicit **`gluon_feature_mode`** field remains for ablation and
+forced-path debugging.
 
 Primary user-facing fields:
 
 | Field | Meaning |
 |------|---------|
-| **`input_dialect`** | One of **`plain_triton`**, **`nv_gluon`**, or **`amd_gluon`** |
-| **`gluon_feature_mode`** | Current explicit Gluon gate: **`off`**, **`auto`**, **`force`** |
+| **`input_dialect`** | Optional override; normally inferred as **`plain_triton`**, **`nv_gluon`**, or **`amd_gluon`** |
+| **`gluon_feature_mode`** | Optional Gluon control: **`auto`** by default for Triton, **`off`** for no-Gluon ablation, **`force`** for AMD-Gluon-only debugging |
 | **`gluon_baseline_profile`** | Baseline profile such as **`raw`** or **`mi3xx`** |
 | **`target_backend`** | Target backend string such as **`hip/gfx942`** |
 
@@ -44,10 +45,11 @@ Derived planner fields:
 Current product policy:
 
 - keep **`kernel_type = triton`**
-- when `gluon-on` is enabled and `amd_gluon` is allowed, prefer an
-  **`amd_gluon`** candidate first
+- by default, allow both **`plain_triton`** and **`amd_gluon`** outputs and
+  prefer an **`amd_gluon`** candidate first when structurally viable
 - for **`nv_gluon`** inputs, let the agent translate vendor-specific APIs or
   assumptions before optimizing on AMD
+- use **`gluon_feature_mode=off`** only for ablation against the no-Gluon path
 
 
 ## What’s in the default config file (**`src/minisweagent/config/geak.yaml`**)
