@@ -95,7 +95,7 @@ Repository = "https://github.com/SWE-agent/mini-SWE-agent"
 # Single user-facing entry point.  All pipeline stages
 # (discover -> harness -> baseline -> profile -> optimize) are reachable via
 # `geak -t "<prompt>"`; the underlying modules remain callable programmatically.
-geak = "minisweagent.cli:app"
+geak = "minisweagent.cli:cli_entry"
 # Invoked by generated harness / commandment shell scripts as a real subprocess.
 kernel-profile = "minisweagent.run.preprocess.kernel_profile:main"
 

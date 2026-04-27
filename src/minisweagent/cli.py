@@ -55,6 +55,30 @@ console = Console(highlight=False)
 app = typer.Typer(rich_markup_mode="rich")
 prompt_session = PromptSession(history=FileHistory(global_config_dir / "mini_task_history.txt"))
 
+_ROOT_TYPER_COMMANDS = frozenset({"translate", "main"})
+
+
+def _typer_insert_main_subcommand(argv: list[str]) -> None:
+    """Make ``geak -t …`` behave like GEAK_main (``mini.py``).
+
+    Typer registers the default optimize flow as the ``main`` subcommand.
+    Without inserting ``main``, users must type ``geak main -t``.  Mirror
+    GEAK_main parity drivers by rewriting ``argv`` so root-level flags dispatch
+    to ``main``.
+    """
+    if len(argv) < 2:
+        return
+    first = argv[1]
+    if first in _ROOT_TYPER_COMMANDS:
+        return
+    argv.insert(1, "main")
+
+
+def cli_entry() -> None:
+    """ setuptools / ``pip install`` console_scripts entry — same as GEAK_main ``geak -t``. """
+    _typer_insert_main_subcommand(sys.argv)
+    app()
+
 
 def _deep_merge(base: dict, override: dict) -> dict:
     result = base.copy()
@@ -748,4 +772,4 @@ def translate(
 
 
 if __name__ == "__main__":
-    app()
+    cli_entry()
