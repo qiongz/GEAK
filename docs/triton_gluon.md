@@ -18,15 +18,19 @@ GEAK treats Gluon as a **feature extension of Triton**, not as a new top-level
 kernel type.
 
 - keep `kernel_type = triton`
-- use `input_dialect` to classify the input:
+- infer `input_dialect` internally to classify the input:
   - `plain_triton`
   - `nv_gluon`
   - `amd_gluon`
-- use `gluon_feature_mode` as the current explicit feature gate:
+- default Triton runs use `gluon_feature_mode = auto`, so AMD Gluon is part of
+  the candidate search space without requiring the user to ask for it
+- use `gluon_feature_mode` only as an explicit control for ablation or forced
+  debugging:
   - `off`
   - `auto`
   - `force`
-- prefer `amd_gluon` output when the feature is on and that output is allowed
+- prefer `amd_gluon` output when it is allowed, while keeping plain Triton as a
+  benchmarked fallback
 
 Valid optimized outputs:
 
@@ -805,6 +809,8 @@ What this example is showing:
 GEAK's current checked-in defaults for this feature are intentionally small:
 
 - default target backend: `hip/gfx942`
+- default Triton feature mode: `auto`
+- default Triton output search space: `plain_triton` and `amd_gluon`
 - current repo-local profile focus: `mi3xx`
 - example surface: `examples/triton_gluon_inputs/`
 - no checked-in golden outputs

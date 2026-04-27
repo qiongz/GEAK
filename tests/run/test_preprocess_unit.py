@@ -253,7 +253,10 @@ class TestKernelMetaContract:
             assert meta.function_names == ["topk_kernel"]
             assert meta.workspace_path == str(tmp_path.resolve())
             assert meta.input_dialect == "plain_triton"
-            assert meta.gluon_feature_mode == "off"
+            assert meta.gluon_feature_mode == "auto"
+            assert meta.allowed_output_dialects == ["plain_triton", "amd_gluon"]
+            assert meta.preferred_output_dialects == ["amd_gluon", "plain_triton"]
+            assert meta.output_dialect_search_policy == "prefer_amd_gluon_if_viable_else_plain_triton"
 
     def test_discovery_result_reinfers_unknown_gluon_kernel_type(self):
         from minisweagent.run.preprocess.discovery_types import DiscoveryResult

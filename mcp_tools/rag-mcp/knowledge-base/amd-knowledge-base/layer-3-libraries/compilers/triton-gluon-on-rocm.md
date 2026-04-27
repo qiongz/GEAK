@@ -46,6 +46,11 @@ On AMD GPUs, this matters most for kernels where performance depends on controll
 
 This is **not** a new top-level kernel type. Think of Gluon as a Triton-family extension for lower-level kernels.
 
+In GEAK, Triton kernels default to an automatic candidate search that can
+include AMD Gluon. The `off` and `force` controls are primarily for ablation or
+forced-path debugging; normal inputs do not need to declare an input dialect or
+explicitly turn Gluon on.
+
 ## When to Use Gluon
 
 Stay with plain Triton first when:

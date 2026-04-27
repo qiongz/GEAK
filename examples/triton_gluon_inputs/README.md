@@ -40,11 +40,12 @@ fixtures.
 
 ## Using with `geak`
 
-Keep `kernel_type=triton`. The current explicit feature gate is
-`gluon_feature_mode` (the docs call `auto` / `force` "gluon-on").
+Keep `kernel_type=triton`. GEAK infers the input dialect from the kernel and,
+for Triton inputs, defaults to exploring AMD Gluon as an optimization candidate.
+The fixture-level `DIALECT` constants are documentation and test signals; users
+do not need to repeat them in the task text.
 
-Example: MI300X-first plain Triton decode input, but ask GEAK to prefer an
-`amd_gluon` candidate:
+Example: MI300X-first plain Triton decode input:
 
 ```bash
 cd /path/to/GEAK
@@ -52,7 +53,7 @@ geak \
   --repo /path/to/GEAK/examples/triton_gluon_inputs \
   --kernel-url /path/to/GEAK/examples/triton_gluon_inputs/04_plain_triton_pa_decode.py \
   --test-command "cd /path/to/GEAK/examples/triton_gluon_inputs && python3 test_inputs.py --kernel-file 04_plain_triton_pa_decode.py --correctness && python3 test_inputs.py --kernel-file 04_plain_triton_pa_decode.py --full-benchmark" \
-  --task "Optimize this Triton kernel. Keep kernel_type=triton. Turn gluon-on. Input dialect is plain_triton. Target hip/gfx942 and prefer an amd_gluon output candidate."
+  --task "Optimize this Triton kernel for hip/gfx942."
 ```
 
 For the second MI300X-first plain Triton candidate, swap the filename above to
@@ -66,7 +67,7 @@ geak \
   --repo /path/to/GEAK/examples/triton_gluon_inputs \
   --kernel-url /path/to/GEAK/examples/triton_gluon_inputs/02_nv_gluon_input.py \
   --test-command "cd /path/to/GEAK/examples/triton_gluon_inputs && python3 test_inputs.py --kernel-file 02_nv_gluon_input.py --correctness && python3 test_inputs.py --kernel-file 02_nv_gluon_input.py --full-benchmark" \
-  --task "Optimize this Triton kernel. Keep kernel_type=triton. Turn gluon-on. Input dialect is nv_gluon. Translate NVIDIA-facing Gluon assumptions into an amd_gluon candidate on hip/gfx942."
+  --task "Optimize this Triton-family kernel for hip/gfx942."
 ```
 
 Example: existing `amd_gluon` input that should stay on the AMD Gluon route:
@@ -77,5 +78,5 @@ geak \
   --repo /path/to/GEAK/examples/triton_gluon_inputs \
   --kernel-url /path/to/GEAK/examples/triton_gluon_inputs/03_amd_gluon_input.py \
   --test-command "cd /path/to/GEAK/examples/triton_gluon_inputs && python3 test_inputs.py --kernel-file 03_amd_gluon_input.py --correctness && python3 test_inputs.py --kernel-file 03_amd_gluon_input.py --full-benchmark" \
-  --task "Optimize this Triton kernel. Keep kernel_type=triton. Turn gluon-on. Input dialect is amd_gluon. Continue searching for a better amd_gluon candidate on hip/gfx942."
+  --task "Optimize this Triton-family kernel for hip/gfx942."
 ```
