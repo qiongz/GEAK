@@ -34,6 +34,7 @@ to the short trait reference below, then view only the headings it names.
 - `execution_jit_aot_sensitive` -> `### Trait: execution_jit_aot_sensitive`
 - `version_sensitive` -> `### Trait: version_sensitive`
 - `operator_support_sensitive` -> `### Trait: operator_support_sensitive`
+- `search_space_allocation` -> `### Search space: base_shared_extension`
 
 ## Trait reference for targeted reading
 
@@ -1040,6 +1041,42 @@ The planner should reject or deprioritize tasks that:
 - start with descriptor, async, persistent, scheduler, atomics, or work stealing
   before a simpler AMD Gluon candidate passes correctness;
 - claim success from compile-only validation without benchmark comparison.
+
+### Search space: base_shared_extension
+
+GEAK should plan Triton-family optimization as a union of three sets:
+
+- **Base Set: plain Triton**. Preserve the main Triton planner path:
+  algorithmic rewrites, memory and layout cleanup, fusion, shape-specialized
+  variants, and lower-priority autotune or launch tuning.
+- **Shared Set: common strategy, dialect-specific implementation**. Use this for
+  tiling, blocking, mask simplification, memory coalescing, shape
+  specialization, split/decomposition, and fusion strategies that could be
+  implemented as either `plain_triton` or `amd_gluon`.
+- **Extension Set: AMD Gluon**. Use this for minimal AMD Gluon viability,
+  trait-specific lowering, `nv_gluon -> amd_gluon` translation, existing
+  `amd_gluon` in-dialect optimization, and MFMA / WMMA / scaled / descriptor
+  paths.
+
+Gluon is additive. It should expand the search space, not replace the Base Set.
+When GPU budget is small, preserve at least one Base Set candidate and one
+minimal Extension Set candidate if AMD Gluon is allowed. With larger budgets,
+add Shared Set paired variants only when they can be compared under the same
+benchmark contract.
+
+Planning rules:
+
+- Do not replace all plain Triton tasks with Gluon tasks.
+- Shared Set tasks must state whether they are a `plain_triton variant`, an
+  `amd_gluon variant`, or a paired comparison.
+- If a plain Triton candidate wins the benchmark, accept it as the selected
+  fallback rather than forcing more Gluon work.
+- If a Triton strategy wins and maps cleanly to Gluon traits, a later round may
+  create an AMD Gluon variant of that winning strategy.
+- If Gluon fails compile or correctness, shrink the next Extension Set attempt
+  to layout-only, translation-only, or memory-only work.
+- If Gluon passes correctness but is slower, refine memory or matrix lowering
+  before scheduler, persistent, async, or descriptor work.
 
 ## 9. Representative examples
 

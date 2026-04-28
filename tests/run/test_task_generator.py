@@ -9,10 +9,13 @@ import pytest
 from minisweagent.agents.heterogeneous.task_generator import (
     _SYSTEM_PROMPT,
     _build_gluon_planning_traits_guidance,
+    _build_search_space_allocation_guidance,
     _build_workload_guidance,
+    _gluon_extension_strength,
     _extract_kernel_meta,
     _infer_gluon_planning_traits,
     _parse_llm_response,
+    _previous_gluon_signal,
     _run_task_agent,
     generate_tasks,
     write_task_files,
@@ -141,6 +144,53 @@ def test_build_gluon_planning_traits_guidance_for_nv_gluon_translation(tmp_path:
     assert "`dialect_nv_gluon`" in guidance
     assert "translate NVIDIA-facing Gluon assumptions" in guidance
     assert "do not rename APIs mechanically" in guidance
+
+
+def test_search_space_allocation_for_two_gpus_preserves_base_and_extension() -> None:
+    guidance = _build_search_space_allocation_guidance(
+        _gluon_feature_meta("plain_triton"),
+        traits=["semantics_contract", "dialect_plain_triton", "layout_basic", "matrix_none"],
+        num_gpus=2,
+    )
+
+    assert "## Search Space Allocation" in guidance
+    assert "Base Set (plain Triton): at least 1 task(s)" in guidance
+    assert "Extension Set (AMD Gluon): 1 task(s)" in guidance
+    assert "Do not replace all Base Set tasks with Gluon tasks" in guidance
+
+
+def test_search_space_allocation_for_large_budget_keeps_half_base() -> None:
+    guidance = _build_search_space_allocation_guidance(
+        _gluon_feature_meta("plain_triton"),
+        traits=["semantics_contract", "dialect_plain_triton", "layout_basic", "matrix_dot"],
+        num_gpus=6,
+    )
+
+    assert "Gluon extension strength: strong" in guidance
+    assert "Base Set (plain Triton): at least 3 task(s)" in guidance
+    assert "Extension Set (AMD Gluon): 2 task(s)" in guidance
+
+
+def test_search_space_allocation_degrades_after_gluon_failure() -> None:
+    guidance = _build_search_space_allocation_guidance(
+        _gluon_feature_meta("plain_triton"),
+        traits=["semantics_contract", "dialect_plain_triton", "layout_basic", "matrix_dot"],
+        num_gpus=6,
+        previous_results_text="gluon compile failed with traceback",
+    )
+
+    assert "Previous Gluon signal: failed" in guidance
+    assert "Extension Set (AMD Gluon): 1 task(s)" in guidance
+    assert "layout-only, translation-only, or memory-only" in guidance
+
+
+def test_gluon_extension_strength_and_previous_signal_helpers() -> None:
+    assert _gluon_extension_strength(["semantics_contract", "matrix_dot"]) == "strong"
+    assert _gluon_extension_strength(["semantics_contract", "layout_slice_broadcast"]) == "normal"
+    assert _gluon_extension_strength(["semantics_contract", "matrix_none"]) == "weak"
+    assert _previous_gluon_signal("gluon correctness failed") == "failed"
+    assert _previous_gluon_signal("gluon slower performance regression") == "slower"
+    assert _previous_gluon_signal("gluon [BEST] verified_speedup=1.2x") == "won"
 
 
 # ---- Agent submits valid JSON -> tasks produced ----

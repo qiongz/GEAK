@@ -705,6 +705,131 @@ def _gluon_trait_headings(traits: list[str]) -> list[str]:
     return [f"### Trait: {trait}" for trait in traits]
 
 
+def _gluon_extension_strength(traits: list[str]) -> str:
+    """Classify how strongly the current signals justify extra Gluon slots."""
+    trait_set = set(traits)
+    strong_traits = {
+        "dialect_nv_gluon",
+        "dialect_amd_gluon",
+        "matrix_dot",
+        "matrix_scaled_dot",
+        "matrix_wmma_descriptor",
+        "memory_amd_buffer",
+        "layout_source_first_required",
+    }
+    normal_traits = {
+        "layout_slice_broadcast",
+        "memory_shared_async_descriptor",
+        "execution_jit_aot_sensitive",
+        "version_sensitive",
+        "operator_support_sensitive",
+    }
+    if trait_set & strong_traits:
+        return "strong"
+    if trait_set & normal_traits:
+        return "normal"
+    return "weak"
+
+
+def _previous_gluon_signal(previous_text: str) -> str:
+    """Infer a coarse previous-round Gluon signal from planner/result summaries."""
+    text = previous_text.lower()
+    if not text or "gluon" not in text:
+        return "none"
+    failure_markers = ("compile", "correctness", "failed", "failure", "traceback", "error", "invalid")
+    slower_markers = ("slower", "regress", "performance regression", "speedup=0", "worse")
+    win_markers = ("best", "[best]", "verified_speedup", "speedup=1.", "passed")
+    if any(marker in text for marker in failure_markers):
+        return "failed"
+    if any(marker in text for marker in slower_markers):
+        return "slower"
+    if any(marker in text for marker in win_markers):
+        return "won"
+    return "attempted"
+
+
+def _base_extension_quotas(num_gpus: int, strength: str, previous_signal: str) -> tuple[int, int, int]:
+    """Return recommended base/shared/extension slot counts."""
+    budget = max(int(num_gpus or 1), 1)
+    if budget <= 1:
+        return 1, 0, 0
+    if budget == 2:
+        base, shared, extension = 1, 0, 1
+    elif budget <= 4:
+        base, shared, extension = 2, 1 if strength == "strong" and budget >= 4 else 0, 1
+    else:
+        base = max((budget + 1) // 2, 3)
+        extension = 2 if strength == "strong" else 1
+        shared = max(budget - base - extension, 0)
+
+    if previous_signal == "failed":
+        extension = min(extension, 1)
+        shared = min(shared, 1)
+    elif previous_signal == "slower":
+        extension = min(extension, 1)
+    elif previous_signal == "won" and budget >= 3:
+        extension = min(extension + 1, max(budget - base, 1))
+        shared = max(budget - base - extension, 0)
+
+    if budget >= 2 and extension == 0:
+        extension = 1
+        if base + shared + extension > budget:
+            shared = max(shared - 1, 0)
+    while base + shared + extension > budget:
+        if shared > 0:
+            shared -= 1
+        elif extension > 1:
+            extension -= 1
+        else:
+            base -= 1
+    return base, shared, extension
+
+
+def _build_search_space_allocation_guidance(
+    feature_meta: dict[str, Any],
+    *,
+    traits: list[str],
+    num_gpus: int,
+    previous_results_text: str = "",
+    previous_tasks_text: str = "",
+) -> str:
+    """Return Base/Shared/Extension search-space allocation guidance."""
+    if not traits or not feature_uses_gluon_guidance(
+        "triton",
+        input_dialect=feature_meta.get("input_dialect"),
+        gluon_feature_mode=feature_meta.get("gluon_feature_mode"),
+        allowed_output_dialects=feature_meta.get("allowed_output_dialects"),
+    ):
+        return ""
+    strength = _gluon_extension_strength(traits)
+    previous_signal = _previous_gluon_signal("\n".join((previous_results_text, previous_tasks_text)))
+    base_slots, shared_slots, extension_slots = _base_extension_quotas(num_gpus, strength, previous_signal)
+
+    lines = [
+        "## Search Space Allocation",
+        "- Treat AMD Gluon as an additive extension to the existing Triton search, not as a replacement.",
+        f"- GPU/task budget: {max(int(num_gpus or 1), 1)}",
+        f"- Gluon extension strength: {strength}",
+        f"- Previous Gluon signal: {previous_signal}",
+        "Recommended candidate allocation:",
+        f"- Base Set (plain Triton): at least {base_slots} task(s). Preserve the main Triton planner path: algorithmic rewrite, memory/layout cleanup, fusion, shape-specialized variants, and low-priority autotune/launch work.",
+        f"- Shared Set (Triton/Gluon common strategies): {shared_slots} task(s) when budget allows. Shared tasks must state whether they are a `plain_triton variant`, an `amd_gluon variant`, or a paired comparison.",
+        f"- Extension Set (AMD Gluon): {extension_slots} task(s). Start with minimal viability, then trait-specific lowering only when traits justify it.",
+        "Rules:",
+        "- Do not replace all Base Set tasks with Gluon tasks.",
+        "- Keep the same correctness and benchmark contract for all sets.",
+        "- If a plain Triton candidate wins, accept it as the best result rather than forcing more Gluon work.",
+        "- If a Triton strategy wins and maps cleanly to Gluon traits, a later round may create an AMD Gluon variant of that winning strategy.",
+    ]
+    if previous_signal == "failed":
+        lines.append("- Because prior Gluon work appears to have failed, keep the next Extension Set to layout-only, translation-only, or memory-only work.")
+    elif previous_signal == "slower":
+        lines.append("- Because prior Gluon work appears slower, keep one targeted Gluon refinement focused on memory or matrix lowering; do not escalate to scheduler/persistent/async work.")
+    elif previous_signal == "won":
+        lines.append("- Because prior Gluon work appears promising, Gluon-specific refinement may expand, but keep a Base or Shared competitor.")
+    return "\n".join(lines)
+
+
 def _build_gluon_planning_traits_guidance(
     feature_meta: dict[str, Any],
     *,
@@ -1035,16 +1160,20 @@ def _run_task_agent(
         )
 
         prev_results_path: Path | None = None
+        prev_results_summary = ""
         if previous_results_dir and Path(previous_results_dir).is_dir():
             summary = _scan_previous_results(Path(previous_results_dir))
             if summary:
+                prev_results_summary = summary
                 prev_results_path = _write_temp(summary, "_prev_results.md")
                 tmp_files.append(prev_results_path)
 
         prev_tasks_path: Path | None = None
+        prev_tasks_summary = ""
         if previous_tasks_dir and Path(previous_tasks_dir).is_dir() and current_round > 1:
             tasks_summary = _scan_previous_tasks(Path(previous_tasks_dir), current_round)
             if tasks_summary:
+                prev_tasks_summary = tasks_summary
                 prev_tasks_path = _write_temp(tasks_summary, "_prev_tasks.md")
                 tmp_files.append(prev_tasks_path)
 
@@ -1098,6 +1227,7 @@ def _run_task_agent(
             "memory_context": "",
             "workload_guidance": "",
             "gluon_planning_traits_guidance": "",
+            "search_space_allocation_guidance": "",
             "gluon_task_generation_guidance": _build_gluon_task_generation_guidance(feature_meta),
             "gluon_failure_guardrails": _build_gluon_failure_guardrails(feature_meta),
         }
@@ -1135,12 +1265,26 @@ def _run_task_agent(
             "kernel_name": kernel_name,
             "kernel_type": kernel_type,
         }
+        signal_text = _read_kernel_signal_text(
+            kernel_path=kernel_path,
+            kernel_name=kernel_name,
+            function_names=function_names,
+            baseline_metrics=_bm_dict,
+        )
+        gluon_traits = _infer_gluon_planning_traits(feature_meta, signal_text)
         template_vars["gluon_planning_traits_guidance"] = _build_gluon_planning_traits_guidance(
             feature_meta,
             kernel_path=kernel_path,
             kernel_name=kernel_name,
             function_names=function_names,
             baseline_metrics=_bm_dict,
+        )
+        template_vars["search_space_allocation_guidance"] = _build_search_space_allocation_guidance(
+            feature_meta,
+            traits=gluon_traits,
+            num_gpus=num_gpus,
+            previous_results_text=prev_results_summary,
+            previous_tasks_text=prev_tasks_summary,
         )
         template_vars["workload_guidance"] = _build_workload_guidance(_kernel_meta, _bm_dict)
 
