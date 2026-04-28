@@ -565,6 +565,212 @@ def _resolve_task_knowledge_paths(
     }
 
 
+def _read_kernel_signal_text(
+    *,
+    kernel_path: str | Path,
+    kernel_name: str = "",
+    function_names: list[str] | None = None,
+    baseline_metrics: dict[str, Any] | None = None,
+    max_chars: int = 50000,
+) -> str:
+    """Collect lightweight planning signals from source and profiling metadata."""
+    chunks: list[str] = [
+        str(kernel_path),
+        str(kernel_name),
+        " ".join(function_names or []),
+    ]
+    try:
+        chunks.append(Path(kernel_path).read_text(errors="ignore")[:max_chars])
+    except OSError:
+        logger.debug("Could not read kernel source for Gluon trait inference: %s", kernel_path)
+
+    metrics = baseline_metrics or {}
+    chunks.append(str(metrics.get("kernel_name", "")))
+    for top in metrics.get("top_kernels", []) or []:
+        if isinstance(top, dict):
+            chunks.extend(str(top.get(key, "")) for key in ("name", "bottleneck"))
+
+    return "\n".join(part for part in chunks if part).lower()
+
+
+def _infer_gluon_planning_traits(
+    feature_meta: dict[str, Any],
+    signal_text: str,
+) -> list[str]:
+    """Infer composable traits that should shape Gluon task planning."""
+    if not feature_uses_gluon_guidance(
+        "triton",
+        input_dialect=feature_meta.get("input_dialect"),
+        gluon_feature_mode=feature_meta.get("gluon_feature_mode"),
+        allowed_output_dialects=feature_meta.get("allowed_output_dialects"),
+    ):
+        return []
+
+    traits: list[str] = ["semantics_contract"]
+    input_dialect = str(feature_meta.get("input_dialect") or "").strip().lower()
+    if input_dialect == "nv_gluon":
+        traits.append("dialect_nv_gluon")
+    elif input_dialect == "amd_gluon":
+        traits.append("dialect_amd_gluon")
+    else:
+        traits.append("dialect_plain_triton")
+
+    text = signal_text.lower()
+    target_backend = str(feature_meta.get("target_backend") or "").lower()
+
+    traits.append("layout_basic")
+    if any(marker in text for marker in ("slicelayout", "expand_dims", "broadcast", "[:, none", "none, :", "mask")):
+        traits.append("layout_slice_broadcast")
+    if any(
+        marker in text
+        for marker in (
+            "distributedlinearlayout",
+            "partitionedsharedlayout",
+            "tensordescriptor",
+            "tensor_descriptor",
+            "reshape",
+            "permute",
+            ".trans(",
+            "prebuilt",
+            "aot",
+        )
+    ):
+        traits.append("layout_source_first_required")
+
+    traits.append("memory_generic")
+    if any(marker in text for marker in ("buffer_load", "buffer_store", ".amd.", "cdna3", "cdna4")) or any(
+        arch in target_backend for arch in ("gfx942", "gfx950")
+    ):
+        traits.append("memory_amd_buffer")
+    if any(
+        marker in text
+        for marker in (
+            "allocate_shared_memory",
+            "swizzledsharedlayout",
+            "paddedsharedlayout",
+            "async_copy",
+            "async_load",
+            "tdm",
+            "descriptor",
+            "tma",
+        )
+    ):
+        traits.append("memory_shared_async_descriptor")
+
+    has_scaled_marker = any(
+        marker in text
+        for marker in ("dot_scaled", "mfma_scaled", "wmma_scaled", "fp8", "e4m3", "e5m2", "e2m1", "scale")
+    )
+    has_dot_marker = any(marker in text for marker in ("tl.dot", "ttgl.dot", "dotoperandlayout", "mfma", "wmma"))
+    has_wmma_descriptor = any(marker in text for marker in ("wmma", "amdwmmalayout", "gfx1250", "tdm", "descriptor"))
+    if has_wmma_descriptor:
+        traits.append("matrix_wmma_descriptor")
+    if has_scaled_marker:
+        traits.append("matrix_scaled_dot")
+    if has_dot_marker:
+        traits.append("matrix_dot")
+    if not any(trait.startswith("matrix_") for trait in traits):
+        traits.append("matrix_none")
+
+    if any(marker in text for marker in ("gluon_jit_kernel_enabled", "prebuilt", "aot", "compile_gluon")):
+        traits.append("execution_jit_aot_sensitive")
+    if any(marker in text for marker in ("triton_version", "instr_shape", "amdmfmalayout", "triton.__version__")):
+        traits.append("version_sensitive")
+    if any(marker in text for marker in ("get_arch", "gfx942", "gfx950", "gfx1250", "is_hip", "gluon available")):
+        traits.append("operator_support_sensitive")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for trait in traits:
+        if trait not in seen:
+            deduped.append(trait)
+            seen.add(trait)
+    return deduped
+
+
+def _gluon_trait_headings(traits: list[str]) -> list[str]:
+    """Return stable guide headings for targeted trait reading."""
+    return [f"### Trait: {trait}" for trait in traits]
+
+
+def _build_gluon_planning_traits_guidance(
+    feature_meta: dict[str, Any],
+    *,
+    kernel_path: str | Path,
+    kernel_name: str = "",
+    function_names: list[str] | None = None,
+    baseline_metrics: dict[str, Any] | None = None,
+) -> str:
+    """Return traits-based Gluon candidate guidance for the task planner."""
+    signal_text = _read_kernel_signal_text(
+        kernel_path=kernel_path,
+        kernel_name=kernel_name,
+        function_names=function_names,
+        baseline_metrics=baseline_metrics,
+    )
+    traits = _infer_gluon_planning_traits(feature_meta, signal_text)
+    if not traits:
+        return ""
+
+    trait_set = set(traits)
+    lines = [
+        "## Gluon Planning Traits",
+        f"- Detected traits: {', '.join(f'`{trait}`' for trait in traits)}",
+        "- Use these traits to allocate candidate task slots. They are planning constraints, not implementation templates.",
+        "- Read guidance: do not read the whole Gluon guide first. In `docs/triton_gluon.md`, search for `## Quick section map for agents`, then search for these stable headings and view only those snippets:",
+        *[f"  - `{heading}`" for heading in _gluon_trait_headings(traits)],
+        "",
+        "Prefer First:",
+        "- Semantics-preserving candidate: preserve launcher shape, indexing, masks/boundaries, correctness oracle, and benchmark intent; do not claim success from compile-only validation.",
+    ]
+
+    if "dialect_nv_gluon" in trait_set:
+        lines.append("- Dialect candidate: translate NVIDIA-facing Gluon assumptions to AMD-facing Gluon; do not rename APIs mechanically.")
+    elif "dialect_amd_gluon" in trait_set:
+        lines.append("- Dialect candidate: keep the existing AMD Gluon structure and optimize in-dialect before considering a plain Triton comparison.")
+    else:
+        lines.append("- Dialect candidate: create a minimal AMD Gluon viability rewrite with recognizable launcher, explicit layout, and correctness-preserving behavior.")
+
+    lines.append("- Layout candidate: recover the base `BlockedLayout` from `tl.arange`, tile shape, `num_warps`, target family, and coalesced dimension; build host-side layouts as `constexpr` when they depend on launch choices.")
+
+    if "layout_slice_broadcast" in trait_set:
+        lines.append("- Layout candidate: preserve mask/broadcast/slice semantics with compatible `SliceLayout` or layout conversions instead of treating them as cleanup.")
+    if "layout_source_first_required" in trait_set:
+        lines.append("- Source-first candidate: read operator-local layout code before rewriting; preserve `DistributedLinearLayout`, descriptor, reshape/permute/trans, JIT/AOT, or prebuilt-kernel structure.")
+
+    lines.append("- Fallback candidate: keep a plain Triton competitor when it remains an allowed output and compare by the same benchmark contract.")
+
+    lines.extend(["", "Consider Next:"])
+    if "memory_generic" in trait_set:
+        lines.append("- Memory lowering: start with generic `gl.load` / `gl.store` for scalar or simple vector paths.")
+    if "memory_amd_buffer" in trait_set:
+        lines.append("- AMD memory lowering: evaluate `buffer_load` / `buffer_store` only when the target family or existing AMD structure makes it useful.")
+    if "matrix_dot" in trait_set:
+        lines.append("- Matrix lowering: plan result layout -> `DotOperandLayout` -> `convert_layout` -> target op (`mfma` / `wmma`) instead of direct `tl.dot` renaming.")
+    if "matrix_scaled_dot" in trait_set:
+        lines.append("- Scaled-matrix lowering: check dtype, scale layout, target arch, and CDNA4/gfx1250 constraints before assigning `mfma_scaled` or `wmma_scaled` work.")
+    if "matrix_wmma_descriptor" in trait_set:
+        lines.append("- WMMA/descriptor path: treat gfx1250 `wmma`, `tdm`, descriptor, cluster, and shared-layout constraints as a separate family from CDNA MFMA.")
+    if any(trait in trait_set for trait in ("execution_jit_aot_sensitive", "version_sensitive", "operator_support_sensitive")):
+        lines.append("- Runtime contract: verify JIT vs AOT, Triton minor version, `instr_shape` form, target backend, and operator-local arch guards before committing to a Gluon path.")
+
+    lines.extend(
+        [
+            "",
+            "Deprioritize Until Later:",
+            "- Shared-memory swizzle, async copy, descriptor/tdm, scheduler hints, persistent kernels, atomics, and work-stealing until a simpler AMD Gluon candidate passes correctness.",
+            "- Autotune-only or launch-only changes before at least one semantics-preserving Gluon candidate and one plain Triton competitor have been planned.",
+            "- Tasks that mix NVIDIA and AMD layout families, introduce a top-level `gluon` kernel type, or produce an optimized `nv_gluon` output.",
+            "",
+            "Escalation rules:",
+            "- Round 1 should include a minimal AMD Gluon viability task, one trait-specific AMD Gluon task, and a plain Triton fallback/competitor when allowed.",
+            "- In later rounds, if Gluon failed, shrink the next attempt to layout-only, translation-only, or memory-only work; if correctness passed but performance regressed, escalate memory/matrix lowering before scheduler or persistent work.",
+        ]
+    )
+
+    return "\n".join(lines)
+
+
 def _build_gluon_task_generation_guidance(feature_meta: dict[str, Any]) -> str:
     """Return planner guidance for staging Gluon work by difficulty.
 
@@ -874,6 +1080,7 @@ def _run_task_agent(
             "num_gpus": num_gpus,
             "memory_context": "",
             "workload_guidance": "",
+            "gluon_planning_traits_guidance": "",
             "gluon_task_generation_guidance": _build_gluon_task_generation_guidance(feature_meta),
             "gluon_failure_guardrails": _build_gluon_failure_guardrails(feature_meta),
         }
@@ -911,6 +1118,13 @@ def _run_task_agent(
             "kernel_name": kernel_name,
             "kernel_type": kernel_type,
         }
+        template_vars["gluon_planning_traits_guidance"] = _build_gluon_planning_traits_guidance(
+            feature_meta,
+            kernel_path=kernel_path,
+            kernel_name=kernel_name,
+            function_names=function_names,
+            baseline_metrics=_bm_dict,
+        )
         template_vars["workload_guidance"] = _build_workload_guidance(_kernel_meta, _bm_dict)
 
         tg_step_limit = int(os.getenv("GEAK_TASKGEN_STEP_LIMIT", "200"))

@@ -222,6 +222,41 @@ class TestKernelMetaContract:
         assert meta["gluon_feature_mode"] == "auto"
         assert meta["preferred_output_dialects"] == ["amd_gluon", "plain_triton"]
 
+    def test_target_backend_explicit_env_probe_default_priority(self, monkeypatch):
+        import subprocess
+
+        from minisweagent.run.preprocess import discovery_types as dt
+
+        dt.detect_rocm_target_backend.cache_clear()
+        monkeypatch.delenv("GEAK_TARGET_BACKEND", raising=False)
+
+        monkeypatch.setattr(
+            subprocess,
+            "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(
+                args=args[0],
+                returncode=0,
+                stdout="  Name:                    gfx950\n      Name:                    amdgcn-amd-amdhsa--gfx950\n",
+                stderr="",
+            ),
+        )
+        assert dt.resolve_target_backend() == "hip/gfx950"
+
+        monkeypatch.setenv("GEAK_TARGET_BACKEND", "gfx1250")
+        assert dt.resolve_target_backend() == "hip/gfx1250"
+
+        assert dt.resolve_target_backend("hip/gfx942") == "hip/gfx942"
+        assert dt.resolve_target_backend("amdgcn-amd-amdhsa--gfx950:sramecc+") == "hip/gfx950"
+
+        monkeypatch.delenv("GEAK_TARGET_BACKEND", raising=False)
+        dt.detect_rocm_target_backend.cache_clear()
+
+        def _raise_file_not_found(*_args, **_kwargs):
+            raise FileNotFoundError("rocminfo")
+
+        monkeypatch.setattr(subprocess, "run", _raise_file_not_found)
+        assert dt.resolve_target_backend() == "hip/gfx942"
+
     def test_discovery_result_populates_kernel_meta_fields(self):
         from minisweagent.run.preprocess.discovery_types import DiscoveryResult, KernelMeta
 
