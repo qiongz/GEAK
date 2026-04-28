@@ -159,9 +159,9 @@ class DRAConfig:
             per_question_result_budget=_env_int(
                 "GEAK_DRA_PER_QUESTION_RESULT_BUDGET", 16 if deep_mode else 12
             ),
-            search_depth=_env_int("GEAK_DRA_SEARCH_DEPTH", 2 if deep_mode else 1),
+            search_depth=_env_int("GEAK_DRA_SEARCH_DEPTH", 3 if deep_mode else 1),
             read_top_k=_env_int("GEAK_DRA_READ_TOP_K", 5 if deep_mode else 4),
-            read_max_length=_env_int("GEAK_DRA_READ_MAX_LENGTH", 12000 if deep_mode else 8000),
+            read_max_length=_env_int("GEAK_DRA_READ_MAX_LENGTH", 20000 if deep_mode else 8000),
             supplemental_web_enabled=_env_bool("GEAK_DRA_SUPPLEMENTAL_WEB_ENABLE", False),
             github_token=os.environ.get("GEAK_DRA_GITHUB_TOKEN", "").strip() or None,
             mcp_fetch_url=os.environ.get("GEAK_DRA_MCP_FETCH_URL", _DEFAULT_MCP_FETCH_URL).strip(),

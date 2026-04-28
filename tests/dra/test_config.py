@@ -17,9 +17,12 @@ def test_deep_mode_raises_research_budget_defaults(monkeypatch):
     assert cfg.web_max_refinements == 3
     assert cfg.web_concurrency == 6
     assert cfg.per_question_result_budget == 16
-    assert cfg.search_depth == 2
+    # search_depth bumped 2 -> 3 to allow a third refinement round per
+    # question after triage; read_max_length bumped 12000 -> 20000 so the
+    # synthesizer sees more of each fetched page when reasoning.
+    assert cfg.search_depth == 3
     assert cfg.read_top_k == 5
-    assert cfg.read_max_length == 12000
+    assert cfg.read_max_length == 20000
     assert cfg.supplemental_web_enabled is False
     # Bumped from 800 to 1200 (deep) when parallel-initial-queries fanout
     # raised the average per-question web call count ~3x; see config.py.
