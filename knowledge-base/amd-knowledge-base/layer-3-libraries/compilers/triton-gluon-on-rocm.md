@@ -209,6 +209,27 @@ kernels, atomics, or work stealing after a simpler Gluon candidate passes
 correctness. If plain Triton wins the benchmark, that is a valid selected
 result rather than a failed Gluon run.
 
+### Base / Shared / Extension search space
+
+For GEAK planning, AMD Gluon should be an additive extension to the existing
+Triton search.
+
+- **Base Set**: preserve plain Triton candidates from the main planner, such as
+  algorithmic rewrites, fusion, shape-specialized variants, memory/layout
+  cleanup, and low-priority launch or autotune work.
+- **Shared Set**: when a strategy can apply to both dialects, identify whether
+  the task is a `plain_triton variant`, an `amd_gluon variant`, or a paired
+  comparison under the same benchmark.
+- **Extension Set**: add AMD Gluon-only candidates such as minimal viability,
+  trait-specific lowering, `nv_gluon -> amd_gluon` translation, in-dialect AMD
+  Gluon optimization, MFMA / WMMA / scaled, or descriptor paths.
+
+Do not let Extension Set tasks replace all Base Set tasks. If Gluon compile or
+correctness fails, shrink the next Gluon attempt to layout-only,
+translation-only, or memory-only work. If Gluon is correct but slower, refine
+memory or matrix lowering before trying scheduler, persistent, async, or
+descriptor-heavy tasks.
+
 ## Plain Triton to AMD Gluon Rewrite Order
 
 For most rewrites, the safest order is:

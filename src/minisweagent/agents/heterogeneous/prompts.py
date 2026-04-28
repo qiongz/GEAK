@@ -246,6 +246,11 @@ them priority 15 behind kernel-body algorithmic work.
     "Consider Next" or "Deprioritize Until Later". Each Gluon task should name
     the traits it is addressing and should not collapse the plan into one
     generic "rewrite to Gluon" task.
+16. If a "Search Space Allocation" block is present, treat it as mandatory.
+    Preserve the Base Set plain-Triton task quota; AMD Gluon tasks are an
+    additive Extension Set, not a replacement for the main Triton search. Shared
+    strategies must state their dialect variant (`plain_triton variant`,
+    `amd_gluon variant`, or paired comparison).
 
 ## Output format
 
@@ -340,6 +345,9 @@ Generate optimization tasks for the kernel at {{ kernel_path }}.
 {% endif %}
 {% if gluon_planning_traits_guidance %}
 {{ gluon_planning_traits_guidance }}
+{% endif %}
+{% if search_space_allocation_guidance %}
+{{ search_space_allocation_guidance }}
 {% endif %}
 {% if gluon_task_generation_guidance %}
 {{ gluon_task_generation_guidance }}
