@@ -147,6 +147,68 @@ This is the most useful mental table for `plain_triton -> amd_gluon` rewrites.
 | Implicit shared-memory staging | `allocate_shared_memory` after the first correct candidate | Only after the blocked-layout or matrix path is already correct. |
 | Descriptor helper usage | Target-specific descriptor family | Only when the target family really supports or benefits from it. |
 
+## Planner Traits and Candidate Slots
+
+GEAK should treat Gluon as a candidate strategy inside the Triton route, not as
+a separate kernel type. Planning should be trait-based rather than one recipe
+per kernel family.
+
+### Core planning traits
+
+- **Semantics contract**: preserve launcher shape, indexing, masks, boundary
+  behavior, correctness oracle, and benchmark intent before changing the
+  algorithm.
+- **Dialect path**:
+  - `plain_triton -> amd_gluon`: start with a minimal viability rewrite.
+  - `nv_gluon -> amd_gluon`: translate vendor assumptions; do not rename APIs.
+  - `amd_gluon -> amd_gluon`: optimize in dialect first.
+- **Layout exposure**:
+  - recover `BlockedLayout` from `tl.arange`, tile shape, and `num_warps`;
+  - use `SliceLayout` or layout conversions for broadcast, masks, or slices;
+  - switch to source-first planning when you see `DistributedLinearLayout`,
+    `PartitionedSharedLayout`, host `TensorDescriptor`, nested layout trees, or
+    reshape / permute / trans unshuffle sequences.
+- **Memory lowering**:
+  - start with `gl.load` / `gl.store`;
+  - move to AMD `buffer_load` / `buffer_store` only when useful;
+  - delay shared memory, swizzles, descriptors, `tdm`, and async paths until a
+    simpler candidate is correct.
+- **Matrix lowering**:
+  - `tl.dot` and `tl.dot_scaled` require result layout, operand layouts,
+    `convert_layout`, and a target op;
+  - scaled paths require dtype, scale-layout, target-arch, and scale-factor
+    checks;
+  - gfx1250 WMMA / descriptor paths are separate from CDNA3 / CDNA4 MFMA paths.
+- **Execution contract**:
+  - check JIT versus AOT;
+  - check Triton minor version and `instr_shape`;
+  - check target backend and operator-local arch guards;
+  - do not equate global Gluon availability with per-operator support.
+
+Target backend resolution happens before task planning where possible:
+
+1. explicit `target_backend`
+2. `GEAK_TARGET_BACKEND`
+3. `rocminfo` detection without `sudo`
+4. default `hip/gfx942`
+
+Set `GEAK_TARGET_BACKEND` in restricted environments. Docker or ROCm shells may
+allow GEAK to read `rocminfo` output such as `Name: gfx942` before profiling
+artifacts exist.
+
+### Candidate slot policy
+
+Early task generation should prefer:
+
+1. a semantics-preserving AMD Gluon viability candidate;
+2. a trait-specific AMD Gluon candidate that names the traits it addresses;
+3. a plain Triton fallback or competitor when allowed.
+
+Only consider advanced descriptors, async copy, scheduler hints, persistent
+kernels, atomics, or work stealing after a simpler Gluon candidate passes
+correctness. If plain Triton wins the benchmark, that is a valid selected
+result rather than a failed Gluon run.
+
 ## Plain Triton to AMD Gluon Rewrite Order
 
 For most rewrites, the safest order is:
@@ -335,6 +397,12 @@ Read operator-local source before rewriting the kernel if you see:
 ### GEAK-specific workflow docs
 
 - [GEAK Triton-Gluon workflow guide](../../../../docs/triton_gluon.md)
+
+For GEAK agents, use the workflow guide as a single indexed reference. Search
+for `## Quick section map for agents`, then jump to stable headings such as
+`### Trait: matrix_dot`, `### Trait: memory_amd_buffer`, or
+`### Trait: execution_jit_aot_sensitive`. Do not read the whole guide before
+checking the relevant trait sections.
 
 ### External resources
 

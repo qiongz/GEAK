@@ -51,6 +51,17 @@ Current product policy:
   assumptions before optimizing on AMD
 - use **`gluon_feature_mode=off`** only for ablation against the no-Gluon path
 
+Target backend resolution for Triton-family Gluon planning uses:
+
+1. explicit CLI / task / discovery `target_backend`
+2. **`GEAK_TARGET_BACKEND`**
+3. best-effort `rocminfo` detection without `sudo`
+4. default **`hip/gfx942`**
+
+In normal restricted environments, prefer setting **`GEAK_TARGET_BACKEND`**
+explicitly. In Docker or ROCm shells where `rocminfo` is available, GEAK can
+detect lines such as `Name: gfx942` before the first profiling run.
+
 
 ## What’s in the default config file (**`src/minisweagent/config/geak.yaml`**)
 

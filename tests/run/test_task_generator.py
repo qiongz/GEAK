@@ -8,8 +8,10 @@ import pytest
 
 from minisweagent.agents.heterogeneous.task_generator import (
     _SYSTEM_PROMPT,
+    _build_gluon_planning_traits_guidance,
     _build_workload_guidance,
     _extract_kernel_meta,
+    _infer_gluon_planning_traits,
     _parse_llm_response,
     _run_task_agent,
     generate_tasks,
@@ -53,6 +55,92 @@ def _write_knowledge_files(workspace: Path) -> Path:
     general_kb = kb_dir / "optimization_strategies.py"
     general_kb.write_text("# general optimization knowledge\n")
     return general_kb
+
+
+def _gluon_feature_meta(
+    input_dialect: str = "plain_triton",
+    *,
+    target_backend: str = "hip/gfx942",
+) -> dict[str, Any]:
+    return {
+        "input_dialect": input_dialect,
+        "gluon_feature_mode": "auto",
+        "gluon_baseline_profile": "raw",
+        "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+        "preferred_output_dialects": ["amd_gluon", "plain_triton"],
+        "output_dialect_search_policy": "prefer_amd_gluon_if_viable_else_plain_triton",
+        "target_backend": target_backend,
+    }
+
+
+def test_infer_gluon_planning_traits_for_plain_triton_dot() -> None:
+    traits = _infer_gluon_planning_traits(
+        _gluon_feature_meta("plain_triton"),
+        "import triton.language as tl\nx = tl.arange(0, BLOCK)\nacc = tl.dot(a, b)\n",
+    )
+
+    assert "semantics_contract" in traits
+    assert "dialect_plain_triton" in traits
+    assert "layout_basic" in traits
+    assert "matrix_dot" in traits
+    assert "memory_amd_buffer" in traits
+
+
+def test_infer_gluon_planning_traits_for_source_first_scaled_descriptor() -> None:
+    traits = _infer_gluon_planning_traits(
+        _gluon_feature_meta("amd_gluon", target_backend="hip/gfx1250"),
+        "TensorDescriptor DistributedLinearLayout reshape permute tl.dot_scaled fp8 e2m1 AMDMFMALayout instr_shape",
+    )
+
+    assert "dialect_amd_gluon" in traits
+    assert "layout_source_first_required" in traits
+    assert "matrix_scaled_dot" in traits
+    assert "matrix_wmma_descriptor" in traits
+    assert "version_sensitive" in traits
+
+
+def test_build_gluon_planning_traits_guidance_includes_candidate_slots(tmp_path: Path) -> None:
+    kernel = tmp_path / "kernel.py"
+    kernel.write_text(
+        "import triton\n"
+        "import triton.language as tl\n"
+        "@triton.jit\n"
+        "def kernel_fwd(a, b, c):\n"
+        "    acc = tl.dot(a, b)\n"
+        "    tl.store(c, acc)\n"
+    )
+
+    guidance = _build_gluon_planning_traits_guidance(
+        _gluon_feature_meta("plain_triton"),
+        kernel_path=kernel,
+        kernel_name="kernel",
+        function_names=["kernel_fwd"],
+        baseline_metrics={},
+    )
+
+    assert "## Gluon Planning Traits" in guidance
+    assert "`dialect_plain_triton`" in guidance
+    assert "`matrix_dot`" in guidance
+    assert "Prefer First:" in guidance
+    assert "DotOperandLayout" in guidance
+    assert "Fallback candidate" in guidance
+
+
+def test_build_gluon_planning_traits_guidance_for_nv_gluon_translation(tmp_path: Path) -> None:
+    kernel = tmp_path / "kernel.py"
+    kernel.write_text("from triton.experimental import gluon\n# nvidia tma warpgroup_mma TensorDescriptor\n")
+
+    guidance = _build_gluon_planning_traits_guidance(
+        _gluon_feature_meta("nv_gluon"),
+        kernel_path=kernel,
+        kernel_name="kernel",
+        function_names=["kernel_fwd"],
+        baseline_metrics={},
+    )
+
+    assert "`dialect_nv_gluon`" in guidance
+    assert "translate NVIDIA-facing Gluon assumptions" in guidance
+    assert "do not rename APIs mechanically" in guidance
 
 
 # ---- Agent submits valid JSON -> tasks produced ----
@@ -237,6 +325,8 @@ def test_run_task_agent_plain_triton_auto_prefers_amd_gluon_first(
     assert "prefer_amd_gluon_if_viable_else_plain_triton" in run_kwargs["gluon_feature_context"]
     assert "Generate at least one early task" in run_kwargs["output_dialect_guidance"]
     assert "Keep a plain Triton fallback path alive" in run_kwargs["output_dialect_guidance"]
+    assert "## Gluon Planning Traits" in run_kwargs["gluon_planning_traits_guidance"]
+    assert "`dialect_plain_triton`" in run_kwargs["gluon_planning_traits_guidance"]
 
 
 @patch("minisweagent.tools.tools_runtime.get_tools_list", return_value=[{"name": "str_replace_editor"}, {"name": "submit"}])

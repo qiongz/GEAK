@@ -12,6 +12,313 @@ correctly read, translate, generate, and optimize:
 while staying grounded in what current Triton-family and AMD-facing Gluon
 implementations actually support today.
 
+## Quick section map for agents
+
+Do not read this whole document first. Use the detected planning traits to jump
+to the short trait reference below, then view only the headings it names.
+
+- `semantics_contract` -> `### Trait: semantics_contract`
+- `dialect_plain_triton` -> `### Trait: dialect_plain_triton`
+- `dialect_nv_gluon` -> `### Trait: dialect_nv_gluon`
+- `dialect_amd_gluon` -> `### Trait: dialect_amd_gluon`
+- `layout_basic` -> `### Trait: layout_basic`
+- `layout_slice_broadcast` -> `### Trait: layout_slice_broadcast`
+- `layout_source_first_required` -> `### Trait: layout_source_first_required`
+- `memory_generic` -> `### Trait: memory_generic`
+- `memory_amd_buffer` -> `### Trait: memory_amd_buffer`
+- `memory_shared_async_descriptor` -> `### Trait: memory_shared_async_descriptor`
+- `matrix_none` -> `### Trait: matrix_none`
+- `matrix_dot` -> `### Trait: matrix_dot`
+- `matrix_scaled_dot` -> `### Trait: matrix_scaled_dot`
+- `matrix_wmma_descriptor` -> `### Trait: matrix_wmma_descriptor`
+- `execution_jit_aot_sensitive` -> `### Trait: execution_jit_aot_sensitive`
+- `version_sensitive` -> `### Trait: version_sensitive`
+- `operator_support_sensitive` -> `### Trait: operator_support_sensitive`
+
+## Trait reference for targeted reading
+
+### Trait: semantics_contract
+
+Read this first: preserve launcher shape, indexing, masks and boundaries,
+correctness behavior, and benchmark intent before changing algorithms.
+
+Then view these headings:
+
+- `## 1. Product contract`
+- `## 3. How GEAK should apply this feature`
+- `### 8.2 Host and runtime contract`
+- `## 11. Benchmark-aware rules`
+
+Do not:
+
+- claim success from compile-only validation;
+- change the evaluation contract or harness behavior.
+
+### Trait: dialect_plain_triton
+
+Read this first: start from a minimal AMD Gluon viability rewrite with explicit
+layout while keeping plain Triton as a benchmarked competitor.
+
+Then view these headings:
+
+- `### 4.2 `plain_triton` input`
+- `### 9.1 Example: `plain_triton -> amd_gluon` row-wise affine transform`
+- `### A.2 JIT entry and host launcher`
+
+Do not:
+
+- replace the whole algorithm before a correctness-passing baseline candidate;
+- assume AMD Gluon must beat plain Triton.
+
+### Trait: dialect_nv_gluon
+
+Read this first: treat NVIDIA-facing Gluon as translation, not API renaming.
+Preserve common Gluon semantics before moving vendor-specific paths to AMD.
+
+Then view these headings:
+
+- `### 4.3 `nv_gluon` input`
+- `### 6.2 NVIDIA families`
+- `### 6.6 Concept map`
+- `### 9.2 Example: `nv_gluon -> amd_gluon` tile reader rewrite`
+- `### A.7 NVIDIA quick patterns`
+
+Do not:
+
+- output an optimized `nv_gluon` path;
+- rename TMA, WGMMA, tensor-memory, or cluster APIs into guessed AMD names.
+
+### Trait: dialect_amd_gluon
+
+Read this first: preserve the existing AMD-facing structure and optimize inside
+AMD Gluon unless benchmark evidence favors a plain Triton fallback.
+
+Then view these headings:
+
+- `### 4.4 `amd_gluon` input`
+- `### 6.3 AMD families`
+- `### 7.1 Attention path on `gfx942` / `gfx950``
+- `### 7.2 GEMM and FP8 paths on `gfx950``
+
+Do not:
+
+- discard operator-local architecture guards;
+- drift back to plain Triton without benchmark evidence.
+
+### Trait: layout_basic
+
+Read this first: recover `BlockedLayout` from `tl.arange`, tile shape,
+`num_warps`, target family, and coalesced dimension.
+
+Then view these headings:
+
+- `#### Recover implicit layout before changing APIs`
+- `#### Align host launcher and layout`
+- `### 5.1 Layout is first-class`
+- `### A.3 Core language and layout surface`
+
+Do not:
+
+- construct layout independently from launch attributes;
+- omit `layout` on `gl.arange`, `gl.zeros`, or similar distributed tensors.
+
+### Trait: layout_slice_broadcast
+
+Read this first: masks, broadcasts, `expand_dims`, and slicing often need
+compatible `SliceLayout` or explicit layout conversions.
+
+Then view these headings:
+
+- `### 5.1 Layout is first-class`
+- `#### Attention or decode kernels`
+- `### A.3 Core language and layout surface`
+
+Do not:
+
+- treat mask layout conversions as cosmetic cleanup;
+- apply `[:, None]` or `expand_dims` on arbitrary incompatible layouts.
+
+### Trait: layout_source_first_required
+
+Read this first: source-first planning is required for distributed layouts,
+descriptors, nested layout trees, JIT/AOT packaging, and unshuffle sequences.
+
+Then view these headings:
+
+- `### 7.7 When docs are not enough`
+- `#### Preshuffled GEMM`
+- `#### `gfx1250` WMMA or descriptor kernels`
+- `### 8.2 Host and runtime contract`
+
+Do not:
+
+- simplify `reshape` / `permute` / `trans` unshuffle sequences blindly;
+- rewrite descriptor or prebuilt-kernel paths without reading operator source.
+
+### Trait: memory_generic
+
+Read this first: start with `gl.load` / `gl.store` for scalar or simple vector
+paths before moving to AMD-specific memory operations.
+
+Then view these headings:
+
+- `#### Choose the memory path deliberately`
+- `### 6.1 Common Gluon layer`
+- `### A.3 Core language and layout surface`
+
+Do not:
+
+- introduce `buffer_load` / `buffer_store` only because the target is AMD;
+- add shared-memory staging in the initial layout rewrite unless source requires it.
+
+### Trait: memory_amd_buffer
+
+Read this first: use AMD `buffer_load` / `buffer_store` when target family,
+existing AMD structure, or access pattern actually benefits.
+
+Then view these headings:
+
+- `#### Choose the memory path deliberately`
+- `#### `gfx942` / CDNA3`
+- `#### `gfx950` / CDNA4`
+- `### A.6 AMD quick patterns`
+
+Do not:
+
+- infer full architecture support from the Python namespace alone;
+- mix CDNA memory assumptions with gfx1250 descriptor paths.
+
+### Trait: memory_shared_async_descriptor
+
+Read this first: shared memory, swizzles, async copy, descriptors, and `tdm`
+are second-stage tools after a simpler candidate is correct.
+
+Then view these headings:
+
+- `### 5.2 Synchronization and pipeline concepts`
+- `### 5.3 Descriptor and tensor-memory concepts`
+- `### A.4 Shared memory, synchronization, and cluster surface`
+- `### A.5 Descriptor and tensor-memory surface`
+
+Do not:
+
+- start with descriptor, async, scheduler, or persistent work as the first candidate;
+- translate NVIDIA TMA concepts to AMD by name.
+
+### Trait: matrix_none
+
+Read this first: if there is no real matrix instruction path, stop at explicit
+layout and memory lowering rather than forcing MFMA or WMMA.
+
+Then view these headings:
+
+- `#### Treat matrix lowering as a separate step`
+- `#### Elementwise or vector-style kernels`
+- `## 11. Benchmark-aware rules`
+
+Do not:
+
+- add MFMA or WMMA when the source has no matrix trait.
+
+### Trait: matrix_dot
+
+Read this first: `tl.dot` lowers through result layout, operand layouts,
+`convert_layout`, and target matrix op.
+
+Then view these headings:
+
+- `#### Treat matrix lowering as a separate step`
+- `### 6.3 AMD families`
+- `#### CDNA3 MFMA pattern`
+- `#### `gfx1250` WMMA pattern`
+
+Do not:
+
+- textually replace `tl.dot` with `mfma` or `wmma`;
+- skip accumulator and operand layout compatibility.
+
+### Trait: matrix_scaled_dot
+
+Read this first: scaled matrix paths require dtype, scale layout, target arch,
+instruction shape, and scale factor checks.
+
+Then view these headings:
+
+- `#### GEMM or FP8 kernels`
+- `#### CDNA4 scaled-MFMA pattern`
+- `#### `gfx1250` WMMA pattern`
+- `### A.10 Common failures and fix order`
+
+Do not:
+
+- use `mfma_scaled` on targets or dtype combinations that do not support it;
+- guess scale formats from names alone.
+
+### Trait: matrix_wmma_descriptor
+
+Read this first: gfx1250 WMMA, descriptor, `tdm`, cluster, and shared-layout
+rules are separate from CDNA MFMA behavior.
+
+Then view these headings:
+
+- `#### `gfx1250` and RDNA-style paths`
+- `#### `gfx1250` WMMA or descriptor kernels`
+- `#### `gfx1250` descriptor constraints`
+- `### A.5 Descriptor and tensor-memory surface`
+
+Do not:
+
+- treat gfx1250 as CDNA with renamed APIs;
+- add `wmma_scaled`, `tdm`, or cluster behavior before plain WMMA or descriptor works.
+
+### Trait: execution_jit_aot_sensitive
+
+Read this first: JIT availability, AOT packaging, prebuilt kernels, and scratch
+constraints are part of the integration contract.
+
+Then view these headings:
+
+- `### 2.2 JIT and AOT are both real`
+- `### 7.3 JIT and AOT can coexist in one operator family`
+- `### 9.4 Example: JIT with explicit AOT fallback`
+- `### A.8 Version and compatibility checklist`
+
+Do not:
+
+- delete existing fallback gates without understanding runtime packaging.
+
+### Trait: version_sensitive
+
+Read this first: Triton minor version can change layout construction, especially
+`AMDMFMALayout.instr_shape`.
+
+Then view these headings:
+
+- `### 2.3 Triton version compatibility matters`
+- `### 9.3 Example: Triton-version-compatible MFMA layout guard`
+- `### A.8 Version and compatibility checklist`
+- `### A.10 Common failures and fix order`
+
+Do not:
+
+- assume a 2D or 3D `instr_shape` without checking the expected Triton version.
+
+### Trait: operator_support_sensitive
+
+Read this first: global "Gluon available" checks are not the same as an
+operator-local support matrix.
+
+Then view these headings:
+
+- `### 6.4 Practical differences by target`
+- `### 6.5 Module path vs architecture version is not always the same thing`
+- `### 7.5 Feature availability is not operator support`
+- `### A.8 Version and compatibility checklist`
+
+Do not:
+
+- infer support from a global helper or namespace name alone.
+
 ## 1. Product contract
 
 GEAK treats Gluon as a **feature extension of Triton**, not as a new top-level
@@ -607,12 +914,139 @@ Read operator-local source before changing the kernel if you see:
 These are the cases where the general playbook is still useful, but it is no
 longer sufficient on its own.
 
-## 8. Representative examples
+## 8. Planner traits for candidate generation
+
+GEAK's planner should not hard-code one Gluon recipe per kernel family. It
+should infer a small set of composable planning traits, then allocate candidate
+task slots using the same `Prefer First` / `Consider Next` / `Deprioritize`
+style used by the HIP and plain Triton planner.
+
+These traits are internal planning signals. They are not user-facing input
+requirements.
+
+### 8.1 Lowering mental model
+
+The most reusable pattern from Triton's translator helpers is:
+
+1. identify source operation traits,
+2. choose the target family,
+3. select layout helpers,
+4. lower the operation with explicit layout conversion.
+
+For example, AMD dot lowering is not a text substitution. A plain `tl.dot`
+usually becomes:
+
+1. target-family dispatch:
+   - CDNA3 / CDNA4: `AMDMFMALayout`
+   - gfx1250: `AMDWMMALayout`
+2. result layout selection
+3. `DotOperandLayout` for each operand
+4. `convert_layout` into those operand layouts
+5. target op such as `mfma`, `wmma`, `mfma_scaled`, or `wmma_scaled`
+6. conversion back to the caller's expected layout when needed
+
+Likewise, generic Triton helpers such as `tl.arange`, `tl.full`, and
+`expand_dims` become layout-aware operations. The first planner question should
+therefore be "what traits does this source operation expose?" rather than "what
+kernel family is this?".
+
+### 8.2 Host and runtime contract
+
+Real AMD Gluon code often has a host-side contract as important as the kernel
+body:
+
+- wrapper ABI and tensor shape assumptions
+- stride-rich arguments and logical tensor rank
+- host-created layouts passed as `constexpr`
+- `num_warps`, `num_ctas`, block sizes, and target arch alignment
+- arch guards such as `gfx942`, `gfx950`, and `gfx1250`
+- Triton minor-version guards, especially `AMDMFMALayout.instr_shape`
+- JIT versus AOT gates and prebuilt-kernel loading behavior
+
+Planner tasks should not ask an agent to "just rewrite the kernel body" when
+these contracts are visible. In those cases the first candidate should be
+source-first and semantics-preserving.
+
+GEAK resolves the target backend before the first task-planning pass. The
+priority is:
+
+1. explicit `target_backend` from CLI, task text, or discovery metadata,
+2. `GEAK_TARGET_BACKEND`,
+3. best-effort `rocminfo` detection without `sudo`,
+4. default `hip/gfx942`.
+
+Normal non-Docker environments should prefer `GEAK_TARGET_BACKEND` when
+`rocminfo` is unavailable or restricted. Docker or ROCm shells can usually
+provide early `gfx*` detection before profiling creates `profile.json`.
+
+### 8.3 Core traits
+
+- `semantics_contract`: every Gluon candidate must preserve launcher shape,
+  indexing, masks and boundaries, correctness behavior, and benchmark intent.
+  Compile-only success is not enough.
+- `dialect_plain_triton`, `dialect_nv_gluon`, `dialect_amd_gluon`: choose
+  whether the task is a minimal layout rewrite, an NVIDIA-to-AMD translation, or
+  an in-dialect AMD Gluon optimization.
+- `layout_basic`, `layout_slice_broadcast`, `layout_source_first_required`:
+  decide whether the candidate can start from `BlockedLayout`, needs
+  `SliceLayout` / mask-preserving conversion, or must read operator-local layout
+  code before planning.
+- `memory_generic`, `memory_amd_buffer`, `memory_shared_async_descriptor`:
+  stage memory lowering from `gl.load` / `gl.store`, to AMD
+  `buffer_load` / `buffer_store`, to shared-memory, descriptor, `tdm`, or async
+  paths only after simpler candidates are correct.
+- `matrix_none`, `matrix_dot`, `matrix_scaled_dot`,
+  `matrix_wmma_descriptor`: decide whether matrix lowering is absent, requires
+  result/operand layout plus `mfma` / `wmma`, needs scaled-op constraints, or
+  belongs to the gfx1250 descriptor/WMMA family.
+- `execution_jit_aot_sensitive`, `version_sensitive`,
+  `operator_support_sensitive`: make JIT/AOT, Triton minor version,
+  `instr_shape`, target backend, and operator-local arch support part of the
+  planning contract.
+
+### 8.4 Candidate slot policy
+
+When AMD Gluon is in the output search space, early planning should allocate:
+
+1. a minimal AMD Gluon viability candidate,
+2. one trait-specific AMD Gluon candidate that names the traits it addresses,
+3. a plain Triton fallback or competitor when allowed.
+
+Only after a simpler AMD Gluon candidate passes correctness should the planner
+escalate to shared-memory swizzles, async copy, descriptors, scheduler hints,
+persistent kernels, atomics, or work stealing.
+
+For later rounds, previous tasks and verified evaluations should narrow the
+next candidate:
+
+- if Gluon failed to compile or pass correctness, shrink the next attempt to a
+  layout-only, translation-only, or memory-only step;
+- if Gluon passed correctness but regressed performance, try memory or matrix
+  lowering before scheduler-level changes;
+- if plain Triton wins, keep it as the selected fallback rather than forcing
+  more Gluon work.
+
+### 8.5 Strong negative examples
+
+The planner should reject or deprioritize tasks that:
+
+- introduce a new top-level `gluon` kernel type;
+- produce a new optimized `nv_gluon` output path;
+- keep NVIDIA layout assumptions unchanged on AMD;
+- rename NVIDIA `tma`, WGMMA, tensor-memory, or cluster APIs to guessed AMD
+  names;
+- replace `tl.dot` with an AMD matrix op without result and operand layouts;
+- add MFMA when the source has no real matrix trait;
+- start with descriptor, async, persistent, scheduler, atomics, or work stealing
+  before a simpler AMD Gluon candidate passes correctness;
+- claim success from compile-only validation without benchmark comparison.
+
+## 9. Representative examples
 
 These examples are intentionally different from the checked-in test fixtures.
 They are documentation examples, not golden outputs.
 
-### 8.1 Example: `plain_triton -> amd_gluon` row-wise affine transform
+### 9.1 Example: `plain_triton -> amd_gluon` row-wise affine transform
 
 Suppose the source kernel applies `output[row, col] = input[row, col] * scale[row] + bias[row]`.
 The plain Triton version may leave layout implicit. The AMD-facing Gluon version
@@ -687,7 +1121,7 @@ What this example is showing:
 - for non-contiguous tensors, pass explicit strides instead of relying on
   `row * n_cols`
 
-### 8.2 Example: `nv_gluon -> amd_gluon` tile reader rewrite
+### 9.2 Example: `nv_gluon -> amd_gluon` tile reader rewrite
 
 Suppose an NVIDIA-facing Gluon kernel reads a two-dimensional tile using a
 wave32-centric blocked layout and later plans to use an async-copy path. The
@@ -733,7 +1167,7 @@ What this example is showing:
 - switch to an AMD-valid layout and memory path
 - do not mechanically carry over an NVIDIA-only async or descriptor path
 
-### 8.3 Example: Triton-version-compatible MFMA layout guard
+### 9.3 Example: Triton-version-compatible MFMA layout guard
 
 Some real code has to survive Triton minor-version differences in
 `AMDMFMALayout.instr_shape`.
@@ -778,7 +1212,7 @@ What this example is showing:
 - this is a real module-level version check, not placeholder pseudocode
 - this is especially relevant for mixed JIT and AOT environments
 
-### 8.4 Example: JIT with explicit AOT fallback
+### 9.4 Example: JIT with explicit AOT fallback
 
 Some production code wants a JIT path when `triton.experimental.gluon` exists,
 but a fallback path when only prebuilt kernels are available.
@@ -804,7 +1238,7 @@ What this example is showing:
 - GEAK should preserve that decision surface when the codebase already depends
   on it
 
-## 9. Current repo-local notes
+## 10. Current repo-local notes
 
 GEAK's current checked-in defaults for this feature are intentionally small:
 
@@ -825,7 +1259,7 @@ The accepted checked-in input forms are:
 
 GEAK should generate and benchmark candidate outputs at run time.
 
-## 10. Benchmark-aware rules
+## 11. Benchmark-aware rules
 
 - compile-only success is not enough to claim the path is valid
 - preserve correctness before optimizing for speed
@@ -836,7 +1270,7 @@ GEAK should generate and benchmark candidate outputs at run time.
 - treat Triton minor version, JIT vs AOT availability, and target architecture
   as part of the benchmark contract
 
-## 11. Anti-patterns
+## 12. Anti-patterns
 
 - introducing a new top-level `gluon` kernel type
 - treating conceptual correspondences as 1:1 API renames
