@@ -1,23 +1,22 @@
-"""Wrapper around the AMD MCP `fetch` tool used by DRA's web evidence layer.
+"""Shared MCP client helpers for DRA.
 
-Why this exists separately from a plain ``requests.get``:
+The active DRA evidence path uses open-websearch MCP `search` for URL discovery
+and AMD MCP `fetch` as a page reader for selected URLs. It intentionally avoids
+AMD MCP `web_search` and `conduct_research`.
+
+Why this exists separately from plain ``requests.get``:
   - The AMD ``commons_remote`` MCP server exposes a `fetch` tool that returns
     a URL's content already converted to readable markdown (drops nav, ads,
-    boilerplate). That post-processing is exactly what DRA needs to feed into
-    a synthesis prompt, and it is free for us inside the cluster.
+    boilerplate).
   - We verified empirically that the ``web_search`` MCP tool returns ``[]``
     intermittently and that ``conduct_research`` hallucinates citations.
-    `fetch` is the only tool on that server that reliably returns real,
-    grounded content. So DRA pairs `fetch` with the open-websearch sidecar
-    daemon and our own URL-discovery adapters (arxiv API, GitHub Code Search,
-    ROCm docs sitemap, HN Algolia) in ``web_search.py``, and uses this
-    wrapper for the actual page reads.
+    `fetch` is the only tool on that server that reliably returned grounded
+    content, so DRA uses it only for URL -> markdown reads.
 
 Operationally:
   - One persistent ``fastmcp.Client`` per process; lazily constructed on first
     call. Re-uses the same TCP connection across many `fetch_markdown` calls.
-  - Bounded concurrency is handled at the call-site (`iterative_search.py`
-    uses a `Semaphore`).
+  - Bounded concurrency is handled at call-sites.
   - Failure modes (timeout, 4xx, paywall, empty body) all surface as ``None``
     so the caller can decide whether to retry, refine, or skip.
 """
@@ -36,11 +35,11 @@ _DEFAULT_TIMEOUT_S = 15.0
 
 
 class McpFetchClient:
-    """Thin async wrapper around the commons_remote `fetch` MCP tool.
+    """Thin async wrapper around a persistent MCP client.
 
-    Use one instance per DRA invocation; construct via
-    ``McpFetchClient.get_or_create()`` to share a TCP connection across the
-    many fetches a single ``run_dra`` issues.
+    Use ``McpFetchClient.get_or_create()`` to share a TCP connection across MCP
+    calls. Current DRA uses ``call_tool("search", ...)`` for open-websearch URL
+    discovery and ``fetch_markdown`` for selected URL reads.
     """
 
     _shared: dict[str, McpFetchClient] = {}

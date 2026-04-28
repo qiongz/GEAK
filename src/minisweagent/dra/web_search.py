@@ -1,14 +1,15 @@
-"""Real-source web search adapters used by DRA.
+"""Real-source open-search adapters used by DRA.
 
-Five adapters, all returning ``WebHit`` (URL + title + snippet); page content
-is fetched lazily later via ``mcp_fetch.fetch_markdown(url)``:
+The primary adapter is the local open-websearch sidecar. It returns ``WebHit``
+objects containing URL + title + snippet; DRA uses those fields directly as
+evidence and does not fetch page markdown through AMD MCP.
 
   1. open-websearch local daemon (multi-engine: DuckDuckGo + Bing + Brave +
      Exa + Startpage; primary general-purpose channel, no API keys)
-  2. arxiv (academic papers, supplemental)
-  3. GitHub Code Search (real implementations, supplemental)
-  4. Hacker News Algolia (engineer commentary, supplemental)
-  5. rocm.docs.amd.com sitemap (canonical AMD reference, supplemental)
+  2. arxiv (academic papers, opt-in supplemental)
+  3. GitHub Code Search (real implementations, opt-in supplemental)
+  4. Hacker News Algolia (engineer commentary, opt-in supplemental)
+  5. rocm.docs.amd.com sitemap (canonical AMD reference, opt-in supplemental)
 
 The AMD ``commons_remote`` ``web_search`` MCP tool is intentionally NOT used:
 verified empirically to be flaky (returns ``[]`` for the same query that
@@ -24,9 +25,9 @@ limiting. Start it once on the host or as a sidecar:
 
     npx open-websearch@latest          # default: HTTP+STDIO mode on :3000
 
-Then DRA's adapter calls ``POST {GEAK_DRA_OPEN_WEBSEARCH_URL}/search``
-(default ``http://localhost:3000``). If the daemon is not reachable the
-adapter degrades to ``[]`` and the four supplemental adapters carry the load.
+Then DRA's adapter calls the MCP ``search`` tool at
+``{GEAK_DRA_OPEN_WEBSEARCH_URL}`` (default ``http://localhost:3000/mcp``). If
+the daemon is not reachable the adapter degrades to ``[]``.
 
 All adapters are async and degrade to ``[]`` on any error. The orchestrator
 runs them in parallel with ``asyncio.gather``.
@@ -53,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class WebHit:
-    """One discovered URL with metadata; content is fetched lazily later."""
+    """One discovered URL with metadata used directly as evidence."""
 
     url: str
     title: str
@@ -414,8 +415,8 @@ async def search_hn(query: str, max_results: int = 5) -> list[WebHit]:
 # a doc URL; we score by how many query terms appear in the URL path.
 #
 # This is intentionally crude: it is a guidance-quality channel for canonical
-# AMD reference material, not a full text index. The actual page content is
-# fetched later by mcp_fetch.
+# AMD reference material, not a full text index. DRA uses the URL/path snippet
+# directly unless supplemental adapters are explicitly enabled.
 
 _ROCM_SITEMAP_URL = "https://rocm.docs.amd.com/sitemap.xml"
 _ROCM_DOC_HOST = "rocm.docs.amd.com"

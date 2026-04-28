@@ -297,6 +297,10 @@ Generate optimization tasks for the kernel at {{ kernel_path }}.
 {% endif %}{% if commandment_path %}- **COMMANDMENT.md** (evaluation contract): {{ commandment_path }}
 {% endif %}{% if knowledge_base_path %}- **Knowledge base** (optimization strategies): {{ knowledge_base_path }}
 {% endif %}{% if deep_search_path %}- **Deep search findings** (convergent, evidence-backed; primary source for task selection): {{ deep_search_path }}
+  Read its "Task-Generator Guidance" first. Treat `prefer_first` items as
+  implementation bets with target/edit/validation details, use `reject` as a
+  hard negative list unless the current profile contradicts it, and convert
+  `open_questions` into measurement tasks only when they block a high-upside edit.
 {% endif %}{% if experimental_directions_path %}- **Experimental directions** (orthogonal probes; reserve a small number of tasks for these to maintain exploration pressure): {{ experimental_directions_path }}
 {% endif %}{% if previous_results_path %}- **Prior round results** (what actually happened): {{ previous_results_path }}
 {% endif %}{% if previous_tasks_path %}- **Prior tasks planned** (avoid repeating): {{ previous_tasks_path }}
@@ -344,8 +348,10 @@ Read the profiling file first to understand the sub-kernel landscape. Then
 read the codebase context file for the kernel dependency tree -- every
 dependency listed is in-repo code that could be an optimization target.
 Read the discovery file for additional kernel metadata, and consult the
-knowledge base for applicable strategies. Finally, submit your task list
-as JSON via the `submit` tool.
+knowledge base for applicable strategies. If deep-search findings are present,
+turn the top implementation bets into the first tasks, then add only genuinely
+orthogonal or measurement-driven tasks. Finally, submit your task list as JSON
+via the `submit` tool.
 """)
 
 

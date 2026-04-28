@@ -1,10 +1,12 @@
 """DRA: Deep Research Artifact generation for GEAK.
 
-DRA produces two artifact pairs that the task generator consumes:
+DRA produces Markdown artifacts that the task generator consumes:
 
-  - deep_search.{md,json}            -- convergent, evidence-backed research
-  - experimental_directions.{md,json} -- orthogonal probes that challenge
-                                         the dominant thesis
+  - deep_search.md                  -- convergent, source-pack-grounded research
+  - experimental_directions.md      -- orthogonal probes that challenge
+                                       the dominant thesis
+  - deep_search_search_records.jsonl -- query/result trace for debugging
+  - deep_search_synth_records.jsonl  -- per-answer + telemetry trace
 
 Public API:
 
@@ -18,7 +20,7 @@ Public API:
         # ... other optional inputs
     )
     paths = run_dra(inputs)
-    # paths["deep_search_md"], paths["deep_search_json"], ...
+    # paths["deep_search_md"], paths["search_records"], ...
 
 DRA is opt-in. See `config.py` for env-var knobs.
 """

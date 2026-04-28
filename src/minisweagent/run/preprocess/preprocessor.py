@@ -411,6 +411,7 @@ def run_preprocessor(
     correctness_command: str | list[str] | None = None,
     performance_command: str | list[str] | None = None,
     benchmark_timeout: int = 3600,
+    task_context: str | None = None,
 ) -> dict[str, Any]:
     """Run all preprocessing steps and return a context dict.
 
@@ -1240,12 +1241,36 @@ def run_preprocessor(
         logger.info("[bold cyan]--- Step 8/8: Deep Research Artifact (DRA) ---[/bold cyan]")
         try:
             from minisweagent.dra import DRAConfig, DRAInputs, run_dra
+            from minisweagent.dra.source_pack import build_source_pack
             from minisweagent.models.amd_llm import AmdLlmModel
 
             dra_cfg = DRAConfig.from_env()
             if not dra_cfg.enabled:
                 logger.info("  DRA disabled by GEAK_DRA_DISABLE; skipping.")
             else:
+                source_pack_path = output_dir / "dra_source_pack.md"
+                build_source_pack(
+                    kernel_path=Path(kernel_path),
+                    repo_root=Path(repo_root) if repo_root else Path(kernel_path).parent,
+                    output_path=source_pack_path,
+                    profile_path=(output_dir / "profile.json") if (output_dir / "profile.json").exists() else None,
+                    baseline_metrics_path=(
+                        (output_dir / "baseline_metrics.json")
+                        if (output_dir / "baseline_metrics.json").exists()
+                        else None
+                    ),
+                    benchmark_baseline_path=(
+                        (output_dir / "benchmark_baseline.txt")
+                        if (output_dir / "benchmark_baseline.txt").exists()
+                        else None
+                    ),
+                    commandment_path=(
+                        (output_dir / "COMMANDMENT.md")
+                        if (output_dir / "COMMANDMENT.md").exists()
+                        else None
+                    ),
+                    task_context=task_context,
+                )
                 dra_inputs = DRAInputs(
                     kernel_path=Path(kernel_path),
                     output_dir=Path(output_dir),
@@ -1260,11 +1285,7 @@ def run_preprocessor(
                         if (output_dir / "discovery.json").exists()
                         else None
                     ),
-                    codebase_context_path=(
-                        (output_dir / "CODEBASE_CONTEXT.md")
-                        if (output_dir / "CODEBASE_CONTEXT.md").exists()
-                        else None
-                    ),
+                    source_pack_path=source_pack_path,
                     commandment_path=(
                         (output_dir / "COMMANDMENT.md")
                         if (output_dir / "COMMANDMENT.md").exists()
@@ -1292,7 +1313,7 @@ def run_preprocessor(
                                 f" [questions={_s.get('questions', '?')} "
                                 f"blindspot_rounds={_s.get('blindspot_rounds', '?')} "
                                 f"answers={_s.get('answers_total', '?')} "
-                                f"web_fetches={_s.get('web_fetches_total', '?')} "
+                                f"page_reads={_s.get('page_reads_total', _s.get('web_fetches_total', '?'))} "
                                 f"refinements={_s.get('refinements_total', '?')} "
                                 f"llm_calls={_b.get('llm_calls', '?')} "
                                 f"total={_b.get('total', '?')}/{_b.get('max_total', '?')} "
@@ -1349,10 +1370,15 @@ def run_preprocessor(
                 "profile.json": (output_dir / "profile.json").exists(),
                 "baseline_metrics.json": (output_dir / "baseline_metrics.json").exists(),
                 "COMMANDMENT.md": (output_dir / "COMMANDMENT.md").exists(),
+                "dra_source_pack.md": (output_dir / "dra_source_pack.md").exists(),
                 "deep_search.md": (output_dir / "deep_search.md").exists(),
-                "deep_search.json": (output_dir / "deep_search.json").exists(),
+                "deep_search_search_records.jsonl": (
+                    output_dir / "deep_search_search_records.jsonl"
+                ).exists(),
+                "deep_search_synth_records.jsonl": (
+                    output_dir / "deep_search_synth_records.jsonl"
+                ).exists(),
                 "experimental_directions.md": (output_dir / "experimental_directions.md").exists(),
-                "experimental_directions.json": (output_dir / "experimental_directions.json").exists(),
             },
         },
         hypothesis_id="H3",

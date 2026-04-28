@@ -1,11 +1,12 @@
 """Data schemas for DRA (Deep Research Artifact) generation.
 
-Two artifact families produced by the pipeline:
-  - DeepSearchArtifact: convergent, evidence-backed research output
+Two internal artifact families feed Markdown rendering:
+  - DeepSearchArtifact: convergent, source-pack-grounded research output
   - ExperimentalDirectionsArtifact: orthogonal, exploratory probes
 
 Intermediate types (Question, Answer, BlindSpot) are passed between stages
-of the runner and are not persisted as standalone artifacts.
+of the runner and are not persisted as standalone artifacts. The task generator
+consumes Markdown; JSONL traces are kept only for audit/debugging.
 """
 
 from __future__ import annotations
@@ -59,6 +60,7 @@ class Question:
     """A candidate research question (Stage 1) with optional ranking (Stage 2)."""
 
     question: str
+    search_queries: list[str] = field(default_factory=list)
     rationale: str = ""
     decision_impact: int = 0  # 0-10
     actionability: int = 0  # 0-10
@@ -161,7 +163,7 @@ class TaskgenGuidance:
 
 @dataclass
 class DeepSearchArtifact:
-    """Final convergent research artifact (deep_search.json)."""
+    """Final convergent research artifact rendered to deep_search.md."""
 
     timestamp: str = field(default_factory=_now_iso)
     inputs: dict[str, Any] = field(default_factory=dict)
@@ -190,7 +192,7 @@ class DeepSearchArtifact:
 
 @dataclass
 class ExperimentalDirection:
-    """One orthogonal probe (entry in experimental_directions.json)."""
+    """One orthogonal probe rendered into experimental_directions.md."""
 
     direction_id: str
     thesis: str
@@ -214,7 +216,7 @@ class ExperimentalDirection:
 
 @dataclass
 class ExperimentalDirectionsArtifact:
-    """Final orthogonal artifact (experimental_directions.json)."""
+    """Final orthogonal artifact rendered to experimental_directions.md."""
 
     timestamp: str = field(default_factory=_now_iso)
     inputs: dict[str, Any] = field(default_factory=dict)

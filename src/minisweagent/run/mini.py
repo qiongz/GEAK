@@ -457,6 +457,7 @@ def main(
         gpu_id=parsed_gpu_ids[0] if parsed_gpu_ids else 0,
         model_factory=lambda: get_model(model_name, config.get("model", {})),
         console=console,
+        task_context=task_content,
     )
     logger.debug("Preprocess kwargs: %s", _preprocess_kwargs)
 

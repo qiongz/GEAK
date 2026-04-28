@@ -126,7 +126,7 @@ def test_stage5_parses_blindspots_and_tags_round():
     assert budget.llm_calls == 1
 
 
-# ---- _coerce_evidence: accepts dicts, strings, falls back to hits ----------
+# ---- _coerce_evidence: accepts legacy dicts/strings without fabricating cites --
 
 
 def test_coerce_evidence_from_dicts():
@@ -148,11 +148,11 @@ def test_coerce_evidence_from_dicts():
 def test_coerce_evidence_from_strings():
     raw = ["kb://Section A", "kb://Section B"]
     out = _coerce_evidence(raw, hits=[])
-    assert [e.source_type for e in out] == ["kb", "kb"]
+    assert [e.source_type for e in out] == ["web_search", "web_search"]
     assert out[0].title == "kb://Section A"
 
 
-def test_coerce_evidence_falls_back_to_hits_when_empty():
+def test_coerce_evidence_returns_empty_when_model_omits_legacy_evidence():
     from minisweagent.dra.iterative_search import UnifiedHit
 
     hits = [
@@ -160,9 +160,7 @@ def test_coerce_evidence_falls_back_to_hits_when_empty():
         UnifiedHit(title="Section A", content="kb body", score=0.3, origin="kb", chunk_id="amd/secA"),
     ]
     out = _coerce_evidence(raw=[], hits=hits)
-    assert [e.source_type for e in out] == ["web_arxiv", "kb"]
-    assert out[0].url == "https://arxiv.org/abs/x"
-    assert out[1].chunk_id == "amd/secA"
+    assert out == []
 
 
 def test_coerce_evidence_overrides_mislabeled_source_type_from_hits():

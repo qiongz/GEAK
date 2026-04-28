@@ -3,10 +3,10 @@
 All LLM call sites in `runner.py` source their prompts from this module so
 they can be tuned and diffed in one place.
 
-Each prompt asks the model to return a single JSON object on stdout. The
-runner is responsible for extracting and validating that JSON. We keep the
-prompts deliberately schema-explicit because the staged pipeline depends on
-machine-readable handoffs between stages.
+The runner still expects compact JSON handoffs internally, but the prompts are
+written for research quality first. Keep output contracts terse so the model
+spends attention on question quality, gap analysis, and synthesis rather than
+copying verbose output templates.
 """
 
 from __future__ import annotations
@@ -19,12 +19,20 @@ import textwrap
 
 _HEADER = textwrap.dedent(
     """\
-    You are a research sub-agent inside the GEAK GPU kernel optimization system.
-    Your job is to produce structured, evidence-backed analysis that a downstream
-    task generator will use to plan optimization tasks.
+    You are a brilliant GPU kernel scientist-engineer inside the GEAK optimization
+    system. Your job is to understand the exact local kernel from the source pack,
+    then use mandatory web research to discover the outside knowledge needed to
+    build the best possible optimized version of that kernel.
 
-    You MUST respond with a single JSON object that exactly matches the requested
-    schema. No prose before or after. No code fences. Just the JSON.
+    Treat the local source pack, profile, benchmark contract, and hardware context
+    as ground truth. Use web results to expand your technical imagination: known
+    fast implementations, papers, hardware details, library tricks, and design
+    patterns that could change the implementation plan.
+
+    Think like a world-class engineer preparing a code-writing agent. Be concrete,
+    skeptical, mechanism-driven, and willing to challenge the obvious bottleneck
+    story. Return one compact JSON object with the requested keys only; no prose
+    outside JSON and no code fences.
     """
 )
 
@@ -39,34 +47,17 @@ FACTS_PROMPT = (
         """\
 
         ## Task
-        Extract a compact, structured view of the run context from the inputs below.
+        Read the local source pack like a kernel expert preparing to optimize it.
+        Extract not only the visible facts, but the technical shape of the problem:
+        what computation is being performed, why it may be slow, which constraints
+        are load-bearing, and which implementation levers are visible from the
+        source/profile/hardware context.
 
         ## Inputs
-        ### Kernel source
+        ### Local source pack
         ```
-        {kernel_text}
+        {source_pack}
         ```
-
-        ### Profile (profile.json)
-        ```json
-        {profile_json}
-        ```
-
-        ### Baseline metrics (baseline_metrics.json)
-        ```json
-        {baseline_json}
-        ```
-
-        ### Discovery (discovery.json)
-        ```json
-        {discovery_json}
-        ```
-
-        ### Codebase context (CODEBASE_CONTEXT.md)
-        {codebase_context}
-
-        ### Commandment (COMMANDMENT.md)
-        {commandment}
 
         ### Prior round summary (may be empty)
         {previous_results}
@@ -74,19 +65,13 @@ FACTS_PROMPT = (
         ### Round evaluations (may be empty)
         {round_evaluations}
 
-        ## Required JSON schema
-        {{
-          "kernel_language": "<triton|hip|cuda|unknown>",
-          "kernel_backend":  "<rocm|cuda|unknown>",
-          "bottleneck_type": "<memory|compute|latency|balanced|unknown>",
-          "hot_kernels":     [{{"name": "...", "share": 0.0}}],
-          "benchmark_contract":     "<one-line description>",
-          "correctness_constraints": ["..."],
-          "prior_successes":         ["..."],
-          "prior_failures":          ["..."],
-          "likely_targets":          ["<file or function>"],
-          "notes":                   "<short free text>"
-        }}
+        Return compact JSON with keys:
+        kernel_language, kernel_backend, bottleneck_type, hot_kernels,
+        benchmark_contract, correctness_constraints, prior_successes,
+        prior_failures, likely_targets, notes.
+
+        In `notes`, emphasize kernel-specific reasoning: likely hidden constraints,
+        suspicious assumptions, and optimization levers that deserve web research.
         """
     )
 )
@@ -104,39 +89,74 @@ QUESTIONS_PROMPT = (
         """\
 
         ## Task
-        Given the extracted facts below, generate research questions whose answers
-        would meaningfully shape what optimization tasks GEAK should try next.
-        Then rank them.
+        Given the local facts and source pack below, identify the outside knowledge
+        a brilliant kernel scientist-engineer would actively seek before writing
+        the best possible optimized version of this exact kernel. Web search is
+        mandatory because model priors are not enough in this domain.
 
-        Generate between 6 and 20 candidate questions. Score each on three axes
-        (0-10 integers):
+        Do NOT ask the web for facts available in the source pack/profile, such
+        as local benchmark shapes, local launch geometry, wrapper code, or exact
+        source code. Use those local facts only to decide what external knowledge
+        is worth searching for.
+
+        Each research question should expose a decision-changing knowledge gap:
+        if the answer goes one way, GEAK should try one implementation family; if
+        it goes the other way, GEAK should avoid or deprioritize that family.
+
+        Good web-research themes:
+          - fastest known implementations of this exact kernel family
+          - state-of-the-art papers / systems / libraries for the broader
+            algorithmic pattern, not just the exact function name
+          - best-performing setup choices for similar kernels (tiling size,
+            warp/wavefront mapping, block shape, data layout, vectorization)
+          - point-cloud/nearest-neighbor/radius-search CUDA or HIP kernels
+          - papers on GPU point-cloud neighbor search or spatial/radius queries
+          - kernel fusion patterns relevant to the local profile
+          - AMD/ROCm/CDNA/HIP hardware primitives relevant to the local source
+            (wavefront shuffle, ballot/popcount, LDS/shared memory, MFMA only
+            when relevant, occupancy/VGPR/LDS tradeoffs)
+          - target hardware tuning guidance for the exact target GPU/arch named
+            in the source pack's User Task / Hardware Context. Do not invent a
+            target. If the source pack names a target such as MI355X/gfx950/CDNA4,
+            use that target in hardware queries; use other GPU generations only
+            as comparison points.
+          - GitHub implementations with similar wrappers/native extension code
+
+        Generate between 12 and 28 candidate web research questions before
+        ranking. Each question must include 3-5 `search_queries`.
+
+        The search queries should sound like a strong human engineer using web
+        search, GitHub search, or arXiv search. Prefer natural-language phrases
+        over bag-of-keywords. Keep them concise, but not cryptic.
+
+        Score each candidate on four axes (0-10 integers):
           - decision_impact:   how much the answer changes downstream task choice
-          - actionability:     how concrete the answer can be made
+          - actionability:     whether the answer can become a concrete code edit
           - kernel_relevance:  how tightly tied to this specific kernel/profile
+          - novelty:           whether this would add information beyond obvious
+                                CUDA/HIP optimization boilerplate
 
-        Compute rank_score = decision_impact + actionability + kernel_relevance.
+        Compute rank_score = decision_impact + actionability + kernel_relevance + novelty.
 
         Return AT MOST {max_questions} of the highest-ranked questions. Do not
-        include questions whose answers are already obvious from the facts.
+        include questions whose answers are already obvious from the facts. Prefer
+        questions that distinguish between two implementation paths GEAK could
+        actually try.
 
         ## Facts
         ```json
         {facts_json}
         ```
 
-        ## Required JSON schema
-        {{
-          "questions": [
-            {{
-              "question": "...",
-              "rationale": "...",
-              "decision_impact": 0,
-              "actionability": 0,
-              "kernel_relevance": 0,
-              "rank_score": 0.0
-            }}
-          ]
-        }}
+        ## Local source pack
+        {source_pack}
+
+        Return compact JSON with key `questions`. Each question item should have:
+        question, search_queries, rationale, decision_impact, actionability,
+        kernel_relevance, novelty, rank_score.
+
+        The rationale should name the concrete implementation decision this
+        outside knowledge could change.
         """
     )
 )
@@ -152,61 +172,66 @@ PER_QUESTION_SYNTH_PROMPT = (
         """\
 
         ## Task
-        Answer the research question below using ONLY the provided evidence:
-          - the extracted facts
-          - the retrieved knowledge-base chunks (origin "kb")
-          - the fetched web sources (origin "web_arxiv", "web_github",
-            "web_rocm_docs", "web_hn") -- these have a real `url` you must cite
-          - the prior-run context (if any)
+        Synthesize what the web search/read results teach us for the research
+        direction below, with one goal: decide how this outside knowledge changes
+        the optimization strategy for the local kernel.
 
-        Do not introduce facts that are not supported by the evidence. If the
-        evidence is insufficient (fewer than {min_sources} distinct sources
-        meaningfully back your claims), say so and set status to "open".
+        Use local facts and the LOCAL CODE below as authoritative for this run.
+        The local code section contains the actual source files that will be
+        optimized -- the kernel(s), the wrapper(s), the build harness, and
+        the benchmark task runner. ALWAYS read them before answering. When
+        the question can be answered directly from a local file, do that and
+        CITE the file path in the ``answer`` body (for example: ``best1`` is
+        declared as ``double`` in ``src/three_nn_cuda.hip``). When useful,
+        quote the exact line/snippet you are reasoning from rather than
+        paraphrasing it. Do not paraphrase a similar implementation from web
+        material when the local code is right here.
 
-        ## Citation requirements (load-bearing)
-        Cite at least {min_sources} DISTINCT sources in `evidence` if the
-        retrieved material allows it. Each entry must point at a real chunk or
-        URL from the inputs below; do NOT invent URLs or chunk titles. Prefer
-        a mix of `kb` chunks AND `web_*` sources if both are available --
-        single-origin answers are weaker than mixed ones.
+        Use web material as external technical knowledge: inspiration,
+        implementation precedent, hardware guidance, warning, or counterexample.
+        If web material conflicts with local source/profile facts, local facts
+        win.
 
-        Pick a recommended status that the task generator can act on:
-          - "prefer":       strong evidence (>= {min_sources} distinct sources agree); prioritize tasks here
-          - "deprioritize": weak or contraindicated by evidence
-          - "reject":       evidence shows this should NOT be tried again
-          - "open":         evidence inconclusive or fewer than {min_sources} sources available
+        Rank usefulness for optimization:
+          - "prefer":       likely useful for a high-value patch
+          - "deprioritize": plausible but lower priority or weakly applicable
+          - "reject":       likely bad for this local kernel/profile
+          - "open":         interesting but needs local measurement or source inspection
+
+        Think mechanistically. Explain why the idea could help or fail on this
+        exact workload/backend/hardware, not merely that it appears in a paper or
+        repository. End with the implementation consequence: what GEAK should try,
+        avoid, or measure because of this research.
+
+        If neither the local code excerpts nor the web material let you answer
+        the question concretely, return a SHORT answer (one or two sentences)
+        that names exactly which file to read or which measurement to run, set
+        ``status: "open"``, and stop. Do NOT confabulate from generic GPU
+        folklore -- a 30-word "I don't know, look at file X" answer is strictly
+        better than a 300-word paraphrase of unrelated material.
 
         ## Question
         {question}
+
+        ## Local code excerpts (selected from the source pack)
+        {local_code}
 
         ## Facts
         ```json
         {facts_json}
         ```
 
-        ## Retrieved knowledge-base + web chunks
+        ## Web-search + read material
         {kb_chunks}
 
         ## Prior-run context (may be empty)
         {prior_run_context}
 
-        ## Required JSON schema
-        {{
-          "answer": "<the synthesized answer; weave citations inline like [1] [2] referring to the chunks above>",
-          "evidence": [
-            {{
-              "source_type": "<kb|web_arxiv|web_github|web_rocm_docs|web_hn|facts|prior_run>",
-              "title": "<short title or section name; copy from the chunk header>",
-              "url": "<empty for kb / facts; the real URL for web_* sources>",
-              "chunk_id": "<empty for web; the chunk id or title for kb sources>",
-              "snippet": "<<= 400 chars excerpted from the chunk>",
-              "score": 0.0
-            }}
-          ],
-          "affected": ["<files or functions this answer points at>"],
-          "taskgen_implications": "<one-line guidance for task generation>",
-          "status": "<prefer|deprioritize|reject|open>"
-        }}
+        Return compact JSON with keys: answer, affected,
+        taskgen_implications, status.
+
+        Do not include a citation list. Mention any essential source names/URLs
+        inline in `answer` only when they directly shape the implementation idea.
         """
     )
 )
@@ -222,25 +247,31 @@ QUERY_REFINEMENT_PROMPT = (
         """\
 
         ## Task
-        A previous web/KB search returned weak or off-topic results for the
-        question below. Rewrite the search query so Google + arxiv + GitHub +
-        AMD ROCm docs return more on-target hits.
+        We are doing iterative deep research. Given the current research
+        direction, previous queries, and result titles, write the next query that
+        would add the most useful new information.
+
+        This is not only for weak results. If results are promising, dig deeper:
+        search for source code, papers, hardware details, benchmarks, or a more
+        specific variant that could improve the final kernel strategy.
 
         ## Hard constraints on the rewrite
-        - Output SHORT: 3-7 keywords total. Long queries return ZERO hits on
-          AMD's web_search tool. Drop everything that is not a noun, code
-          identifier, or a critical disambiguator.
-        - NO sentences. NO question marks. NO "what is", "how does", etc.
+        - Output concise human web-search query.
+        - Prefer natural-language phrases over keyword soup.
         - Keep code identifiers verbatim (e.g. ``knn_kernel``, ``__shfl_xor``).
-        - Keep proper nouns (AMD, ROCm, CDNA, HIP, MI300X) when relevant.
-        - Keep dimension constants when relevant (warp, wavefront 64, k=8).
+        - Include source intent when useful but this is not necessary: "GitHub", "paper", "arXiv",
+          "ROCm docs", "CUDA implementation", "HIP implementation".
+        - Include exact target hardware from the source pack when relevant,
+          such as GPU name, gfx arch, microarchitecture, wavefront, LDS, VGPR.
+          Do not guess hardware that is not present in the source pack.
+        - Avoid asking for local repo facts; ask for external implementations,
+          papers, docs, or hardware techniques.
 
         Pick ONE strategy:
           - swap a vague term for a specific one (e.g. "kernel" -> "knn_kernel")
           - shift to a sibling formulation (cause-and-effect -> the named pattern)
           - drop the qualifier and search for the bare concept
-          - target a specific source family (e.g. "arxiv knn gpu" or
-            "github rocm point cloud knn")
+          - target a specific source family if needed (e.g. "GitHub ROCm point cloud KNN implementation")
 
         ## Original question
         {question}
@@ -248,13 +279,54 @@ QUERY_REFINEMENT_PROMPT = (
         ## Queries already tried
         {tried_queries}
 
-        ## Sample of weak results (titles only)
+        ## Sample of current results (titles only)
         {weak_titles}
 
-        ## Required JSON schema
-        {{
-          "refined_query": "<3-7 keywords, no quotes, no question mark>"
-        }}
+        Return compact JSON with key `refined_query`.
+        """
+    )
+)
+
+
+# ---------------------------------------------------------------------------
+# Search-result triage (search -> deeper search -> read)
+# ---------------------------------------------------------------------------
+
+SEARCH_TRIAGE_PROMPT = (
+    _HEADER
+    + textwrap.dedent(
+        """\
+
+        ## Task
+        Triage open-search results for one DRA research question.
+
+        Decide:
+        - which URLs are worth reading now
+        - whether the current result set is sufficient
+        - if not sufficient, what deeper follow-up search queries should be tried
+
+        Be selective. Prefer official docs, arXiv HTML/abstract pages, GitHub
+        source/code pages, papers, and high-signal technical posts. Avoid generic
+        SEO pages, unrelated tutorials, duplicate URLs, and results that only
+        match broad words.
+
+        ## Research question
+        {question}
+
+        ## Search round
+        {round_idx} of {max_rounds}
+
+        ## Query used
+        {query}
+
+        ## Results
+        {results}
+
+        Return compact JSON with keys:
+        selected_urls, sufficient, follow_up_queries, rationale.
+        `selected_urls` should contain at most {read_top_k} URLs from Results.
+        `follow_up_queries` should contain 0-3 short search queries, only if
+        `sufficient` is false and another round remains.
         """
     )
 )
@@ -270,22 +342,33 @@ BLINDSPOT_PROMPT = (
         """\
 
         ## Task
-        You are running a skeptical pass (round {round_idx} of up to
-        {max_rounds}) over the per-question answers gathered so far. Your job
-        is to find weaknesses in the current thesis, NOT to agree.
+        You are running a skeptical thinking-blindspot pass (round {round_idx} of
+        up to {max_rounds}) over the per-question answers gathered so far. Your job
+        is to find missing ideas, bad assumptions, and alternative optimization
+        frames that could change GEAK's next patch. Do not merely agree with the
+        current thesis.
 
         Look for:
-          - assumptions that are weakly supported by the cited sources
           - strategy families that are underexplored
           - over-commitment to the bottleneck label
           - over-weighting of wrapper / layout changes
+          - under-weighting of wrapper / layout changes when kernel work may be the trap
           - important files or dependencies that are missing
           - recommendations that conflict with each other
-          - claims with fewer than 4 distinct cited sources (`status: open`
-            answers are prime targets)
+          - missing source-code facts needed to implement the recommendation
+          - profile ambiguities that could make a "fast" idea irrelevant
+          - benchmark-overfitting risk or suspicious wrapper-only wins
+          - optimization families that the current answers mention but do not
+            operationalize into an edit
+          - cases where DRA is repeating generic GPU advice instead of reasoning
+            from this exact source pack
+          - algorithmic reframings that web search did not naturally surface
+          - hardware-specific primitives or limits the current thesis ignored
 
-        Each blindspot must include a follow-up question that, if researched
-        against fresh sources, would resolve the doubt.
+        Each blindspot must include a follow-up question that would force sharper
+        thinking. It may require web research, source inspection, profiling, or a
+        small local measurement, but it should not be a request for "more sources."
+        It should point toward a concrete implementation decision.
 
         ## Avoid repeating prior blindspots
         The blindspots below were already raised in earlier rounds. Do NOT
@@ -296,7 +379,9 @@ BLINDSPOT_PROMPT = (
         {prior_blindspots_json}
         ```
 
-        Return AT MOST {max_blindspots} NEW blindspots, ranked by importance.
+        Return AT MOST {max_blindspots} NEW blindspots, ranked by expected ability
+        to change the next patch. Prefer a diverse set over many variants of the
+        same missing fact.
 
         ## Facts
         ```json
@@ -308,16 +393,8 @@ BLINDSPOT_PROMPT = (
         {answers_json}
         ```
 
-        ## Required JSON schema
-        {{
-          "blindspots": [
-            {{
-              "description": "<what is weakly supported or missing>",
-              "why_it_matters": "<why this could change the conclusion>",
-              "follow_up_question": "<a single concrete question to research next>"
-            }}
-          ]
-        }}
+        Return compact JSON with key `blindspots`. Each item should have:
+        description, why_it_matters, follow_up_question.
         """
     )
 )
@@ -325,20 +402,51 @@ BLINDSPOT_PROMPT = (
 
 # ---------------------------------------------------------------------------
 # Stage 7: Final artifact synthesis
+#
+# Stage 7 used to ask for ranked_hypotheses + taskgen_guidance + a 1200-word
+# executive_summary_md in one JSON object. That payload routinely tripped the
+# JSON parser (and even an LLM-driven repair pass) because Markdown with code
+# fences and nested quotes is hostile to JSON-string escaping. We now split
+# the work into two calls: a small structured-guidance call (cheap to parse)
+# and a free-form Markdown executive-summary call (no JSON parsing at all).
 # ---------------------------------------------------------------------------
 
-FINAL_SYNTH_PROMPT = (
+FINAL_GUIDANCE_PROMPT = (
     _HEADER
     + textwrap.dedent(
         """\
 
         ## Task
-        Produce the final convergent research artifact from the per-question
-        answers (both first-pass and second-pass) and the blindspots.
+        Produce the structured task-generator guidance block from the per-question
+        answers and blindspots below. This is the handoff to an autonomous
+        code-writing agent: every item must be actionable.
 
-        Resolve contradictions across answers. Group affected files/functions.
-        Produce ranked hypotheses (most to least supported) and a structured
-        `taskgen_guidance` block that the task generator will act on directly.
+        Resolve contradictions across answers (the blindspots often catch them).
+        Group affected files/functions. Produce ranked hypotheses (most to least
+        supported) and a `taskgen_guidance` block that the task generator will
+        act on directly.
+
+        The guidance must separate:
+          - high-confidence implementation bets to try first
+          - second-tier ideas that are plausible but lower leverage
+          - ideas to reject or avoid because mechanism/profile/source constraints
+            say they are weak
+          - open measurements that should be gathered before spending a patch
+
+        For each `prefer_first` item, include enough detail that a sub-agent
+        could start coding: target function/file, edit pattern, expected speedup
+        mechanism, and one validation/kill criterion. Do not say "optimize
+        memory" without naming the concrete edit pattern.
+
+        IMPORTANT JSON HYGIENE:
+          - Keep every string short (one or two sentences). DO NOT embed
+            markdown code fences, multi-paragraph essays, or large quoted
+            passages anywhere in this JSON.
+          - Long-form prose belongs in the SEPARATE executive-summary call,
+            not here. If you find yourself writing more than ~50 words for one
+            item, move the detail to the summary call and keep the guidance item
+            as a one-liner pointer.
+          - All strings must use plain ASCII quotes. No nested triple-backticks.
 
         ## Facts
         ```json
@@ -355,19 +463,98 @@ FINAL_SYNTH_PROMPT = (
         {blindspots_json}
         ```
 
-        ## Required JSON schema
-        {{
-          "ranked_hypotheses": [
-            "<one-line hypothesis, most-supported first>"
-          ],
-          "taskgen_guidance": {{
-            "prefer_first":   ["<concrete direction the task generator should try first>"],
-            "deprioritize":   ["<direction to deprioritize>"],
-            "reject":         ["<direction to NOT try>"],
-            "open_questions": ["<unresolved doubts the task generator should keep in mind>"]
-          }},
-          "executive_summary_md": "<concise markdown summary suitable for a prompt; sections allowed>"
-        }}
+        Return compact JSON with keys: ranked_hypotheses, taskgen_guidance.
+        `ranked_hypotheses` is an array of short strings.
+        `taskgen_guidance` contains four arrays: prefer_first, deprioritize,
+        reject, open_questions. Items may be concise markdown strings or small
+        objects with fields like target / edit_pattern / expected_upside /
+        kill_criteria. Prefer mechanism and implementation detail over citation
+        lists.
+        """
+    )
+)
+
+
+# Free-form Markdown — NO JSON parsing on the response. This is the document
+# the human / task generator reads first, so spend the model's budget here.
+#
+# Do NOT ask the model to re-print the structured guidance below this. The
+# rendered artifact already includes a "Task-Generator Guidance" section
+# right under this summary; copying the same Prefer First / Reject lists here
+# is just noise. The summary's job is to give the NARRATIVE the structured
+# guidance answers: why this strategy beats alternatives, where the evidence
+# is strongest vs weakest, and what the operator should watch for.
+FINAL_EXEC_SUMMARY_PROMPT = (
+    _HEADER
+    + textwrap.dedent(
+        """\
+
+        ## Task
+        Write the "Task-Ready Summary" that sits at the very top of
+        `deep_search.md`. This is the FIRST thing a code-writing agent or human
+        reviewer reads. The artifact also includes a "Task-Generator Guidance"
+        section right BELOW this summary with the explicit Prefer First /
+        Deprioritize / Reject / Open lists; do NOT duplicate those lists here.
+
+        Your job is to give the narrative around them: the mechanism story,
+        the trade-offs, and the confidence story. A reader should finish this
+        summary knowing WHY the prefer list looks the way it does and what
+        could falsify it, not just WHAT is on the list.
+
+        Required structure (use these exact section headers, in this order):
+
+          ### Bottom line
+          One paragraph (3-5 sentences). State the bottleneck, the one
+          highest-leverage change, the mechanism by which it wins, and the
+          single most decisive kill criterion. No lists.
+
+          ### Why this strategy and not the obvious alternatives
+          A short narrative (2-4 sentences or a 3-bullet list) explaining the
+          mechanism the prefer-first plan is exploiting and why the most
+          tempting alternatives (named explicitly) are weaker on this exact
+          kernel/profile/hardware. Reference the local source pack files by
+          path when a code-level detail is load-bearing.
+
+          ### Where confidence is high vs low
+          A short bulleted breakdown: which prefer-first items are mechanism-
+          locked (high confidence) vs which depend on a measurement we have
+          not yet made (low confidence, name the measurement).
+
+          ### Risks the implementer must watch for
+          2-4 bullets. Each one names a specific failure mode (e.g. "VGPR
+          spill if K=2 register blocking pushes past ~50 VGPRs"), the symptom
+          the implementer would see, and the fallback.
+
+        Hard constraints:
+          - Keep total length under ~700 words. The structured guidance below
+            does the heavy lifting; this summary is the narrative on top of it.
+          - DO NOT restate the prefer-first / reject / open lists. Reference
+            them by name where useful ("the LDS-tiling bet"), do not enumerate.
+          - Be specific to the local kernel: cite source files by path, cite
+            facts (B/N/M shapes, hardware target, bottleneck) explicitly.
+          - Output Markdown only. NO JSON, NO surrounding code fence, no
+            preamble like "Here is the summary:", no closing remarks.
+
+        ## Facts
+        ```json
+        {facts_json}
+        ```
+
+        ## Structured guidance (already resolved; this is the playbook the
+        ## artifact will render below your summary - do not restate it)
+        ```json
+        {guidance_json}
+        ```
+
+        ## All answers (first + second pass) - use for mechanism / evidence
+        ```json
+        {answers_json}
+        ```
+
+        ## Blindspots - use to populate the "Risks" and "low confidence" sections
+        ```json
+        {blindspots_json}
+        ```
         """
     )
 )
@@ -409,23 +596,10 @@ EXPERIMENTAL_PROMPT = (
         {deep_search_summary_json}
         ```
 
-        ## Required JSON schema
-        {{
-          "directions": [
-            {{
-              "direction_id":  "<short slug, e.g. ed-1>",
-              "thesis":        "<one-line statement of the alternative direction>",
-              "why_orthogonal": "<which axis above this differs on>",
-              "assumption_challenged": "<the deep_search assumption this probes>",
-              "strategy_family":       "<algorithmic|fusion|tuning|wrapper|backend-swap|...>",
-              "target_files_or_functions": ["..."],
-              "expected_upside":     "<short>",
-              "implementation_cost": "<low|medium|high + one-line reason>",
-              "kill_criteria":       "<observable signal that says abandon this direction>",
-              "notes_for_taskgen":   "<short>"
-            }}
-          ]
-        }}
+        Return compact JSON with key `directions`. Each direction should include:
+        direction_id, thesis, why_orthogonal, assumption_challenged,
+        strategy_family, target_files_or_functions, expected_upside,
+        implementation_cost, kill_criteria, notes_for_taskgen.
         """
     )
 )
