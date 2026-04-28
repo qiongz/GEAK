@@ -49,6 +49,8 @@ Do **not** stop at summarizing the skill. Apply it to the current kernel:
   - `plain_triton`
   - `amd_gluon`
 - Never create a new optimized `nv_gluon` output path.
+- Treat Gluon as an additive Extension Set on top of the Base Triton search.
+  Do not replace all plain Triton candidates with Gluon candidates.
 - If `amd_gluon` is allowed and structurally promising, generate an
   `amd_gluon` candidate early instead of spending the whole plan on fallback
   tuning.
@@ -87,10 +89,12 @@ be:
 Candidate task slots should follow the main GEAK planner style:
 
 - Prefer first:
+  - Base Set plain Triton candidate
   - semantics-preserving AMD Gluon viability candidate
-  - trait-specific AMD Gluon candidate
   - plain Triton fallback or competitor when allowed
 - Consider next:
+  - Shared Set strategy as a `plain_triton variant`, `amd_gluon variant`, or
+    paired comparison
   - memory lowering after a correct layout candidate
   - matrix lowering after result and operand layouts are clear
   - in-dialect optimization for existing AMD Gluon
