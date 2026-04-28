@@ -82,6 +82,20 @@ class InteractiveAgent(DefaultAgent):
             with console.status("Waiting for the LM to respond..."):
                 return super().query()
         except LimitsExceeded:
+            # In parallel/headless mode there is no human at the keyboard to
+            # answer "New step limit:". The previous behavior unconditionally
+            # called input() and crashed every sub-agent with EOFError on
+            # closed stdin. Re-raise so parallel_helpers' TerminatingException
+            # branch records this as a normal step-limit termination.
+            if self.extra_template_vars.get("_is_parallel_mode"):
+                logger.warning(
+                    "Limits exceeded in parallel sub-agent (step=%d/%d, cost=$%.2f/$%.2f); terminating.",
+                    self.model.n_calls,
+                    self.config.step_limit,
+                    self.model.cost,
+                    self.config.cost_limit,
+                )
+                raise
             console.print(
                 f"Limits exceeded. Limits: {self.config.step_limit} steps, ${self.config.cost_limit}.\n"
                 f"Current spend: {self.model.n_calls} steps, ${self.model.cost:.2f}."

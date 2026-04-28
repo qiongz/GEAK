@@ -798,6 +798,48 @@ def test_limits_exceeded_with_user_continuation(model_factory):
     assert agent.config.cost_limit == 5.0  # Should have updated cost limit
 
 
+def test_limits_exceeded_in_parallel_mode_reraises(model_factory):
+    """Parallel sub-agents have no stdin; LimitsExceeded must propagate as a
+    TerminatingException so the agent's outer ``run()`` records a normal
+    "LimitsExceeded" exit_status instead of trying to prompt ``input()``
+    (which crashes every sub-agent with EOFError in headless mode -- the
+    bug fixed in interactive.py:84-99).
+    """
+    factory, config = model_factory
+    agent = InteractiveAgent(
+        model=factory(
+            [
+                ("Step 1", [{"command": "echo 'first'"}]),
+                ("Step 2", [{"command": "echo 'second'"}]),
+            ],
+            cost_per_call=0.6,
+        ),
+        env=LocalEnvironment(),
+        **{
+            **config,
+            "step_limit": 10,
+            "cost_limit": 0.5,
+            "mode": "yolo",
+        },
+    )
+    agent.extra_template_vars["_is_parallel_mode"] = True
+
+    # input() must NOT be called in parallel mode. If it is, that's the bug.
+    def _no_input(*_args, **_kwargs):
+        raise AssertionError("input() must not be called when _is_parallel_mode is set")
+
+    with patch("builtins.input", side_effect=_no_input):
+        with patch("minisweagent.agents.interactive.console.print"):
+            exit_status, _result = agent.run("Test parallel-mode LimitsExceeded re-raises")
+
+    # The agent's outer run() converts the re-raised TerminatingException
+    # into a normal exit_status; parallel_helpers reads this directly.
+    assert exit_status == "LimitsExceeded"
+    # And the limits should NOT have been silently bumped (no input() call).
+    assert agent.config.step_limit == 10
+    assert agent.config.cost_limit == 0.5
+
+
 def test_limits_exceeded_multiple_times_with_continuation(model_factory):
     """Test that limits can be exceeded and updated multiple times."""
     factory, config = model_factory
