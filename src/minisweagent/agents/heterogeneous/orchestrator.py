@@ -206,6 +206,9 @@ def run_heterogeneous_orchestrator(
     disc_dict = preprocess_ctx.get("discovery") or {}
     kernel_path = str(preprocess_ctx.get("kernel_path", ""))
     kernel_meta = _extract_kernel_meta(disc_dict, kernel_path)
+    _bm_for_meta = preprocess_ctx.get("baseline_metrics") or {}
+    if not isinstance(_bm_for_meta, dict):
+        _bm_for_meta = {}
     kernel_meta.update(
         build_gluon_feature_metadata(
             Path(kernel_meta.get("kernel_path") or kernel_path or "unknown.py"),
@@ -221,6 +224,15 @@ def run_heterogeneous_orchestrator(
             output_dialect_search_policy=preprocess_ctx.get("output_dialect_search_policy")
             or kernel_meta.get("output_dialect_search_policy"),
             target_backend=preprocess_ctx.get("target_backend") or kernel_meta.get("target_backend"),
+            benchmark_shape_count=preprocess_ctx.get("benchmark_shape_count")
+            or _bm_for_meta.get("benchmark_shape_count")
+            or kernel_meta.get("benchmark_shape_count"),
+            benchmark_test_cases=preprocess_ctx.get("benchmark_test_cases")
+            or _bm_for_meta.get("benchmark_test_cases")
+            or kernel_meta.get("benchmark_test_cases"),
+            shape_coverage_profile=preprocess_ctx.get("shape_coverage_profile")
+            or _bm_for_meta.get("shape_coverage_profile")
+            or kernel_meta.get("shape_coverage_profile"),
         )
     )
 

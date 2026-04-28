@@ -40,6 +40,10 @@ class PreprocessContext:
     preferred_output_dialects: list[str] | None = None
     output_dialect_search_policy: str | None = None
     target_backend: str | None = None
+    benchmark_shape_count: int | None = None
+    benchmark_test_cases: list[dict] | None = None
+    benchmark_test_cases_path: str | None = None
+    shape_coverage_profile: str | None = None
 
     # Inline data (kept in memory, not just a path)
     test_command: str | None = None
@@ -115,6 +119,10 @@ class PreprocessContext:
             preferred_output_dialects=ctx.get("preferred_output_dialects"),
             output_dialect_search_policy=ctx.get("output_dialect_search_policy"),
             target_backend=ctx.get("target_backend"),
+            benchmark_shape_count=ctx.get("benchmark_shape_count"),
+            benchmark_test_cases=ctx.get("benchmark_test_cases"),
+            benchmark_test_cases_path=ctx.get("benchmark_test_cases_path"),
+            shape_coverage_profile=ctx.get("shape_coverage_profile"),
             test_command=ctx.get("test_command"),
             discovery=ctx.get("discovery"),
             harness_results=ctx.get("harness_results"),

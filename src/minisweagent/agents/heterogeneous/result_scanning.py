@@ -193,8 +193,22 @@ def scan_previous_tasks(tasks_dir: Path, current_round: int) -> str:
                 label = fm.get("label", tf.stem)
                 agent_type = fm.get("agent_type", "unknown")
                 priority = fm.get("priority", "?")
+                # Surface dialect / policy on each bullet so downstream
+                # signal helpers can tell apart Base Set plain-Triton tasks
+                # from Gluon Extension Set tasks without re-parsing the
+                # frontmatter. Without this the previous-round signal
+                # would conflate a Base Set Triton win (e.g. ``speedup=1.5x``)
+                # with a Gluon Extension Set win and wrongly expand the
+                # next round's Gluon quota.
+                input_dialect = fm.get("input_dialect")
+                policy = fm.get("output_dialect_search_policy")
+                meta_bits = [f"agent={agent_type}", f"priority={priority}"]
+                if input_dialect:
+                    meta_bits.append(f"input_dialect={input_dialect}")
+                if policy:
+                    meta_bits.append(f"policy={policy}")
                 round_items.append(
-                    f"- **{label}** (agent={agent_type}, priority={priority}): "
+                    f"- **{label}** ({', '.join(meta_bits)}): "
                     f"{body_preview}{'...' if len(body_preview) >= 200 else ''}"
                 )
             except Exception as exc:
