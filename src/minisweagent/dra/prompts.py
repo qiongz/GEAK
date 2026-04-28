@@ -89,59 +89,63 @@ QUESTIONS_PROMPT = (
         """\
 
         ## Task
-        Given the local facts and source pack below, identify the outside knowledge
-        a brilliant kernel scientist-engineer would actively seek before writing
-        the best possible optimized version of this exact kernel. Web search is
-        mandatory because model priors are not enough in this domain.
+        Generate the research questions a brilliant kernel scientist-engineer
+        would investigate before writing the best possible optimized version
+        of this exact kernel. Each question must expose a decision-changing
+        knowledge gap: if the answer goes one way, GEAK tries one
+        implementation family; if it goes the other, GEAK avoids that family.
 
-        Do NOT ask the web for facts available in the source pack/profile, such
-        as local benchmark shapes, local launch geometry, wrapper code, or exact
-        source code. Use those local facts only to decide what external knowledge
-        is worth searching for.
+        ## Question routing - REQUIRED
+        For EACH question, set the boolean field needs_web:
 
-        Each research question should expose a decision-changing knowledge gap:
-        if the answer goes one way, GEAK should try one implementation family; if
-        it goes the other way, GEAK should avoid or deprioritize that family.
+          needs_web=false  -> answer is fully in the source pack (kernel code,
+                              wrapper, build files, profile JSON, hardware
+                              context). Examples: "what data layout does the
+                              wrapper pass?", "is best1 declared double or
+                              float?", "what block size does the launcher
+                              use?", "does the harness include torch.sqrt in
+                              its timing?". These get a fast no-web synth.
 
-        Good web-research themes:
-          - fastest known implementations of this exact kernel family
-          - state-of-the-art papers / systems / libraries for the broader
-            algorithmic pattern, not just the exact function name
-          - best-performing setup choices for similar kernels (tiling size,
-            warp/wavefront mapping, block shape, data layout, vectorization)
-          - point-cloud/nearest-neighbor/radius-search CUDA or HIP kernels
-          - papers on GPU point-cloud neighbor search or spatial/radius queries
-          - kernel fusion patterns relevant to the local profile
-          - AMD/ROCm/CDNA/HIP hardware primitives relevant to the local source
-            (wavefront shuffle, ballot/popcount, LDS/shared memory, MFMA only
-            when relevant, occupancy/VGPR/LDS tradeoffs)
-          - target hardware tuning guidance for the exact target GPU/arch named
-            in the source pack's User Task / Hardware Context. Do not invent a
-            target. If the source pack names a target such as MI355X/gfx950/CDNA4,
-            use that target in hardware queries; use other GPU generations only
-            as comparison points.
-          - GitHub implementations with similar wrappers/native extension code
+          needs_web=true   -> answer needs outside knowledge: papers, other
+                              implementations, hardware specs, ROCm/CDNA
+                              primitives, GitHub references, tuning guidance.
 
-        Generate between 12 and 28 candidate web research questions before
-        ranking. Each question must include 3-5 `search_queries`.
+        Out of {max_questions} total questions, AIM for roughly 30-40% with
+        needs_web=false and 60-70% with needs_web=true. Local questions are
+        FOUNDATIONAL - they extract clean facts from the source pack that
+        anchor every external answer. Do not skip them just because the
+        answer feels obvious to you; the synthesizer benefits from explicit
+        anchors. If you find yourself emitting all needs_web=true, STOP and
+        re-read the source pack for facts you have not extracted yet.
 
-        The search queries should sound like a strong human engineer using web
-        search, GitHub search, or arXiv search. Prefer natural-language phrases
-        over bag-of-keywords. Keep them concise, but not cryptic.
+        ## Search queries
+        For needs_web=true questions, include 3-5 concise SERP-style queries.
+        Natural-language engineer phrases, not keyword soup. Keep code
+        identifiers verbatim. Include the target hardware named in the
+        source pack (e.g. gfx950, MI355X) when relevant. For needs_web=false
+        questions, search_queries can be empty or a 1-2 item fallback hint.
 
-        Score each candidate on four axes (0-10 integers):
-          - decision_impact:   how much the answer changes downstream task choice
-          - actionability:     whether the answer can become a concrete code edit
-          - kernel_relevance:  how tightly tied to this specific kernel/profile
-          - novelty:           whether this would add information beyond obvious
-                                CUDA/HIP optimization boilerplate
+        ## Scoring
+        Score each candidate (integers 0-10):
+          decision_impact, actionability, kernel_relevance, novelty
+        Set rank_score = decision_impact + actionability + kernel_relevance + novelty.
 
-        Compute rank_score = decision_impact + actionability + kernel_relevance + novelty.
+        ## JSON HYGIENE - this output keeps tripping the parser
+        - Output exactly one JSON object with one top-level key: "questions".
+        - Each question is an object with these fields and ONLY these fields:
+          question, search_queries, rationale, decision_impact, actionability,
+          kernel_relevance, novelty, rank_score, needs_web.
+        - All string fields must be SHORT (under ~40 words each) and use
+          plain ASCII double-quotes. NO markdown, NO backticks, NO triple
+          backticks, NO nested code blocks anywhere in any string. If you
+          want to mention a function name, just write three_nn_kernel, NOT
+          `three_nn_kernel`.
+        - search_queries is an array of plain strings.
+        - All numeric fields are bare integers/floats, not strings.
+        - No trailing comments, no preamble, no closing remarks.
 
-        Return AT MOST {max_questions} of the highest-ranked questions. Do not
-        include questions whose answers are already obvious from the facts. Prefer
-        questions that distinguish between two implementation paths GEAK could
-        actually try.
+        Return AT MOST {max_questions} of the highest-ranked questions across
+        BOTH buckets combined.
 
         ## Facts
         ```json
@@ -150,13 +154,6 @@ QUESTIONS_PROMPT = (
 
         ## Local source pack
         {source_pack}
-
-        Return compact JSON with key `questions`. Each question item should have:
-        question, search_queries, rationale, decision_impact, actionability,
-        kernel_relevance, novelty, rank_score.
-
-        The rationale should name the concrete implementation decision this
-        outside knowledge could change.
         """
     )
 )
@@ -172,9 +169,8 @@ PER_QUESTION_SYNTH_PROMPT = (
         """\
 
         ## Task
-        Synthesize what the web search/read results teach us for the research
-        direction below, with one goal: decide how this outside knowledge changes
-        the optimization strategy for the local kernel.
+        Answer the research question below in a way that decides how this
+        knowledge changes the optimization strategy for the local kernel.
 
         Use local facts and the LOCAL CODE below as authoritative for this run.
         The local code section contains the actual source files that will be
@@ -187,28 +183,51 @@ PER_QUESTION_SYNTH_PROMPT = (
         paraphrasing it. Do not paraphrase a similar implementation from web
         material when the local code is right here.
 
-        Use web material as external technical knowledge: inspiration,
-        implementation precedent, hardware guidance, warning, or counterexample.
-        If web material conflicts with local source/profile facts, local facts
-        win.
+        ## Two answer modes
 
-        Rank usefulness for optimization:
+        - LOCAL-ONLY mode: if the "Web-search + read material" section says
+          ``(no open-search results retrieved)``, this is a local-only
+          introspection question. Answer it directly from the local source
+          pack with file:line citations. Keep the answer under ~150 words --
+          this is a fact extraction, not a literature review. ``status``
+          should be ``prefer`` (if the answer points to a concrete optimization
+          opportunity), ``reject`` (if it rules one out), or ``open`` (if the
+          local code reveals a missing measurement).
+
+        - WEB-AUGMENTED mode: web material is present. Use it as external
+          knowledge: implementation precedent, hardware guidance, warning, or
+          counterexample. If web material conflicts with local source/profile
+          facts, local facts win.
+
+        Rank usefulness for optimization (``status`` field):
           - "prefer":       likely useful for a high-value patch
           - "deprioritize": plausible but lower priority or weakly applicable
           - "reject":       likely bad for this local kernel/profile
-          - "open":         interesting but needs local measurement or source inspection
+          - "open":         needs local measurement or source inspection
+                            before GEAK should commit to anything
 
         Think mechanistically. Explain why the idea could help or fail on this
-        exact workload/backend/hardware, not merely that it appears in a paper or
-        repository. End with the implementation consequence: what GEAK should try,
-        avoid, or measure because of this research.
+        exact workload/backend/hardware, not merely that it appears in a paper
+        or repository. End with the implementation consequence: what GEAK
+        should try, avoid, or measure because of this research.
 
-        If neither the local code excerpts nor the web material let you answer
-        the question concretely, return a SHORT answer (one or two sentences)
-        that names exactly which file to read or which measurement to run, set
-        ``status: "open"``, and stop. Do NOT confabulate from generic GPU
-        folklore -- a 30-word "I don't know, look at file X" answer is strictly
-        better than a 300-word paraphrase of unrelated material.
+        ## "I don't know" is a first-class answer
+        If neither the local code nor the web material lets you answer the
+        question concretely, your answer MUST be:
+          1. Short. ONE OR TWO SENTENCES. Hard cap ~50 words.
+          2. Name the exact file/function/measurement that would resolve it
+             ("look at lines X-Y of src/foo.hip" or "run `rocprof --stats`
+             with the .vgpr_count metric").
+          3. Set ``status: "open"``.
+          4. Set ``taskgen_implications`` to the concrete next step GEAK
+             should take (also short).
+
+        DO NOT pad an "I don't know" answer with generic background, related
+        implementations, or "based on standard X" paraphrasing. A 30-word
+        "I don't know, inspect file X" is strictly better than a 300-word
+        confabulation. The runner truncates long status=open answers that
+        carry no local citation, so there is no benefit to padding -- the
+        truncated stub is what downstream sees anyway.
 
         ## Question
         {question}

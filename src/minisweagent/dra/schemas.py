@@ -57,7 +57,19 @@ class Facts:
 
 @dataclass
 class Question:
-    """A candidate research question (Stage 1) with optional ranking (Stage 2)."""
+    """A candidate research question (Stage 1) with optional ranking (Stage 2).
+
+    ``needs_web`` is the routing signal between two synthesis paths:
+      - ``True``  -> Stage 3+4 runs full open-search + read + synth. Used for
+                    questions that genuinely require external knowledge (papers,
+                    other implementations, hardware specs).
+      - ``False`` -> Stage 3+4 skips the web entirely and runs a fast local-only
+                    synthesis using just the source pack + facts. Used for
+                    introspection questions whose answers are already in the
+                    repository (e.g. "what data layout does the wrapper use?").
+
+    Defaults to ``True`` for back-compat with old payloads.
+    """
 
     question: str
     search_queries: list[str] = field(default_factory=list)
@@ -66,6 +78,7 @@ class Question:
     actionability: int = 0  # 0-10
     kernel_relevance: int = 0  # 0-10
     rank_score: float = 0.0  # composite ranking score (computed in Stage 2)
+    needs_web: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

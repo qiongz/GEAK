@@ -203,7 +203,9 @@ async def _run_dra_async(
 
     try:
         logger.info("[DRA] Stage 0: extracting facts")
-        facts = await asyncio.to_thread(_stage0_extract_facts, model, evidence, budget)
+        facts = await asyncio.to_thread(
+            _stage0_extract_facts, model, evidence, budget, inputs.output_dir
+        )
         source_pack_text = evidence.read_source_pack()
 
         logger.info(
@@ -212,7 +214,13 @@ async def _run_dra_async(
             cfg.deep_mode,
         )
         questions = await asyncio.to_thread(
-            _stage12_generate_and_rank_questions, model, facts, source_pack_text, cfg.max_questions, budget
+            _stage12_generate_and_rank_questions,
+            model,
+            facts,
+            source_pack_text,
+            cfg.max_questions,
+            budget,
+            inputs.output_dir,
         )
         stats.questions_asked = len(questions)
         logger.info("[DRA] Selected %d ranked questions", len(questions))
@@ -232,12 +240,17 @@ async def _run_dra_async(
             questions=questions,
             cfg=cfg,
             budget=budget,
+            dump_dir=inputs.output_dir,
         )
         for sr in fp_search_results:
             stats.merge_search_result(sr)
         for q, sr in zip(questions, fp_search_results):
-            search_records.append(_search_record(q.question, "first_pass", sr))
-            read_records.extend(_read_records_from_search_result(q.question, "first_pass", sr))
+            # Tag stage with the routing mode so the trace is honest about
+            # which questions actually issued web queries vs which were
+            # answered from the source pack alone.
+            stage_tag = "first_pass_local" if not q.needs_web else "first_pass"
+            search_records.append(_search_record(q.question, stage_tag, sr))
+            read_records.extend(_read_records_from_search_result(q.question, stage_tag, sr))
 
         # ---- Stage 5+6: multi-round blindspot loop ----
         all_answers: list[Answer] = list(first_pass_answers)
@@ -261,6 +274,7 @@ async def _run_dra_async(
                 round_idx,
                 cfg.max_blindspot_rounds,
                 budget,
+                inputs.output_dir,
             )
             new_blindspots = _dedup_blindspots(new_blindspots, all_blindspots)
             for b in new_blindspots:
@@ -284,6 +298,7 @@ async def _run_dra_async(
                 cfg=cfg,
                 budget=budget,
                 round_idx=round_idx,
+                dump_dir=inputs.output_dir,
             )
             for sr in sp_search_results:
                 stats.merge_search_result(sr)
@@ -358,13 +373,17 @@ async def _run_dra_async(
 # ---------------------------------------------------------------------------
 
 
-def _stage0_extract_facts(model: Any, evidence: EvidenceSource, budget: CallBudget) -> Facts:
+def _stage0_extract_facts(
+    model: Any, evidence: EvidenceSource, budget: CallBudget, dump_dir: Path | None = None
+) -> Facts:
     prompt = prompts.FACTS_PROMPT.format(
         source_pack=evidence.read_source_pack(),
         previous_results=evidence.summarize_previous_results() or "(empty)",
         round_evaluations=evidence.round_evaluations_summary() or "(empty)",
     )
-    payload = _llm_json(model, prompt, fallback={}, budget=budget)
+    payload = _llm_json(
+        model, prompt, fallback={}, budget=budget, stage_tag="stage0_facts", dump_dir=dump_dir
+    )
     return _facts_from_payload(payload)
 
 
@@ -374,20 +393,38 @@ def _stage0_extract_facts(model: Any, evidence: EvidenceSource, budget: CallBudg
 
 
 def _stage12_generate_and_rank_questions(
-    model: Any, facts: Facts, source_pack: str, max_questions: int, budget: CallBudget
+    model: Any,
+    facts: Facts,
+    source_pack: str,
+    max_questions: int,
+    budget: CallBudget,
+    dump_dir: Path | None = None,
 ) -> list[Question]:
     prompt = prompts.QUESTIONS_PROMPT.format(
         facts_json=_json(facts.to_dict()),
         source_pack=source_pack,
         max_questions=max_questions,
     )
-    payload = _llm_json(model, prompt, fallback={"questions": []}, budget=budget)
+    payload = _llm_json(
+        model,
+        prompt,
+        fallback={"questions": []},
+        budget=budget,
+        stage_tag="stage12_questions",
+        dump_dir=dump_dir,
+    )
 
     raw = payload.get("questions") or []
     questions: list[Question] = []
     for q in raw:
         if not isinstance(q, dict) or "question" not in q:
             continue
+        # Default needs_web=True preserves the old "always research" behavior
+        # for any question the model emits without the new routing flag.
+        needs_web_raw = q.get("needs_web", True)
+        needs_web = bool(needs_web_raw) if not isinstance(needs_web_raw, str) else (
+            needs_web_raw.strip().lower() in ("1", "true", "yes", "y")
+        )
         questions.append(
             Question(
                 question=str(q.get("question", "")).strip(),
@@ -397,6 +434,7 @@ def _stage12_generate_and_rank_questions(
                 actionability=int(q.get("actionability", 0) or 0),
                 kernel_relevance=int(q.get("kernel_relevance", 0) or 0),
                 rank_score=float(q.get("rank_score", 0.0) or 0.0),
+                needs_web=needs_web,
             )
         )
     questions = [q for q in questions if q.question]
@@ -419,6 +457,7 @@ async def _stage34_first_evidence_pass(
     questions: list[Question],
     cfg: DRAConfig,
     budget: CallBudget,
+    dump_dir: Path | None = None,
 ) -> tuple[list[Answer], list[SearchResult]]:
     if not questions:
         return [], []
@@ -431,6 +470,32 @@ async def _stage34_first_evidence_pass(
         async with sem:
             if budget.aborted:
                 return _placeholder_answer(q.question, "first_pass"), SearchResult(hits=[], tried_queries=[])
+
+            # LOCAL-ONLY fast path: question routing said the answer is in the
+            # source pack. Skip the entire web pipeline (search + triage +
+            # read + refine), pass empty hits to the synthesizer. The
+            # synthesizer prompt detects empty hits and switches to its
+            # short, source-pack-only answer mode -- the goal is HIGHER
+            # signal per question (clean facts to anchor the external
+            # questions), not lower call cost.
+            if not q.needs_web:
+                ans = await asyncio.to_thread(
+                    _synthesize_one,
+                    model=model,
+                    facts=facts,
+                    question=q.question,
+                    hits=[],
+                    prior_run_ctx=prior_run_ctx,
+                    source_stage="first_pass_local",
+                    refinement_history=[],
+                    cfg=cfg,
+                    budget=budget,
+                    source_pack_text=source_pack_text,
+                    affected_hint=None,
+                    dump_dir=dump_dir,
+                )
+                return ans, SearchResult(hits=[], tried_queries=[])
+
             sr = await iterative_search(
                 question=q.question,
                 initial_queries=q.search_queries,
@@ -444,8 +509,8 @@ async def _stage34_first_evidence_pass(
                 per_question_result_budget=cfg.per_question_result_budget,
                 read_top_k=cfg.read_top_k,
                 read_max_length=cfg.read_max_length,
-                refine_query_fn=_make_refine_fn(model, budget),
-                triage_results_fn=_make_triage_fn(model, budget),
+                refine_query_fn=_make_refine_fn(model, budget, dump_dir),
+                triage_results_fn=_make_triage_fn(model, budget, dump_dir),
                 on_call=budget.web_sink(),
             )
             ans = await asyncio.to_thread(
@@ -461,6 +526,7 @@ async def _stage34_first_evidence_pass(
                 budget=budget,
                 source_pack_text=source_pack_text,
                 affected_hint=None,
+                dump_dir=dump_dir,
             )
             return ans, sr
 
@@ -484,6 +550,7 @@ def _stage5_blindspot(
     round_idx: int,
     max_rounds: int,
     budget: CallBudget,
+    dump_dir: Path | None = None,
 ) -> list[BlindSpot]:
     if budget.aborted:
         return []
@@ -495,7 +562,14 @@ def _stage5_blindspot(
         max_blindspots=max_blindspots,
         prior_blindspots_json=_json([b.to_dict() for b in prior_blindspots]),
     )
-    payload = _llm_json(model, prompt, fallback={"blindspots": []}, budget=budget)
+    payload = _llm_json(
+        model,
+        prompt,
+        fallback={"blindspots": []},
+        budget=budget,
+        stage_tag=f"stage5_blindspot_round{round_idx}",
+        dump_dir=dump_dir,
+    )
     raw = payload.get("blindspots") or []
     out: list[BlindSpot] = []
     for b in raw[:max_blindspots]:
@@ -571,6 +645,7 @@ async def _stage6_second_pass(
     cfg: DRAConfig,
     budget: CallBudget,
     round_idx: int,
+    dump_dir: Path | None = None,
 ) -> tuple[list[Answer], list[SearchResult]]:
     follow_ups = [b for b in blindspots if b.follow_up_question]
     if not follow_ups:
@@ -599,8 +674,8 @@ async def _stage6_second_pass(
                 per_question_result_budget=cfg.per_question_result_budget,
                 read_top_k=cfg.read_top_k,
                 read_max_length=cfg.read_max_length,
-                refine_query_fn=_make_refine_fn(model, budget),
-                triage_results_fn=_make_triage_fn(model, budget),
+                refine_query_fn=_make_refine_fn(model, budget, dump_dir),
+                triage_results_fn=_make_triage_fn(model, budget, dump_dir),
                 on_call=budget.web_sink(),
             )
             ans = await asyncio.to_thread(
@@ -619,6 +694,7 @@ async def _stage6_second_pass(
                 # which file to read -- often more specific than the follow_up
                 # question, which can be terse.
                 affected_hint=[b.description, b.why_it_matters] if b.description else None,
+                dump_dir=dump_dir,
             )
             return ans, sr
 
@@ -633,7 +709,7 @@ async def _stage6_second_pass(
 # ---------------------------------------------------------------------------
 
 
-def _make_refine_fn(model: Any, budget: CallBudget):
+def _make_refine_fn(model: Any, budget: CallBudget, dump_dir: Path | None = None):
     async def _refine(question: str, tried: list[str], weak_hits: list[UnifiedHit]) -> str | None:
         if budget.aborted:
             return None
@@ -643,14 +719,22 @@ def _make_refine_fn(model: Any, budget: CallBudget):
             tried_queries="\n".join(f"- {t}" for t in tried),
             weak_titles=weak_titles,
         )
-        payload = await asyncio.to_thread(_llm_json, model, prompt, {"refined_query": ""}, budget)
+        payload = await asyncio.to_thread(
+            _llm_json,
+            model,
+            prompt,
+            {"refined_query": ""},
+            budget,
+            stage_tag="query_refinement",
+            dump_dir=dump_dir,
+        )
         refined = str(payload.get("refined_query") or "").strip()
         return refined or None
 
     return _refine
 
 
-def _make_triage_fn(model: Any, budget: CallBudget):
+def _make_triage_fn(model: Any, budget: CallBudget, dump_dir: Path | None = None):
     async def _triage(
         question: str,
         query: str,
@@ -675,6 +759,8 @@ def _make_triage_fn(model: Any, budget: CallBudget):
             prompt,
             {"selected_urls": [], "sufficient": False, "follow_up_queries": []},
             budget,
+            stage_tag="search_triage",
+            dump_dir=dump_dir,
         )
         return payload
 
@@ -1151,7 +1237,14 @@ def _experimental_pass(
         facts_json=_json(facts.to_dict()),
         deep_search_summary_json=_json(summary),
     )
-    payload = _llm_json(model, prompt, fallback={"directions": []}, budget=budget)
+    payload = _llm_json(
+        model,
+        prompt,
+        fallback={"directions": []},
+        budget=budget,
+        stage_tag="experimental_pass",
+        dump_dir=inputs.output_dir,
+    )
 
     directions: list[ExperimentalDirection] = []
     for d in payload.get("directions") or []:
@@ -1241,6 +1334,7 @@ def _synthesize_one(
     budget: CallBudget,
     source_pack_text: str = "",
     affected_hint: list[str] | None = None,
+    dump_dir: Path | None = None,
 ) -> Answer:
     if budget.aborted:
         return _placeholder_answer(question, source_stage)
@@ -1269,22 +1363,92 @@ def _synthesize_one(
         kb_chunks=_render_unified_hits_for_prompt(hits) or "(no open-search results retrieved)",
         prior_run_context=prior_run_ctx or "(none)",
     )
-    payload = _llm_json(model, prompt, fallback={}, budget=budget)
+    payload = _llm_json(
+        model,
+        prompt,
+        fallback={},
+        budget=budget,
+        stage_tag=f"per_question_synth__{source_stage}",
+        dump_dir=dump_dir,
+    )
     status = payload.get("status", "open")
     if status not in ("prefer", "deprioritize", "reject", "open"):
         status = "open"
 
     evidence_list = _coerce_evidence(payload.get("evidence"), hits)
+    answer_text = str(payload.get("answer", "")).strip() or "(no answer produced)"
+
+    # Confabulation guard: if the model claims status=open but produced a long
+    # answer with no real evidence and no local-source citation, the answer
+    # is almost certainly padded generic-GPU-folklore. The prompt asks for a
+    # short "I don't know, look at file X" exit in that case; we enforce it
+    # by truncating the body and surfacing the model's own taskgen
+    # implications. This keeps downstream consumers from being misled by
+    # confident-sounding but unanchored prose.
+    answer_text = _truncate_open_answer_if_unanchored(
+        answer=answer_text,
+        status=status,
+        evidence_list=evidence_list,
+        source_pack_text=source_pack_text,
+    )
 
     return Answer(
         question=question,
-        answer=str(payload.get("answer", "")).strip() or "(no answer produced)",
+        answer=answer_text,
         evidence=evidence_list,
         affected=_str_list(payload.get("affected")),
         taskgen_implications=str(payload.get("taskgen_implications", "")).strip(),
         status=status,
         source_stage=source_stage,
         refinement_history=list(refinement_history),
+    )
+
+
+# Hard cap on a status=open answer that has no evidence and no local
+# citation. The prompt asks for ~50 words; we allow ~80 to leave headroom
+# for natural variance, but anything beyond that gets truncated.
+_OPEN_ANSWER_WORD_CAP = 80
+
+
+def _truncate_open_answer_if_unanchored(
+    *,
+    answer: str,
+    status: str,
+    evidence_list: list[EvidenceCite],
+    source_pack_text: str,
+) -> str:
+    """Truncate long status=open answers that don't cite any local file.
+
+    Heuristic for "anchored": either ``evidence_list`` is non-empty, or the
+    answer body mentions a file path that appears in the source pack. We use
+    a simple substring check against fenced file paths (``src/foo.hip``-style
+    or ``foo.py``-style references).
+    """
+    if status != "open":
+        return answer
+    if evidence_list:
+        return answer
+    word_count = len(answer.split())
+    if word_count <= _OPEN_ANSWER_WORD_CAP:
+        return answer
+    # Look for any source-pack file path mentioned in the answer body.
+    if source_pack_text:
+        # Scan for "## <Label>: `<rel_path>`" headers in the pack and check
+        # whether the answer mentions the rel_path. Quick + robust enough.
+        for m in re.finditer(r"^## [^:\n]+: `([^`]+)`", source_pack_text, re.MULTILINE):
+            rel = m.group(1).strip()
+            # File-path-shaped tokens: must be moderately specific.
+            if len(rel) >= 6 and rel in answer:
+                return answer
+    # Unanchored: truncate to the first sentence (or two) up to the cap.
+    truncated = " ".join(answer.split()[:_OPEN_ANSWER_WORD_CAP])
+    # End on a sentence boundary if there's one in the truncation window.
+    last_period = max(truncated.rfind(". "), truncated.rfind(".\n"))
+    if last_period >= 40:
+        truncated = truncated[: last_period + 1]
+    return (
+        truncated.rstrip(".") + ". (truncated: status=open with no local citation;"
+        " see taskgen_implications for the concrete next step)"
     )
 
 
