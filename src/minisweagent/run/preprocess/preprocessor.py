@@ -19,6 +19,7 @@ import re
 import shlex
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -36,8 +37,16 @@ def _ensure_mcp_importable() -> None:
     )
 
 
-from minisweagent.run.preprocess.benchmark_parsing import extract_latency_ms
-from minisweagent.run.preprocess.discovery_types import build_gluon_feature_metadata
+from minisweagent.run.preprocess.benchmark_parsing import (
+    discover_performance_report,
+    extract_latency_ms,
+    parse_performance_report_json,
+    parse_test_case_count,
+)
+from minisweagent.run.preprocess.discovery_types import (
+    build_gluon_feature_metadata,
+    derive_shape_coverage_profile,
+)
 from minisweagent.run.preprocess.harness_utils import (
     DEFAULT_EVAL_BENCHMARK_ITERATIONS,
     DEFAULT_PIPELINE_OUTPUT_DIR,
@@ -1437,8 +1446,6 @@ def run_preprocessor(
         baseline_metrics = {}
     bb_path = output_dir / "benchmark_baseline.txt"
     if bb_path.exists():
-        import re as _re
-
         bb_text = bb_path.read_text()
         _bm_val = extract_latency_ms(bb_text)
         if _bm_val is not None:
@@ -1448,10 +1455,113 @@ def run_preprocessor(
             if "duration_us" in baseline_metrics:
                 baseline_metrics["profiler_duration_us"] = baseline_metrics["duration_us"]
             baseline_metrics["duration_us"] = _bm_val * 1000.0
-        _sm = _re.search(r"(\d+)\s+shapes", bb_text, _re.IGNORECASE)
-        if _sm:
-            baseline_metrics["benchmark_shape_count"] = int(_sm.group(1))
+        _sc = parse_test_case_count(bb_text)
+        if _sc is not None:
+            baseline_metrics["benchmark_shape_count"] = _sc
         ctx["baseline_metrics"] = baseline_metrics
+
+    # Pick up AgentKernelArena-style structured perf reports when present so the
+    # planner sees per-case shape parameters even when the textual benchmark
+    # output does not include "(M,K,N): X ms" lines.
+    #
+    # AgentKernelArena tasks store the report at ``<task_dir>/build/...`` and
+    # ``task_dir`` is several levels above the kernel file (typically two:
+    # ``tasks/.../<case>/source/<name>.py``). Walk up from ``kernel_path`` and
+    # mine ``performance_command`` for the task-runner location so we find the
+    # right report even for triton2triton / torch2hip / hip2hip layouts.
+    #
+    # GEAK boundary: the upstream Arena task dir owns the case-list contract,
+    # but we never persist GEAK state into it. Instead, we **snapshot** the
+    # sidecar into ``output_dir/benchmark_test_cases.json`` immediately so:
+    #   * downstream consumers (task_generator, dispatch, worker) reference
+    #     a GEAK-canonical path that lives inside this run's output_dir;
+    #   * a subsequent ``perf_cmd`` invocation that overwrites the upstream
+    #     sidecar (e.g. AB feature-branch run after main-branch run) cannot
+    #     contaminate this run's per-case data;
+    #   * AB compare scripts can diff the two snapshots to verify both
+    #     branches saw the same case set.
+    perf_report_cases: list[dict[str, Any]] | None = None
+    perf_report_path = discover_performance_report(
+        kernel_path=kernel_path if kernel_path else None,
+        repo_root=repo_root,
+        output_dir=output_dir,
+        performance_command=perf_cmd or eval_command,
+    )
+    if perf_report_path is not None:
+        perf_report_cases = parse_performance_report_json(perf_report_path)
+        if perf_report_cases:
+            logger.info(
+                "  Picked up performance report (%d cases) from %s",
+                len(perf_report_cases),
+                perf_report_path,
+            )
+
+    if perf_report_cases:
+        normalized_cases = [
+            {"case_id": c["case_id"], "params": c["params"], "baseline_ms": c["ms"]}
+            for c in perf_report_cases
+        ]
+        baseline_metrics["benchmark_test_cases"] = normalized_cases
+        if not baseline_metrics.get("benchmark_shape_count"):
+            baseline_metrics["benchmark_shape_count"] = len(perf_report_cases)
+        ctx["baseline_metrics"] = baseline_metrics
+
+        snapshot_path = output_dir / "benchmark_test_cases.json"
+        snapshot_payload = {
+            "schema": "geak.benchmark_test_cases.v1",
+            "source_path": str(Path(perf_report_path).resolve()) if perf_report_path else "",
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "test_cases": normalized_cases,
+        }
+        try:
+            snapshot_path.write_text(json.dumps(snapshot_payload, indent=2, default=str))
+            ctx["benchmark_test_cases_path"] = str(snapshot_path)
+            baseline_metrics["benchmark_test_cases_path"] = str(snapshot_path)
+            logger.info(
+                "  Snapshotted %d benchmark case(s) from %s -> %s",
+                len(normalized_cases),
+                perf_report_path,
+                snapshot_path,
+            )
+        except OSError as exc:  # pragma: no cover - defensive
+            logger.debug("Could not snapshot benchmark_test_cases.json: %s", exc)
+
+    shape_profile = derive_shape_coverage_profile(
+        benchmark_shape_count=baseline_metrics.get("benchmark_shape_count"),
+        benchmark_test_cases=baseline_metrics.get("benchmark_test_cases"),
+    )
+    if shape_profile:
+        baseline_metrics["shape_coverage_profile"] = shape_profile
+        feature_meta["shape_coverage_profile"] = shape_profile
+        if baseline_metrics.get("benchmark_shape_count") is not None:
+            feature_meta["benchmark_shape_count"] = baseline_metrics["benchmark_shape_count"]
+        if baseline_metrics.get("benchmark_test_cases"):
+            feature_meta["benchmark_test_cases"] = list(baseline_metrics["benchmark_test_cases"])
+        ctx.update(
+            {
+                "shape_coverage_profile": shape_profile,
+                "benchmark_shape_count": baseline_metrics.get("benchmark_shape_count"),
+                "benchmark_test_cases": baseline_metrics.get("benchmark_test_cases") or [],
+            }
+        )
+        # Mirror into discovery["kernel"] so downstream task files keep a
+        # single canonical kernel-meta source.
+        try:
+            disc_dict = ctx.get("discovery") if isinstance(ctx.get("discovery"), dict) else None
+            if isinstance(disc_dict, dict):
+                kernel_info = dict(disc_dict.get("kernel") or {})
+                kernel_info["shape_coverage_profile"] = shape_profile
+                if baseline_metrics.get("benchmark_shape_count") is not None:
+                    kernel_info["benchmark_shape_count"] = baseline_metrics["benchmark_shape_count"]
+                if baseline_metrics.get("benchmark_test_cases"):
+                    kernel_info["benchmark_test_cases"] = list(baseline_metrics["benchmark_test_cases"])
+                disc_dict["kernel"] = kernel_info
+                ctx["discovery"] = disc_dict
+                (output_dir / "discovery.json").write_text(
+                    json.dumps(disc_dict, indent=2, default=str)
+                )
+        except Exception as exc:  # pragma: no cover - best-effort enrichment only
+            logger.debug("Could not enrich discovery.json with shape coverage: %s", exc)
 
     if baseline_metrics:
         (output_dir / "baseline_metrics.json").write_text(json.dumps(baseline_metrics, indent=2, default=str))

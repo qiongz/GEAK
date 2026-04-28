@@ -180,16 +180,88 @@ def _probe_preprocess_dir(pp_dir: Path):
         except (json.JSONDecodeError, OSError) as exc:
             logger.debug("_probe_preprocess_dir: failed to read discovery.json: %s", exc)
 
+    _kernel_dict = (discovery or {}).get("kernel") or {}
+    # When resolved.json is missing (e.g. an older preprocess output or a
+    # manually-curated preprocess_dir) fall back to ``discovery["kernel"]["file"]``
+    # so the kernel-type re-inference path below still has source to read.
+    # Otherwise Gluon would silently default to ``off`` on disk-resume runs
+    # where only discovery.json exists.
+    if not kernel_path:
+        _disc_file = _kernel_dict.get("file") or ""
+        if _disc_file:
+            kernel_path = str(_disc_file)
+            logger.debug("_probe_preprocess_dir: kernel_path defaulted from discovery['kernel']['file']: %s", kernel_path)
+            if not repo_root or repo_root == str(pp_dir):
+                _kp = Path(kernel_path).resolve()
+                _cur = _kp if _kp.is_dir() else _kp.parent
+                while _cur != _cur.parent:
+                    if (_cur / ".git").exists():
+                        repo_root = str(_cur)
+                        logger.debug(
+                            "_probe_preprocess_dir: repo_root re-derived from discovery file: %s",
+                            repo_root,
+                        )
+                        break
+                    _cur = _cur.parent
+    _baseline_for_probe: dict = {}
+    _bm_path = pp_dir / "baseline_metrics.json"
+    if _bm_path.exists():
+        try:
+            _baseline_for_probe = json.loads(_bm_path.read_text())
+        except (OSError, ValueError) as exc:
+            logger.debug("_probe_preprocess_dir: could not parse baseline_metrics.json: %s", exc)
+    baseline_cases = (
+        _baseline_for_probe.get("benchmark_test_cases")
+        if isinstance(_baseline_for_probe, dict)
+        else None
+    )
+    baseline_has_authoritative_cases = bool(baseline_cases)
+    shape_count = (
+        _baseline_for_probe.get("benchmark_shape_count")
+        if baseline_has_authoritative_cases
+        else _kernel_dict.get("benchmark_shape_count") or _baseline_for_probe.get("benchmark_shape_count")
+    )
+    shape_cases = (
+        baseline_cases
+        if baseline_has_authoritative_cases
+        else _kernel_dict.get("benchmark_test_cases") or _baseline_for_probe.get("benchmark_test_cases")
+    )
+    shape_profile = (
+        _baseline_for_probe.get("shape_coverage_profile")
+        if baseline_has_authoritative_cases
+        else _kernel_dict.get("shape_coverage_profile") or _baseline_for_probe.get("shape_coverage_profile")
+    )
+    # Re-infer kernel_type from source content when discovery says
+    # "unknown" / "" -- otherwise build_gluon_feature_metadata defaults
+    # gluon_feature_mode to "off" and the resume-from-disk path silently
+    # disables Gluon. Mirrors task_generator._extract_kernel_meta which
+    # already does this on the orchestrator-driven path.
+    _raw_type = str(_kernel_dict.get("type") or "").strip().lower()
+    if _raw_type in {"", "unknown"} and kernel_path:
+        try:
+            from minisweagent.agents.heterogeneous.task_generator import (
+                _infer_kernel_type as _infer_task_kernel_type,
+            )
+
+            _resolved_type = _infer_task_kernel_type(Path(kernel_path))
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("_probe_preprocess_dir: _infer_kernel_type failed: %s", exc)
+            _resolved_type = _raw_type or "unknown"
+    else:
+        _resolved_type = _raw_type or "unknown"
     feature_meta = build_gluon_feature_metadata(
         Path(kernel_path) if kernel_path else Path("unknown.py"),
-        ((discovery or {}).get("kernel") or {}).get("type", "unknown"),
-        input_dialect=((discovery or {}).get("kernel") or {}).get("input_dialect"),
-        gluon_feature_mode=((discovery or {}).get("kernel") or {}).get("gluon_feature_mode"),
-        gluon_baseline_profile=((discovery or {}).get("kernel") or {}).get("gluon_baseline_profile"),
-        allowed_output_dialects=((discovery or {}).get("kernel") or {}).get("allowed_output_dialects"),
-        preferred_output_dialects=((discovery or {}).get("kernel") or {}).get("preferred_output_dialects"),
-        output_dialect_search_policy=((discovery or {}).get("kernel") or {}).get("output_dialect_search_policy"),
-        target_backend=((discovery or {}).get("kernel") or {}).get("target_backend"),
+        _resolved_type,
+        input_dialect=_kernel_dict.get("input_dialect"),
+        gluon_feature_mode=_kernel_dict.get("gluon_feature_mode"),
+        gluon_baseline_profile=_kernel_dict.get("gluon_baseline_profile"),
+        allowed_output_dialects=_kernel_dict.get("allowed_output_dialects"),
+        preferred_output_dialects=_kernel_dict.get("preferred_output_dialects"),
+        output_dialect_search_policy=_kernel_dict.get("output_dialect_search_policy"),
+        target_backend=_kernel_dict.get("target_backend"),
+        benchmark_shape_count=shape_count,
+        benchmark_test_cases=shape_cases,
+        shape_coverage_profile=shape_profile,
     )
 
     return PreprocessContext(
@@ -210,5 +282,11 @@ def _probe_preprocess_dir(pp_dir: Path):
         preferred_output_dialects=feature_meta["preferred_output_dialects"],
         output_dialect_search_policy=feature_meta["output_dialect_search_policy"],
         target_backend=feature_meta["target_backend"],
+        benchmark_shape_count=feature_meta.get("benchmark_shape_count"),
+        benchmark_test_cases=feature_meta.get("benchmark_test_cases"),
+        benchmark_test_cases_path=str(pp_dir / "benchmark_test_cases.json")
+        if (pp_dir / "benchmark_test_cases.json").exists()
+        else None,
+        shape_coverage_profile=feature_meta.get("shape_coverage_profile"),
         discovery=discovery,
     )

@@ -57,6 +57,41 @@ Do **not** stop at summarizing the skill. Apply it to the current kernel:
 - Treat plain Triton winning the benchmark as a valid outcome, not as a failure
   to use Gluon.
 
+## Multi-shape correctness == performance
+
+Modern Triton/Gluon harnesses (AgentKernelArena PR #32, AITER repository
+tasks) score correctness and performance on the **same ordered case
+stream**. When the harness exposes more than one shape, GEAK preprocess
+classifies the kernel as `shape_coverage_multi` or `shape_coverage_bucketed`
+and the planner auto-injects a `## Shape Coverage Working Set` block listing
+the first six observed cases.
+
+In that mode:
+
+- A patch that wins one shape but regresses another is **not** a valid
+  optimization. The next planner round receives `Per-shape regressions on:
+  [...]` and forces a shape-robust competitor; if the shape regression
+  survives the audit it is recorded as `Gluon-positive-shape-regressed`
+  and rejected.
+- Hardcoded shape literals (`if M == 4096`, `BLOCK_M = 128` baked into
+  layout `instr_shape`, autotune predicates that switch on shape) are
+  prohibited. SYSTEM_PROMPT rule 17 enforces task self-classification:
+  `single_shape_viability`, `shape_robust`, or `shape_bucketed`. Pick one
+  honestly.
+- For `shape_coverage_bucketed`, prefer **host-side dispatch** that picks
+  block size, num_warps, layout, or even kernel variant from launch
+  attributes. Do not bury the bucket selection in a `@triton.heuristics`
+  lambda - the audit treats heuristic mutation as `config-shifted` even
+  when aggregate speedup looks positive.
+- For `shape_layout_constexpr_risk`, build Gluon layouts on the host from
+  launch attributes and pass them as `constexpr`. A layout that bakes one
+  shape into `AMDMFMALayout.instr_shape` will fail multi-shape correctness
+  the moment the next bucket dispatches.
+
+When the profile is `shape_coverage_unknown` or `shape_coverage_single`,
+optimize for correctness first; treat any single-shape speedup as
+provisional until the harness is upgraded to multi-shape.
+
 ## Planner traits, not kernel families
 
 When planning tasks, prefer composable traits over hard-coded kernel family
@@ -267,6 +302,13 @@ you see any of these:
   AOT
 - Assuming one global arch check is the operator support matrix
 - Copying checked-in manifests, snapshots, or benchmark outputs into the answer
+- Hardcoding shape literals (`if M == 4096`, `BLOCK_M = 128` baked into a
+  layout `instr_shape`) on a kernel that the harness reports as
+  `shape_coverage_multi` or `shape_coverage_bucketed`; this is the
+  Issue #30 cheating shape and the audit will reject it
+- Hiding shape-bucket selection inside a `@triton.heuristics` lambda when
+  the planner trait is `shape_dispatch_required`; use host-side dispatch so
+  the audit can verify per-shape coverage
 
 ## Read next
 

@@ -39,6 +39,31 @@ ALL_GLUON_BASELINE_PROFILES = frozenset((GLUON_BASELINE_PROFILE_RAW, GLUON_BASEL
 
 DEFAULT_TARGET_BACKEND = "hip/gfx942"
 _GFX_ARCH_RE = re.compile(r"\bgfx[0-9a-zA-Z]+\b")
+
+# Shape coverage profiles (planner-facing).
+#
+# Both correctness and performance evaluations on AgentKernelArena and
+# similar Triton-family benchmarks now share the same multi-shape case
+# set. Planner / worker prompts must classify each candidate against this
+# coverage profile so that single-shape investments do not dominate the
+# search budget on multi-shape benchmarks.
+SHAPE_COVERAGE_UNKNOWN = "unknown"
+SHAPE_COVERAGE_SINGLE = "single"
+SHAPE_COVERAGE_MULTI = "multi"
+SHAPE_COVERAGE_BUCKETED = "bucketed"
+ALL_SHAPE_COVERAGE_PROFILES = frozenset(
+    (
+        SHAPE_COVERAGE_UNKNOWN,
+        SHAPE_COVERAGE_SINGLE,
+        SHAPE_COVERAGE_MULTI,
+        SHAPE_COVERAGE_BUCKETED,
+    )
+)
+DEFAULT_SHAPE_COVERAGE_PROFILE = SHAPE_COVERAGE_UNKNOWN
+# A coverage is treated as "bucketed" when at least this many cases span
+# more than one order of magnitude on at least one numeric dimension.
+_SHAPE_BUCKET_MIN_CASES = 4
+_SHAPE_BUCKET_MIN_RATIO = 4.0
 GENERAL_SKILL_TIER = "general"
 AUTHORING_SAFE_SKILL_TIER = "authoring_safe"
 BENCHMARK_SAFE_SKILL_TIER = "benchmark_safe"
@@ -360,8 +385,160 @@ def derive_output_dialect_search_policy(
     return COMPARE_ALLOWED_OUTPUTS_WITHOUT_BIAS_POLICY
 
 
+def _normalize_shape_coverage_profile(value: Any) -> str | None:
+    """Normalize a shape-coverage profile string."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    aliases = {
+        "none": SHAPE_COVERAGE_UNKNOWN,
+        "n/a": SHAPE_COVERAGE_UNKNOWN,
+        "1": SHAPE_COVERAGE_SINGLE,
+        "single_shape": SHAPE_COVERAGE_SINGLE,
+        "single-shape": SHAPE_COVERAGE_SINGLE,
+        "multi_shape": SHAPE_COVERAGE_MULTI,
+        "multi-shape": SHAPE_COVERAGE_MULTI,
+        "shape_bucketed": SHAPE_COVERAGE_BUCKETED,
+        "bucket": SHAPE_COVERAGE_BUCKETED,
+        "buckets": SHAPE_COVERAGE_BUCKETED,
+    }
+    text = aliases.get(text, text)
+    return text if text in ALL_SHAPE_COVERAGE_PROFILES else None
+
+
+def _normalize_benchmark_test_cases(value: Any) -> list[dict[str, Any]]:
+    """Normalize ``benchmark_test_cases`` payloads into a list of dicts.
+
+    Each entry preserves ``case_id`` and a ``params`` dict, plus optional
+    ``baseline_ms`` / ``opt_ms`` / ``speedup`` fields when present.
+    """
+    if not value:
+        return []
+    if isinstance(value, dict):
+        items = value.get("test_cases") or value.get("cases") or []
+    else:
+        items = value
+    if not isinstance(items, (list, tuple)):
+        return []
+    def _first_present(raw_case: dict[str, Any], keys: tuple[str, ...]) -> Any:
+        for key in keys:
+            if key in raw_case:
+                return raw_case.get(key)
+        return None
+
+    def _positive_float(value: Any) -> float | None:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    def _optional_float(value: Any) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    cases: list[dict[str, Any]] = []
+    for idx, raw in enumerate(items):
+        if not isinstance(raw, dict):
+            continue
+        case_id = str(
+            raw.get("case_id")
+            or raw.get("test_case_id")
+            or raw.get("id")
+            or f"case_{idx}"
+        )
+        params = raw.get("params") if isinstance(raw.get("params"), dict) else {}
+        # AgentKernelArena repository tasks often put semantic dimensions in
+        # ``metadata`` and only expose a positional ``shape`` list separately.
+        if not params and isinstance(raw.get("metadata"), dict):
+            params = dict(raw.get("metadata") or {})
+        # Tolerate flat shape lists used by some torch2hip-style runners.
+        if not params:
+            for key in ("shape", "shapes", "input_shape", "input_shapes"):
+                if key in raw:
+                    params = {key: raw[key]}
+                    break
+        baseline_ms = _positive_float(_first_present(raw, ("baseline_ms", "ori_time")))
+        opt_ms = _positive_float(_first_present(raw, ("opt_ms", "execution_time_ms", "opt_time")))
+        cases.append(
+            {
+                "case_id": case_id,
+                "params": dict(params or {}),
+                "baseline_ms": baseline_ms,
+                "opt_ms": opt_ms,
+                "speedup": _optional_float(raw.get("speedup")),
+            }
+        )
+    return cases
+
+
+def _shape_signature_text(test_cases: list[dict[str, Any]]) -> str:
+    """Serialize ``benchmark_test_cases`` params into a search signature."""
+    chunks: list[str] = []
+    for c in test_cases:
+        params = c.get("params") or {}
+        for key, val in params.items():
+            chunks.append(f"{key}={val}")
+    return " ".join(chunks).lower()
+
+
+def _looks_bucketed(test_cases: list[dict[str, Any]]) -> bool:
+    """Return True if cases span more than one order of magnitude on any axis."""
+    if len(test_cases) < _SHAPE_BUCKET_MIN_CASES:
+        return False
+    axis_values: dict[str, list[float]] = {}
+    for c in test_cases:
+        params = c.get("params") or {}
+        for key, val in params.items():
+            if isinstance(val, bool):
+                continue
+            if isinstance(val, (int, float)) and val > 0:
+                axis_values.setdefault(str(key), []).append(float(val))
+            elif isinstance(val, (list, tuple)):
+                for idx, item in enumerate(val):
+                    if isinstance(item, (int, float)) and not isinstance(item, bool) and item > 0:
+                        axis_values.setdefault(f"{key}_dim_{idx}", []).append(float(item))
+    for values in axis_values.values():
+        if len(values) >= _SHAPE_BUCKET_MIN_CASES and max(values) / min(values) >= _SHAPE_BUCKET_MIN_RATIO:
+            return True
+    return False
+
+
+def derive_shape_coverage_profile(
+    *,
+    benchmark_shape_count: Any = None,
+    benchmark_test_cases: Any = None,
+) -> str:
+    """Map shape count and case parameters to a planner-facing profile.
+
+    The classification is deliberately conservative:
+
+    - ``unknown`` when no signal is available.
+    - ``single`` for one observed case.
+    - ``multi`` for >=2 cases without obvious bucket spread.
+    - ``bucketed`` when at least four cases span more than one order of
+      magnitude on a numeric dimension (e.g. M/N/K, seq_len, hidden_size).
+    """
+    cases = _normalize_benchmark_test_cases(benchmark_test_cases)
+    try:
+        count = int(benchmark_shape_count) if benchmark_shape_count is not None else 0
+    except (TypeError, ValueError):
+        count = 0
+    if not count and cases:
+        count = len(cases)
+    if count <= 0:
+        return SHAPE_COVERAGE_UNKNOWN
+    if count == 1:
+        return SHAPE_COVERAGE_SINGLE
+    if cases and _looks_bucketed(cases):
+        return SHAPE_COVERAGE_BUCKETED
+    return SHAPE_COVERAGE_MULTI
+
+
 def feature_uses_gluon_guidance(
-    kernel_type: str,
+    kernel_type: Any,
     *,
     input_dialect: Any = None,
     gluon_feature_mode: Any = None,
@@ -371,8 +548,14 @@ def feature_uses_gluon_guidance(
 
     This is a framework-level, metadata-driven decision and must stay generic:
     it should not depend on any particular example kernel or task label.
+
+    Prefer :func:`feature_uses_gluon_guidance_from_meta` at call sites that
+    already hold a normalized ``feature_meta`` dict; that wrapper guarantees
+    ``kernel_type`` is read from the same source as the rest of the dict
+    and avoids the historical ``feature_uses_gluon_guidance("triton", ...)``
+    hard-coded literals.
     """
-    if str(kernel_type).strip().lower() != "triton":
+    if str(kernel_type or "").strip().lower() != "triton":
         return False
 
     normalized_input_dialect = _normalize_input_dialect(input_dialect) or PLAIN_TRITON_DIALECT
@@ -395,6 +578,29 @@ def feature_uses_gluon_guidance(
     )
 
 
+def feature_uses_gluon_guidance_from_meta(
+    feature_meta: dict[str, Any] | None,
+) -> bool:
+    """Convenience wrapper around :func:`feature_uses_gluon_guidance`.
+
+    Reads ``kernel_type`` / ``input_dialect`` / ``gluon_feature_mode`` /
+    ``allowed_output_dialects`` from a normalized ``feature_meta`` dict
+    (as produced by :func:`build_gluon_feature_metadata`). This is the
+    preferred entry point in code paths that already hold the dict so
+    they don't have to hard-code ``"triton"`` at the call site.
+    """
+    if not feature_meta:
+        return False
+    if not feature_meta.get("kernel_type"):
+        return False
+    return feature_uses_gluon_guidance(
+        feature_meta.get("kernel_type"),
+        input_dialect=feature_meta.get("input_dialect"),
+        gluon_feature_mode=feature_meta.get("gluon_feature_mode"),
+        allowed_output_dialects=feature_meta.get("allowed_output_dialects"),
+    )
+
+
 def build_gluon_feature_metadata(
     kernel_path: Path,
     kernel_type: str = "unknown",
@@ -406,6 +612,9 @@ def build_gluon_feature_metadata(
     preferred_output_dialects: Any = None,
     output_dialect_search_policy: Any = None,
     target_backend: Any = None,
+    benchmark_shape_count: Any = None,
+    benchmark_test_cases: Any = None,
+    shape_coverage_profile: Any = None,
     content: str | None = None,
 ) -> dict[str, Any]:
     """Build the shared Gluon feature metadata contract."""
@@ -453,7 +662,25 @@ def build_gluon_feature_metadata(
             normalized_outputs,
         )
     )
+    normalized_test_cases = _normalize_benchmark_test_cases(benchmark_test_cases)
+    try:
+        shape_count = (
+            int(benchmark_shape_count)
+            if benchmark_shape_count is not None
+            else (len(normalized_test_cases) or None)
+        )
+    except (TypeError, ValueError):
+        shape_count = len(normalized_test_cases) or None
+    normalized_shape_profile = (
+        _normalize_shape_coverage_profile(shape_coverage_profile)
+        or derive_shape_coverage_profile(
+            benchmark_shape_count=shape_count,
+            benchmark_test_cases=normalized_test_cases,
+        )
+    )
+
     return {
+        "kernel_type": str(kernel_type or "unknown").strip().lower() or "unknown",
         "input_dialect": normalized_input_dialect,
         "gluon_feature_mode": normalized_feature_mode,
         "gluon_baseline_profile": normalized_profile,
@@ -461,6 +688,9 @@ def build_gluon_feature_metadata(
         "preferred_output_dialects": normalized_preferred_outputs,
         "output_dialect_search_policy": normalized_search_policy,
         "target_backend": normalized_target_backend,
+        "benchmark_shape_count": shape_count,
+        "benchmark_test_cases": normalized_test_cases,
+        "shape_coverage_profile": normalized_shape_profile,
     }
 
 
@@ -489,6 +719,10 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
         feature_meta.get("output_dialect_search_policy") or COMPARE_ALLOWED_OUTPUTS_WITHOUT_BIAS_POLICY
     )
     target_backend = str(feature_meta.get("target_backend") or DEFAULT_TARGET_BACKEND)
+    shape_profile = str(
+        feature_meta.get("shape_coverage_profile") or DEFAULT_SHAPE_COVERAGE_PROFILE
+    )
+    shape_count_val = feature_meta.get("benchmark_shape_count")
 
     lines = [
         heading,
@@ -499,6 +733,8 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
         f"- Preferred output dialect order: {', '.join(str(item) for item in preferred_outputs)}",
         f"- Output-dialect search policy: {search_policy}",
         f"- Target backend: {target_backend}",
+        f"- Shape coverage profile: {shape_profile}"
+        + (f" ({int(shape_count_val)} cases)" if isinstance(shape_count_val, int) and shape_count_val > 0 else ""),
     ]
 
     if search_policy == PREFER_AMD_GLUON_IF_VIABLE_POLICY:
@@ -890,6 +1126,9 @@ class DiscoveryResult:
                 preferred_output_dialects=kernel_info.get("preferred_output_dialects"),
                 output_dialect_search_policy=kernel_info.get("output_dialect_search_policy"),
                 target_backend=kernel_info.get("target_backend"),
+                benchmark_shape_count=kernel_info.get("benchmark_shape_count"),
+                benchmark_test_cases=kernel_info.get("benchmark_test_cases"),
+                shape_coverage_profile=kernel_info.get("shape_coverage_profile"),
             )
 
             _build_info: BuildInfo | None = None

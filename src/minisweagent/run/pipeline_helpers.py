@@ -23,9 +23,12 @@ from typing import Any
 from minisweagent import get_repo_root
 from minisweagent.run.preprocess.discovery_types import (
     AMD_GLUON_DIALECT,
+    DEFAULT_SHAPE_COVERAGE_PROFILE,
     NV_GLUON_DIALECT,
+    SHAPE_COVERAGE_BUCKETED,
+    SHAPE_COVERAGE_MULTI,
     build_gluon_feature_prompt_block,
-    feature_uses_gluon_guidance,
+    feature_uses_gluon_guidance_from_meta,
 )
 from minisweagent.run.utils.gpu_arch import (
     detect_gpu_arch,
@@ -984,9 +987,64 @@ def _build_gluon_working_set(feature_metadata: dict[str, Any] | None) -> list[st
             "  - `threads_per_warp` in layouts must agree with the module warp size contract (wave64 on current AMD runs).",
             "  - Be very cautious when converting between layouts that do not share the same parent distributed layout.",
             "- When you see `DistributedLinearLayout`, `PartitionedSharedLayout`, host `TensorDescriptor`, `reshape` / `permute` / `trans` tile unshuffle, nested 3D/5D `SliceLayout`, or JIT/AOT packaging gates, stop generic rewriting and read the operator-local source.",
-            "",
         ]
     )
+    shape_profile = str(
+        feature_metadata.get("shape_coverage_profile") or DEFAULT_SHAPE_COVERAGE_PROFILE
+    ).lower()
+    if shape_profile in (SHAPE_COVERAGE_MULTI, SHAPE_COVERAGE_BUCKETED):
+        lines.append(
+            "- Multi-shape Gluon constraint: `BLOCK_*`, `num_warps`, layout `instr_shape`, "
+            "and `DotOperandLayout` are `constexpr`. Every Gluon candidate must stay valid "
+            "across all observed shapes (parametric layout, host-built layout passed as "
+            "`constexpr`, or shape-bucketed dispatch)."
+        )
+    lines.append("")
+    return lines
+
+
+def _build_shape_coverage_working_set(feature_metadata: dict[str, Any] | None) -> list[str]:
+    """Return generic multi-shape working-set rules for the worker prompt.
+
+    These rules apply to any Triton-family kernel (and to HIP / CK kernels
+    that opt into the Gluon feature meta) whose benchmark exposes more
+    than one shape. They intentionally avoid Gluon-specific vocabulary so
+    plain Triton or HIP workers also get the multi-shape contract.
+    """
+    feature_metadata = feature_metadata or {}
+    profile = str(
+        feature_metadata.get("shape_coverage_profile") or DEFAULT_SHAPE_COVERAGE_PROFILE
+    ).lower()
+    if profile not in (SHAPE_COVERAGE_MULTI, SHAPE_COVERAGE_BUCKETED):
+        return []
+    shape_count = feature_metadata.get("benchmark_shape_count") or "?"
+    cases = feature_metadata.get("benchmark_test_cases") or []
+
+    lines = [
+        "## Shape Coverage Working Set",
+        f"- Multi-shape contract: this benchmark runs `{shape_count}` cases; "
+        "the same set is used for correctness and performance.",
+        "- Avoid hardcoding any of `M`, `N`, `K`, `seq_len`, batch, or hidden size unless your patch is "
+        "explicitly shape-bucketed with a documented host-side dispatch.",
+        "- Per-shape correctness MUST hold for every case. A regression on any single shape disqualifies a "
+        "'win' unless an alternative shape-bucketed path covers that case.",
+        "- Compare per-shape baseline vs candidate, not only overall geomean. State per-case timings in "
+        "your save_and_test summary when the harness exposes them.",
+    ]
+    if profile == SHAPE_COVERAGE_BUCKETED:
+        lines.append(
+            "- Bucketed coverage: prefer autotune configs or shape-specialized kernels chosen by host-side "
+            "selection (small / medium / large). Do not let a single tile size dominate every bucket."
+        )
+    if cases:
+        lines.append("- Observed cases:")
+        for case in list(cases)[:6]:
+            params = case.get("params") if isinstance(case, dict) else {}
+            cid = case.get("case_id") if isinstance(case, dict) else None
+            lines.append(f"  - `{cid or '?'}` params={params or {}}")
+        if len(cases) > 6:
+            lines.append(f"  - ... ({len(cases) - 6} more cases)")
+    lines.append("")
     return lines
 
 
@@ -1043,12 +1101,7 @@ def inject_pipeline_context(
             )
         )
         ctx.append("")
-        if feature_uses_gluon_guidance(
-            "triton",
-            input_dialect=feature_metadata.get("input_dialect"),
-            gluon_feature_mode=feature_metadata.get("gluon_feature_mode"),
-            allowed_output_dialects=feature_metadata.get("allowed_output_dialects"),
-        ):
+        if feature_uses_gluon_guidance_from_meta(feature_metadata):
             ctx.extend(
                 _build_gluon_reference_block(
                     knowledge_base_path=knowledge_base_path,
@@ -1058,6 +1111,8 @@ def inject_pipeline_context(
                 )
             )
             ctx.extend(_build_gluon_working_set(feature_metadata))
+        # Apply shape-coverage rules to ALL kernel types, not only Gluon paths.
+        ctx.extend(_build_shape_coverage_working_set(feature_metadata))
 
     ctx.append(
         "IMPORTANT: Only edit files within your REPO ROOT directory. "

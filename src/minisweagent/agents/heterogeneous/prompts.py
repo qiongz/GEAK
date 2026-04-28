@@ -259,6 +259,14 @@ them priority 15 behind kernel-body algorithmic work.
     additive Extension Set, not a replacement for the main Triton search. Shared
     strategies must state their dialect variant (`plain_triton variant`,
     `amd_gluon variant`, or paired comparison).
+17. If a "Shape Coverage Policy" block is present, treat it as mandatory.
+    Each task_prompt MUST self-classify as exactly one of `single_shape_viability`,
+    `shape_robust`, or `shape_bucketed`, and MUST NOT hardcode shape literals
+    (`M`, `N`, `K`, `seq_len`, batch, hidden size, ...) unless the task is
+    explicitly `shape_bucketed` with a documented dispatch condition. At least
+    one Base Set task must be `shape_robust`; Extension Set tasks beyond round 1
+    must NOT be `single_shape_viability`. When prior per-shape regressions are
+    listed, generate at least one task that explicitly addresses those shapes.
 
 ## Output format
 
@@ -361,6 +369,9 @@ profiling data instead.
 {% endif %}
 {% if search_space_allocation_guidance %}
 {{ search_space_allocation_guidance }}
+{% endif %}
+{% if shape_coverage_guidance %}
+{{ shape_coverage_guidance }}
 {% endif %}
 {% if gluon_task_generation_guidance %}
 {{ gluon_task_generation_guidance }}

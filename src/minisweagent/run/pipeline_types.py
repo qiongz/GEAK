@@ -49,6 +49,10 @@ class PreprocessContext:
     preferred_output_dialects: list[str] | None = None
     output_dialect_search_policy: str | None = None
     target_backend: str | None = None
+    benchmark_shape_count: int | None = None
+    benchmark_test_cases: list[dict] | None = None
+    benchmark_test_cases_path: str | None = None
+    shape_coverage_profile: str | None = None
     discovery: dict | None = None
     # Translation metadata (populated when translation preprocessing runs)
     translation_source_language: str | None = None
@@ -79,6 +83,10 @@ class PreprocessContext:
             preferred_output_dialects=d.get("preferred_output_dialects"),
             output_dialect_search_policy=d.get("output_dialect_search_policy"),
             target_backend=d.get("target_backend"),
+            benchmark_shape_count=d.get("benchmark_shape_count"),
+            benchmark_test_cases=d.get("benchmark_test_cases"),
+            benchmark_test_cases_path=d.get("benchmark_test_cases_path"),
+            shape_coverage_profile=d.get("shape_coverage_profile"),
             discovery=d.get("discovery"),
             translation_source_language=d.get("translation_source_language"),
             translation_target_language=d.get("translation_target_language"),

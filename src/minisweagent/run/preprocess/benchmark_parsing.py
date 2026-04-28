@@ -67,6 +67,267 @@ def parse_shape_count(output: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+_TEST_CASE_COUNT_PATTERNS = (
+    r"measured\s+(\d+)\s+test\s+cases?",
+    r"(\d+)\s+test\s+cases?",
+    r"(\d+)\s+cases?\b",
+    r"(\d+)\s+shapes?",
+)
+
+
+def parse_test_case_count(output: str) -> int | None:
+    """Recognize multi-case wording across GEAK harness and AgentKernelArena.
+
+    Handles patterns such as ``"5 shapes"``, ``"measured 5 test case(s)"``,
+    or ``"5 cases"`` emitted by the various performance runners.
+    """
+    if not output:
+        return None
+    for pat in _TEST_CASE_COUNT_PATTERNS:
+        m = re.search(pat, output, re.IGNORECASE)
+        if m:
+            try:
+                value = int(m.group(1))
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+    return None
+
+
+def parse_performance_report_json(path: Any) -> list[dict] | None:
+    """Read AgentKernelArena-style ``performance_report.json`` files.
+
+    The format ``[{test_case_id, execution_time_ms, params}, ...]`` is
+    AgentKernelArena's eval-script convention (``task_runner.py
+    performance``, ``cal_kernel_perf.py``). GEAK consumes this file
+    purely as **upstream raw data**: the GEAK preprocessor immediately
+    snapshots the parsed cases into ``output_dir/benchmark_test_cases.json``
+    so all downstream consumers (planner, dispatch, worker) read from a
+    GEAK-canonical path inside this run's output_dir, never from the
+    upstream Arena task dir.
+
+    Returns a normalized list of test-case dicts with ``case_id``, ``ms``
+    (best-effort latency), and ``params``. Returns ``None`` when the file
+    is missing or malformed so callers can gracefully fall back to the
+    free-text harness output.
+    """
+    try:
+        report_path = Path(path)
+    except TypeError:
+        return None
+    if not report_path.is_file():
+        return None
+    try:
+        data = json.loads(report_path.read_text())
+    except (OSError, ValueError):
+        return None
+
+    if isinstance(data, list):
+        cases = data
+    elif isinstance(data, dict):
+        cases = data.get("test_cases") or data.get("cases") or []
+    else:
+        return None
+
+    def _first_present(raw_case: dict, keys: tuple[str, ...]) -> Any:
+        # Pick the first key whose value is non-None. Skipping None matters for
+        # ``torch2hip`` baseline-only output where ``opt_time`` is explicitly
+        # ``None`` while ``ori_time`` carries the actual baseline latency.
+        for key in keys:
+            if key in raw_case and raw_case.get(key) is not None:
+                return raw_case.get(key)
+        return None
+
+    def _positive_float(value: Any) -> float | None:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    normalized: list[dict] = []
+    for idx, raw in enumerate(cases):
+        if not isinstance(raw, dict):
+            continue
+        case_id = raw.get("test_case_id") or raw.get("case_id") or raw.get("id") or f"case_{idx}"
+        ms = _positive_float(
+            _first_present(raw, ("execution_time_ms", "opt_time", "ori_time", "baseline_ms"))
+        )
+        params = raw.get("params") if isinstance(raw.get("params"), dict) else {}
+        if not params and isinstance(raw.get("metadata"), dict):
+            params = dict(raw.get("metadata") or {})
+        if not params:
+            for key in ("shape", "shapes", "input_shape", "input_shapes"):
+                if key in raw:
+                    params = {key: raw[key]}
+                    break
+        normalized.append(
+            {
+                "case_id": str(case_id),
+                "ms": ms,
+                "params": dict(params or {}),
+            }
+        )
+    return normalized or None
+
+
+# Public alias making the GEAK <-> upstream-Arena boundary explicit at
+# call sites. ``parse_performance_report_json`` stays as the historical
+# name because tests and external scripts already import it.
+read_arena_perf_sidecar = parse_performance_report_json
+
+
+def _candidate_task_runner_paths(performance_command: Any) -> list[Path]:
+    """Pick task-runner / cal_kernel_perf script paths out of a perf command.
+
+    AgentKernelArena tasks usually invoke the perf command via either
+    ``python3 scripts/task_runner.py performance`` or
+    ``python3 eval_tools/cal_kernel_perf.py``. The script's parent
+    directory's parent is the task root, and that is where ``build/``
+    lives. This helper extracts those file paths so the preprocessor can
+    walk the right ancestor chain when searching for the report.
+    """
+    if not performance_command:
+        return []
+    text = performance_command if isinstance(performance_command, str) else " ".join(
+        str(item) for item in performance_command
+    )
+    candidates: list[Path] = []
+    for token in re.findall(r"[^\s'\"]+\.py", text):
+        try:
+            p = Path(token)
+        except (OSError, ValueError):
+            continue
+        if p.name in {"task_runner.py", "cal_kernel_perf.py", "compile.py", "correctness_check.py"}:
+            candidates.append(p)
+    return candidates
+
+
+def discover_performance_report(
+    *,
+    kernel_path: Any = None,
+    repo_root: Any = None,
+    output_dir: Any = None,
+    performance_command: Any = None,
+    extra_paths: Any = None,
+    max_depth: int = 5,
+) -> Path | None:
+    """Locate the upstream Arena-style ``performance_report.json`` sidecar.
+
+    This function returns a path inside the **upstream** AgentKernelArena
+    task directory; the preprocessor immediately snapshots the parsed
+    contents into GEAK's own ``output_dir/benchmark_test_cases.json`` so
+    that downstream consumers never have to read the upstream sidecar
+    again. See ``parse_performance_report_json`` for the boundary contract.
+
+    The search order is:
+
+    1. ``output_dir/performance_report.json`` (GEAK preprocess output).
+    2. Any explicit ``extra_paths`` provided by the caller.
+    3. Task-runner script paths extracted from ``performance_command``;
+       for each script its parent's parent is the task dir. Relative
+       command paths are also resolved against ``repo_root``.
+    4. Walk up from ``kernel_path`` checking ``./build/performance_report.json``
+       and ``./performance_report.json`` at each level, stopping at
+       ``repo_root`` or after ``max_depth`` ascents.
+    5. Legacy fallback: ``repo_root/build/performance_report.json``.
+
+    Returns ``None`` when no candidate file exists.
+    """
+    seen: set[Path] = set()
+
+    def _check(p: Any) -> Path | None:
+        if p is None:
+            return None
+        try:
+            candidate = Path(p)
+        except (OSError, ValueError, TypeError):
+            return None
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            resolved = candidate
+        if resolved in seen:
+            return None
+        seen.add(resolved)
+        if candidate.is_file():
+            return candidate
+        return None
+
+    if output_dir is not None:
+        hit = _check(Path(output_dir) / "performance_report.json")
+        if hit is not None:
+            return hit
+
+    if extra_paths:
+        for ep in extra_paths:
+            hit = _check(ep)
+            if hit is not None:
+                return hit
+
+    for runner in _candidate_task_runner_paths(performance_command):
+        # Real performance commands often use repo-relative paths like
+        # ``python3 tasks/.../scripts/task_runner.py performance``. When the
+        # current working directory is not the repo root the relative
+        # ancestors won't resolve to anything useful, so always also probe
+        # the path joined to ``repo_root`` when one is supplied.
+        runner_candidates: list[Path] = [runner]
+        if not runner.is_absolute() and repo_root:
+            try:
+                runner_candidates.append(Path(repo_root) / runner)
+            except (OSError, ValueError, TypeError):
+                pass
+        for runner_path in runner_candidates:
+            for ancestor in (runner_path.parent, runner_path.parent.parent):
+                try:
+                    if not ancestor:
+                        continue
+                    hit = _check(ancestor / "build" / "performance_report.json")
+                    if hit is not None:
+                        return hit
+                    hit = _check(ancestor / "performance_report.json")
+                    if hit is not None:
+                        return hit
+                except (OSError, ValueError):
+                    continue
+
+    if kernel_path is not None:
+        try:
+            kernel = Path(kernel_path)
+        except (OSError, ValueError, TypeError):
+            kernel = None
+        if kernel is not None:
+            try:
+                root = Path(repo_root).resolve() if repo_root else None
+            except (OSError, ValueError):
+                root = None
+            current = kernel.parent
+            for _ in range(max_depth):
+                hit = _check(current / "build" / "performance_report.json")
+                if hit is not None:
+                    return hit
+                hit = _check(current / "performance_report.json")
+                if hit is not None:
+                    return hit
+                if current == current.parent:
+                    break
+                if root is not None:
+                    try:
+                        if current.resolve() == root:
+                            break
+                    except OSError:
+                        pass
+                current = current.parent
+
+    if repo_root is not None:
+        hit = _check(Path(repo_root) / "build" / "performance_report.json")
+        if hit is not None:
+            return hit
+
+    return None
+
+
 def parse_shape_latencies_ms(output: str) -> dict[str, float]:
     """Extract per-shape latencies from harness benchmark output.
 
