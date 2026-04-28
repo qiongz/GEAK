@@ -185,6 +185,9 @@ def _task_feature_metadata(meta: dict[str, Any]) -> dict[str, Any]:
         preferred_output_dialects=meta.get("preferred_output_dialects"),
         output_dialect_search_policy=meta.get("output_dialect_search_policy"),
         target_backend=meta.get("target_backend"),
+        benchmark_shape_count=meta.get("benchmark_shape_count"),
+        benchmark_test_cases=meta.get("benchmark_test_cases"),
+        shape_coverage_profile=meta.get("shape_coverage_profile"),
     )
 
 

@@ -34,6 +34,12 @@ to the short trait reference below, then view only the headings it names.
 - `execution_jit_aot_sensitive` -> `### Trait: execution_jit_aot_sensitive`
 - `version_sensitive` -> `### Trait: version_sensitive`
 - `operator_support_sensitive` -> `### Trait: operator_support_sensitive`
+- `shape_coverage_unknown` -> `### Trait: shape_coverage_unknown`
+- `shape_coverage_single` -> `### Trait: shape_coverage_single`
+- `shape_coverage_multi` -> `### Trait: shape_coverage_multi`
+- `shape_coverage_bucketed` -> `### Trait: shape_coverage_bucketed`
+- `shape_layout_constexpr_risk` -> `### Trait: shape_layout_constexpr_risk`
+- `shape_dispatch_required` -> `### Trait: shape_dispatch_required`
 - `search_space_allocation` -> `### Search space: base_shared_extension`
 
 ## Trait reference for targeted reading
@@ -319,6 +325,135 @@ Then view these headings:
 Do not:
 
 - infer support from a global helper or namespace name alone.
+
+### Trait: shape_coverage_unknown
+
+Read this first: the benchmark harness did not expose any shape-count signal
+(no `build/performance_report.json`, no `(M,K,N): X ms` lines, no `N shapes`
+report). Treat the kernel as if it could be any of single / multi / bucketed
+until proven otherwise; do not optimize for a specific tile size.
+
+Then view these headings:
+
+- `## 11. Benchmark-aware rules`
+- `### Trait: semantics_contract`
+
+Do not:
+
+- guess block sizes from a single example call;
+- emit a Gluon candidate that hardcodes a launch shape before running
+  correctness on the actual harness stream.
+
+### Trait: shape_coverage_single
+
+Read this first: the harness exposes exactly one representative shape. A
+single-shape `Gluon-positive` is allowed but never sufficient by itself;
+treat any speedup as fragile until a multi-shape harness confirms it.
+
+Then view these headings:
+
+- `### Trait: semantics_contract`
+- `## 11. Benchmark-aware rules`
+
+Do not:
+
+- claim a portable speedup from one shape;
+- branch the kernel on `M == X` constants when the harness is single-shape;
+  this is exactly the pattern that becomes a hidden regression once the
+  harness is upgraded to multi-shape.
+
+### Trait: shape_coverage_multi
+
+Read this first: correctness and performance share an ordered case stream of
+multiple shapes. Every candidate task must classify itself as
+`single_shape_viability`, `shape_robust`, or `shape_bucketed` (SYSTEM_PROMPT
+rule 17). Per-shape correctness must all pass; per-shape speedup is reported
+back to the planner and any shape with ratio `< 0.9` becomes a forced
+coverage requirement on the next round.
+
+Then view these headings:
+
+- `### Trait: layout_basic`
+- `### Trait: semantics_contract`
+- `### Search space: base_shared_extension`
+
+Do not:
+
+- hardcode shape literals to win one case at the cost of another;
+- collapse the case stream to a single representative shape;
+- skip Base Set plain Triton candidates - planner allocates at least one
+  Base Set + one Shared Set slot when `shape_coverage_profile == multi` and
+  the run has `>= 4` GPU.
+
+### Trait: shape_coverage_bucketed
+
+Read this first: shapes split into qualitatively different buckets (small
+vs large M, contiguous vs strided K, etc.) and a single launch config almost
+never wins all buckets. Prefer host-side dispatch (`if M < threshold:
+kernel_v1[grid](...)` else `kernel_v2[grid](...)`) over heuristic
+`@triton.heuristics` predicates; the planner will pair `shape_dispatch_required`
+strong trait with this profile, so Extension Set has at least 2 slots when
+`>= 5` GPU.
+
+Then view these headings:
+
+- `### Trait: shape_dispatch_required`
+- `### Trait: shape_layout_constexpr_risk`
+- `### Trait: layout_basic`
+- `### Search space: base_shared_extension`
+
+Do not:
+
+- collapse buckets to one tile config and then claim a global speedup;
+- modify `@triton.heuristics({...})` lambdas to silently change which
+  bucket falls into which config - audit treats this as `config-shifted`
+  and rejects the patch even if aggregate speedup looks positive;
+- omit Base Set plain Triton dispatch fallback - bucketed Gluon must beat
+  bucketed plain Triton, not single-config plain Triton.
+
+### Trait: shape_layout_constexpr_risk
+
+Read this first: Gluon layouts (`BlockedLayout`, `AMDMFMALayout.instr_shape`,
+`SliceLayout`) are passed as `constexpr`; if the layout is derived from a
+hardcoded shape it baked-in rather than passed from host, multi-shape
+correctness breaks the moment a different shape is dispatched. Construct
+layouts on the host from launch attributes and pass them as `constexpr`
+arguments.
+
+Then view these headings:
+
+- `### Trait: layout_basic`
+- `#### Recover implicit layout before changing APIs`
+- `#### Align host launcher and layout`
+
+Do not:
+
+- instantiate `AMDMFMALayout(version=3, instr_shape=[16,16])` inside the
+  kernel for a multi-shape harness without a host-side dispatch wrapper;
+- hardcode `tl.arange` upper bounds based on a single-shape assumption.
+
+### Trait: shape_dispatch_required
+
+Read this first: this is a strong Gluon-extension signal. A single in-kernel
+config cannot serve all shape buckets, so the patch must add a host-side
+selector that picks block size, num_warps, layout, or even kernel variant
+based on launch attributes. The planner reserves an Extension Set slot for
+this trait when the GPU budget allows.
+
+Then view these headings:
+
+- `### Trait: shape_coverage_bucketed`
+- `### Trait: shape_layout_constexpr_risk`
+- `### Search space: base_shared_extension`
+
+Do not:
+
+- substitute autotune for explicit dispatch when the harness already
+  enumerates the cases; autotune adds compile-time overhead and the planner
+  cannot verify per-shape coverage from autotune logs;
+- write a single `@triton.heuristics` predicate that switches block size on
+  shape - `compare.py` audit treats heuristic mutation as config-shift even
+  when speedup looks positive.
 
 ## 1. Product contract
 

@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -62,15 +63,22 @@ from minisweagent.agents.heterogeneous.result_scanning import (
 from minisweagent.agents.heterogeneous.workload_guidance import _build_workload_guidance  # noqa: F401
 from minisweagent.debug_runtime import emit_debug_log, model_tools_snapshot, tool_names
 from minisweagent.run.preprocess.discovery_types import (
+    DEFAULT_SHAPE_COVERAGE_PROFILE,
     GLUON_BASELINE_PROFILE_MI3XX,
     GLUON_FEATURE_MODE_OFF,
     PREFER_AMD_GLUON_IF_VIABLE_POLICY,
     REQUIRE_AMD_GLUON_POLICY,
+    SHAPE_COVERAGE_BUCKETED,
+    SHAPE_COVERAGE_MULTI,
+    SHAPE_COVERAGE_SINGLE,
+    SHAPE_COVERAGE_UNKNOWN,
     _infer_kernel_language,
     allowed_skill_tiers_for_feature,
     build_gluon_feature_metadata,
     build_gluon_feature_prompt_block,
+    derive_shape_coverage_profile,
     feature_uses_gluon_guidance,
+    feature_uses_gluon_guidance_from_meta,
 )
 
 logger = logging.getLogger(__name__)
@@ -193,6 +201,12 @@ def _extract_kernel_meta(
         preferred_output_dialects=kernel_info.get("preferred_output_dialects"),
         output_dialect_search_policy=kernel_info.get("output_dialect_search_policy"),
         target_backend=kernel_info.get("target_backend") or os.getenv("GEAK_TARGET_BACKEND"),
+        # Preserve shape coverage signals when the preprocessor mirrored them
+        # into discovery["kernel"]. Without this the CLI path (no baseline
+        # metrics) silently drops shape_coverage_profile / benchmark_shape_count.
+        benchmark_shape_count=kernel_info.get("benchmark_shape_count"),
+        benchmark_test_cases=kernel_info.get("benchmark_test_cases"),
+        shape_coverage_profile=kernel_info.get("shape_coverage_profile"),
     )
 
     return {
@@ -229,6 +243,9 @@ def generate_tasks(
     preferred_output_dialects: list[str] | None = None,
     output_dialect_search_policy: str | None = None,
     target_backend: str = "",
+    benchmark_shape_count: int | None = None,
+    benchmark_test_cases: list[dict[str, Any]] | None = None,
+    shape_coverage_profile: str | None = None,
     profiling_path: Path | None = None,
     commandment_path: Path | None = None,
     baseline_metrics_path: Path | None = None,
@@ -292,6 +309,9 @@ def generate_tasks(
         preferred_output_dialects=preferred_output_dialects,
         output_dialect_search_policy=output_dialect_search_policy,
         target_backend=target_backend,
+        benchmark_shape_count=benchmark_shape_count,
+        benchmark_test_cases=benchmark_test_cases,
+        shape_coverage_profile=shape_coverage_profile,
         base_task_context=base_task_context,
         model=model,
         profiling_path=profiling_path,
@@ -336,6 +356,9 @@ def generate_tasks_from_content(
     preferred_output_dialects: list[str] | None = None,
     output_dialect_search_policy: str | None = None,
     target_backend: str = "",
+    benchmark_shape_count: int | None = None,
+    benchmark_test_cases: list[dict[str, Any]] | None = None,
+    shape_coverage_profile: str | None = None,
     profiling_result: dict | None = None,
     commandment_content: str | None = None,
     baseline_metrics: dict | None = None,
@@ -393,6 +416,9 @@ def generate_tasks_from_content(
             preferred_output_dialects=preferred_output_dialects,
             output_dialect_search_policy=output_dialect_search_policy,
             target_backend=target_backend,
+            benchmark_shape_count=benchmark_shape_count,
+            benchmark_test_cases=benchmark_test_cases,
+            shape_coverage_profile=shape_coverage_profile,
             profiling_path=profiling_path,
             commandment_path=commandment_path,
             baseline_metrics_path=baseline_metrics_path,
@@ -428,6 +454,10 @@ def write_task_files(
     preferred_output_dialects: list[str] | None = None,
     output_dialect_search_policy: str | None = None,
     target_backend: str = "",
+    benchmark_shape_count: int | None = None,
+    benchmark_test_cases: list[dict[str, Any]] | None = None,
+    benchmark_test_cases_path: str | None = None,
+    shape_coverage_profile: str | None = None,
     repo_root: str = "",
     commandment: str = "",
     baseline_metrics: str = "",
@@ -460,6 +490,9 @@ def write_task_files(
         preferred_output_dialects=preferred_output_dialects,
         output_dialect_search_policy=output_dialect_search_policy,
         target_backend=target_backend,
+        benchmark_shape_count=benchmark_shape_count,
+        benchmark_test_cases=benchmark_test_cases,
+        shape_coverage_profile=shape_coverage_profile,
     )
     allowed_skill_tiers = allowed_skill_tiers_for_feature(
         kernel_type,
@@ -489,6 +522,10 @@ def write_task_files(
             "preferred_output_dialects": list(feature_meta["preferred_output_dialects"]),
             "output_dialect_search_policy": feature_meta["output_dialect_search_policy"],
             "target_backend": feature_meta["target_backend"],
+            "shape_coverage_profile": feature_meta.get("shape_coverage_profile"),
+            "benchmark_shape_count": feature_meta.get("benchmark_shape_count"),
+            "benchmark_test_cases": list(feature_meta.get("benchmark_test_cases") or []),
+            "benchmark_test_cases_path": benchmark_test_cases_path or "",
             "repo_root": repo_root,
             "commandment": commandment,
             "baseline_metrics": baseline_metrics,
@@ -610,12 +647,7 @@ def _infer_gluon_planning_traits(
     signal_text: str,
 ) -> list[str]:
     """Infer composable traits that should shape Gluon task planning."""
-    if not feature_uses_gluon_guidance(
-        "triton",
-        input_dialect=feature_meta.get("input_dialect"),
-        gluon_feature_mode=feature_meta.get("gluon_feature_mode"),
-        allowed_output_dialects=feature_meta.get("allowed_output_dialects"),
-    ):
+    if not feature_uses_gluon_guidance_from_meta(feature_meta):
         return []
 
     traits: list[str] = ["semantics_contract"]
@@ -691,6 +723,38 @@ def _infer_gluon_planning_traits(
     if any(marker in text for marker in ("get_arch", "gfx942", "gfx950", "gfx1250", "is_hip", "gluon available")):
         traits.append("operator_support_sensitive")
 
+    shape_profile = str(
+        feature_meta.get("shape_coverage_profile") or DEFAULT_SHAPE_COVERAGE_PROFILE
+    ).lower()
+    if shape_profile == SHAPE_COVERAGE_BUCKETED:
+        traits.append("shape_coverage_bucketed")
+    elif shape_profile == SHAPE_COVERAGE_MULTI:
+        traits.append("shape_coverage_multi")
+    elif shape_profile == SHAPE_COVERAGE_SINGLE:
+        traits.append("shape_coverage_single")
+    else:
+        traits.append("shape_coverage_unknown")
+
+    multi_shape = shape_profile in (SHAPE_COVERAGE_MULTI, SHAPE_COVERAGE_BUCKETED)
+    if multi_shape and any(
+        marker in text
+        for marker in (
+            "block_m",
+            "block_n",
+            "block_k",
+            "block_size",
+            "num_warps",
+            "instr_shape",
+            "warps_per_cta",
+            "threads_per_warp",
+        )
+    ):
+        traits.append("shape_layout_constexpr_risk")
+    if shape_profile == SHAPE_COVERAGE_BUCKETED and any(
+        t in traits for t in ("matrix_dot", "matrix_scaled_dot", "matrix_wmma_descriptor")
+    ):
+        traits.append("shape_dispatch_required")
+
     deduped: list[str] = []
     seen: set[str] = set()
     for trait in traits:
@@ -716,6 +780,7 @@ def _gluon_extension_strength(traits: list[str]) -> str:
         "matrix_wmma_descriptor",
         "memory_amd_buffer",
         "layout_source_first_required",
+        "shape_dispatch_required",
     }
     normal_traits = {
         "layout_slice_broadcast",
@@ -723,6 +788,8 @@ def _gluon_extension_strength(traits: list[str]) -> str:
         "execution_jit_aot_sensitive",
         "version_sensitive",
         "operator_support_sensitive",
+        "shape_layout_constexpr_risk",
+        "shape_coverage_bucketed",
     }
     if trait_set & strong_traits:
         return "strong"
@@ -731,25 +798,216 @@ def _gluon_extension_strength(traits: list[str]) -> str:
     return "weak"
 
 
+_PREVIOUS_GLUON_SPEEDUP_RE = re.compile(
+    r"(?:verified_speedup|best[_\s-]*patch[_\s-]*speedup|speedup)\s*[=:]\s*([0-9]+\.?[0-9]*)\s*x?",
+    re.IGNORECASE,
+)
+
+
+# Keywords that mark a previous-round task as Gluon-related when explicit
+# dialect / policy frontmatter is missing. These cover label and body
+# text patterns that show up in real Gluon-related rewrites
+# (planner-emitted prompts and worker-produced patches).
+_PREV_GLUON_KEYWORD_MARKERS = (
+    "gluon",
+    "amd_gluon",
+    "nv_gluon",
+    "mfma",
+    "wmma_descriptor",
+    "wmma_scaled",
+    "buffer_load",
+    "buffer_store",
+    "amdmfmalayout",
+    "amdwmmalayout",
+    "dotoperandlayout",
+    "gl.amd",
+    "ttgl.",
+    "@gluon.jit",
+)
+
+
+def _looks_gluon_related(block_text: str) -> bool:
+    """Return whether a previous-round result/task block looks Gluon-related.
+
+    Precision is the goal here: planner allocates an Extension Set slot to
+    Gluon, and the previous-round signal is supposed to summarise *Gluon*
+    outcomes only. A Base Set ``plain_triton`` win must not bleed into
+    the Gluon quota math.
+
+    First-pass uses explicit task frontmatter that ``scan_previous_tasks``
+    now embeds (``input_dialect=`` / ``policy=``). Second-pass falls back
+    to keyword markers so result-only sections still classify correctly.
+    """
+    if not block_text:
+        return False
+    lower = block_text.lower()
+    if "input_dialect=amd_gluon" in lower or "input_dialect=nv_gluon" in lower:
+        return True
+    # Run-level metadata such as
+    # ``policy=prefer_amd_gluon_if_viable_else_plain_triton`` appears on every
+    # task in a Gluon-enabled run, including Base Set plain-Triton tasks. Strip
+    # those fields before keyword matching so the policy itself does not make a
+    # plain Triton result look like a Gluon Extension result.
+    signal_lower = re.sub(
+        r"\b(?:input_dialect|policy|output_dialect_search_policy)=[^,)\s]+",
+        "",
+        lower,
+    )
+    has_gluon_keyword = any(marker in signal_lower for marker in _PREV_GLUON_KEYWORD_MARKERS)
+    if "input_dialect=plain_triton" in lower and not has_gluon_keyword:
+        # Explicitly plain-Triton with no Gluon keywords: definitely not Gluon.
+        return False
+    if "policy=require_amd_gluon" in lower or "policy=prefer_amd_gluon" in lower:
+        return "input_dialect=plain_triton" not in lower or has_gluon_keyword
+    return has_gluon_keyword
+
+
+_PREV_RESULT_SECTION_RE = re.compile(r"^### .*$", re.MULTILINE)
+_PREV_TASK_BULLET_RE = re.compile(r"^- \*\*[^*]+\*\*.*$", re.MULTILINE)
+
+
+def _filter_gluon_relevant_text(combined_text: str) -> str:
+    """Strip Base Set plain-Triton sections from prior-round summary text.
+
+    ``_scan_previous_results`` produces ``### <label>`` sections; the
+    enriched ``_scan_previous_tasks`` produces ``- **<label>** (...)``
+    bullets carrying frontmatter dialect/policy. Returns the concatenation
+    of just the Gluon-related sections + bullets.
+
+    When the input is free text without either structure (e.g. callers
+    that pre-summarized the round in prose), fall back to whole-text
+    classification so the legacy "single string" contract still works.
+    """
+    if not combined_text:
+        return ""
+    pieces: list[str] = []
+    matched_any_structure = False
+
+    section_starts = [m.start() for m in _PREV_RESULT_SECTION_RE.finditer(combined_text)]
+    if section_starts:
+        matched_any_structure = True
+        boundaries = section_starts + [len(combined_text)]
+        for i in range(len(section_starts)):
+            section = combined_text[boundaries[i] : boundaries[i + 1]]
+            if _looks_gluon_related(section):
+                pieces.append(section)
+
+    for line in combined_text.splitlines():
+        if _PREV_TASK_BULLET_RE.match(line):
+            matched_any_structure = True
+            if _looks_gluon_related(line):
+                pieces.append(line)
+
+    if not matched_any_structure:
+        # Free-text fallback: treat the whole blob as one block. This
+        # preserves the legacy contract where callers passed pre-summarized
+        # prose to ``_previous_gluon_signal`` directly.
+        if _looks_gluon_related(combined_text):
+            return combined_text
+        return ""
+
+    return "\n".join(pieces)
+
+
 def _previous_gluon_signal(previous_text: str) -> str:
-    """Infer a coarse previous-round Gluon signal from planner/result summaries."""
+    """Infer a coarse previous-round Gluon signal from planner/result summaries.
+
+    Classification priority is **numeric > textual**:
+
+    1. The text is scanned for ``verified_speedup`` / ``best_patch_speedup``
+       / ``speedup=N`` numbers. ``speedup > 1.0`` is the only signal that
+       returns ``won``. ``speedup < 1.0`` (including ``0.0``) returns
+       ``slower``.
+    2. With no positive speedup, explicit terminal-failure markers
+       (``traceback``, ``compile failed``, ``correctness failed``, etc.)
+       return ``failed``.
+    3. Slower-phrasing ("slower", "performance regression", "regressed",
+       "worse") returns ``slower`` even without numeric backing.
+    4. Otherwise the round is ``attempted`` -- bare markers like ``passed``
+       or ``[best]`` without a positive structured speedup are treated as
+       attempted, not won, because real benchmark output puts the speedup
+       number alongside ``[BEST]`` and ``passed`` alone is consistent with
+       both winning and slower-than-baseline outcomes.
+
+    This guards the Base/Shared/Extension quota table against two
+    specific over-corrections:
+
+    - "Patch 0 failed, patch 5 [BEST] verified_speedup=1.18x" used to be
+      mis-classified as ``failed`` (the Finding-2 mixed-failure case).
+    - "Gluon best patch speedup=0.85 passed" used to be mis-classified
+      as ``won`` once we added win markers, which would have wrongly
+      expanded the next-round Extension Set.
+
+    The caller is responsible for restricting this signal to Gluon
+    contexts via ``feature_uses_gluon_guidance``; this function does not
+    re-check the literal string ``"gluon"`` in the text because real
+    task labels often omit it (e.g. ``mfma-rewrite``,
+    ``layout-constexpr-fix``) and we would otherwise miss legitimate
+    failed/slower/won signals on those rounds.
+    """
     text = previous_text.lower()
-    if not text or "gluon" not in text:
+    if not text:
         return "none"
-    failure_markers = ("compile", "correctness", "failed", "failure", "traceback", "error", "invalid")
-    slower_markers = ("slower", "regress", "performance regression", "speedup=0", "worse")
-    win_markers = ("best", "[best]", "verified_speedup", "speedup=1.", "passed")
+
+    has_speedup_above_one = False
+    has_speedup_below_one = False
+    has_zero_speedup = False
+    for match in _PREVIOUS_GLUON_SPEEDUP_RE.finditer(text):
+        try:
+            value = float(match.group(1))
+        except ValueError:
+            continue
+        if value > 1.0:
+            has_speedup_above_one = True
+        elif value == 0.0:
+            has_zero_speedup = True
+        elif 0 < value < 1.0:
+            has_speedup_below_one = True
+
+    if has_speedup_above_one:
+        return "won"
+
+    slower_markers = ("slower", "performance regression", "regressed", "worse")
+    if has_speedup_below_one or has_zero_speedup or any(
+        marker in text for marker in slower_markers
+    ):
+        return "slower"
+
+    failure_markers = (
+        "compile failed",
+        "compile error",
+        "correctness failed",
+        "all patches failed",
+        "no patches passed",
+        "traceback",
+        "invalid",
+        "failure",
+    )
     if any(marker in text for marker in failure_markers):
         return "failed"
-    if any(marker in text for marker in slower_markers):
-        return "slower"
-    if any(marker in text for marker in win_markers):
-        return "won"
+    # Standalone "failed" / "error" without explicit win evidence means the
+    # prior round produced no usable best patch yet.
+    if " failed" in text or "\nfailed" in text or "error:" in text:
+        return "failed"
+
+    # ``passed`` / bare ``[best]`` without numeric speedup evidence is
+    # ambiguous -- fall through to ``attempted`` instead of guessing.
     return "attempted"
 
 
-def _base_extension_quotas(num_gpus: int, strength: str, previous_signal: str) -> tuple[int, int, int]:
-    """Return recommended base/shared/extension slot counts."""
+def _base_extension_quotas(
+    num_gpus: int,
+    strength: str,
+    previous_signal: str,
+    shape_profile: str = SHAPE_COVERAGE_UNKNOWN,
+) -> tuple[int, int, int]:
+    """Return recommended base/shared/extension slot counts.
+
+    The shape coverage profile biases the allocation so that multi-shape
+    benchmarks always retain at least one shape-robust Base slot and so
+    that bucketed benchmarks can afford a paired Shared comparison plus
+    an extra trait-specific Extension slot when the budget allows it.
+    """
     budget = max(int(num_gpus or 1), 1)
     if budget <= 1:
         return 1, 0, 0
@@ -770,6 +1028,17 @@ def _base_extension_quotas(num_gpus: int, strength: str, previous_signal: str) -
     elif previous_signal == "won" and budget >= 3:
         extension = min(extension + 1, max(budget - base, 1))
         shared = max(budget - base - extension, 0)
+
+    if shape_profile in (SHAPE_COVERAGE_MULTI, SHAPE_COVERAGE_BUCKETED):
+        # A shape-robust Base slot is mandatory whenever multiple shapes are
+        # benchmarked together; Shared paired comparisons become valuable from
+        # 4 GPUs onward; bucketed runs justify a second trait-specific
+        # Extension slot once we have at least 5 GPUs.
+        base = max(base, 1)
+        if budget >= 4:
+            shared = max(shared, 1)
+        if shape_profile == SHAPE_COVERAGE_BUCKETED and budget >= 5:
+            extension = max(extension, 2)
 
     if budget >= 2 and extension == 0:
         extension = 1
@@ -794,16 +1063,23 @@ def _build_search_space_allocation_guidance(
     previous_tasks_text: str = "",
 ) -> str:
     """Return Base/Shared/Extension search-space allocation guidance."""
-    if not traits or not feature_uses_gluon_guidance(
-        "triton",
-        input_dialect=feature_meta.get("input_dialect"),
-        gluon_feature_mode=feature_meta.get("gluon_feature_mode"),
-        allowed_output_dialects=feature_meta.get("allowed_output_dialects"),
-    ):
+    if not traits or not feature_uses_gluon_guidance_from_meta(feature_meta):
         return ""
     strength = _gluon_extension_strength(traits)
-    previous_signal = _previous_gluon_signal("\n".join((previous_results_text, previous_tasks_text)))
-    base_slots, shared_slots, extension_slots = _base_extension_quotas(num_gpus, strength, previous_signal)
+    # Filter prior-round summary text to Gluon-related sections / bullets
+    # only. Without this the Gluon quota responds to Base Set plain-Triton
+    # outcomes (e.g. a Triton split-K winning at 1.5x would falsely
+    # expand the next-round Extension Set even if Gluon never compiled).
+    gluon_relevant_prior = _filter_gluon_relevant_text(
+        "\n".join((previous_results_text, previous_tasks_text))
+    )
+    previous_signal = _previous_gluon_signal(gluon_relevant_prior)
+    shape_profile = str(
+        feature_meta.get("shape_coverage_profile") or DEFAULT_SHAPE_COVERAGE_PROFILE
+    ).lower()
+    base_slots, shared_slots, extension_slots = _base_extension_quotas(
+        num_gpus, strength, previous_signal, shape_profile=shape_profile,
+    )
 
     lines = [
         "## Search Space Allocation",
@@ -811,6 +1087,7 @@ def _build_search_space_allocation_guidance(
         f"- GPU/task budget: {max(int(num_gpus or 1), 1)}",
         f"- Gluon extension strength: {strength}",
         f"- Previous Gluon signal: {previous_signal}",
+        f"- Shape coverage profile: {shape_profile}",
         "Recommended candidate allocation:",
         f"- Base Set (plain Triton): at least {base_slots} task(s). Preserve the main Triton planner path: algorithmic rewrite, memory/layout cleanup, fusion, shape-specialized variants, and low-priority autotune/launch work.",
         f"- Shared Set (Triton/Gluon common strategies): {shared_slots} task(s) when budget allows. Shared tasks must state whether they are a `plain_triton variant`, an `amd_gluon variant`, or a paired comparison.",
@@ -821,6 +1098,17 @@ def _build_search_space_allocation_guidance(
         "- If a plain Triton candidate wins, accept it as the best result rather than forcing more Gluon work.",
         "- If a Triton strategy wins and maps cleanly to Gluon traits, a later round may create an AMD Gluon variant of that winning strategy.",
     ]
+    if shape_profile in (SHAPE_COVERAGE_MULTI, SHAPE_COVERAGE_BUCKETED):
+        lines.append(
+            "- Multi-shape rule: at least one Base Set candidate MUST be `shape_robust`; "
+            "Extension Set candidates MUST self-classify as `shape_robust` or `shape_bucketed` "
+            "(not `single_shape_viability` after round 1)."
+        )
+    if shape_profile == SHAPE_COVERAGE_BUCKETED:
+        lines.append(
+            "- Bucketed rule: Shared Set tasks must be paired comparisons that report per-shape numbers; "
+            "trait-specific Extension Set tasks must spell out their shape bucket and host-side dispatch."
+        )
     if previous_signal == "failed":
         lines.append("- Because prior Gluon work appears to have failed, keep the next Extension Set to layout-only, translation-only, or memory-only work.")
     elif previous_signal == "slower":
@@ -914,12 +1202,7 @@ def _build_gluon_task_generation_guidance(feature_meta: dict[str, Any]) -> str:
     This block must stay generic across Triton-family inputs and kernel families.
     It should shape task generation without hardcoding any sample-specific logic.
     """
-    if not feature_uses_gluon_guidance(
-        "triton",
-        input_dialect=feature_meta.get("input_dialect"),
-        gluon_feature_mode=feature_meta.get("gluon_feature_mode"),
-        allowed_output_dialects=feature_meta.get("allowed_output_dialects"),
-    ):
+    if not feature_uses_gluon_guidance_from_meta(feature_meta):
         return ""
 
     input_dialect = str(feature_meta.get("input_dialect") or "").strip().lower()
@@ -973,12 +1256,7 @@ def _build_gluon_planning_contract(feature_meta: dict[str, Any]) -> str:
     This block is intentionally about task decomposition and viability, not
     worker-level implementation detail.
     """
-    if not feature_uses_gluon_guidance(
-        "triton",
-        input_dialect=feature_meta.get("input_dialect"),
-        gluon_feature_mode=feature_meta.get("gluon_feature_mode"),
-        allowed_output_dialects=feature_meta.get("allowed_output_dialects"),
-    ):
+    if not feature_uses_gluon_guidance_from_meta(feature_meta):
         return ""
 
     lines = [
@@ -1005,12 +1283,7 @@ def _build_gluon_failure_guardrails(feature_meta: dict[str, Any]) -> str:
     This block should help the planner avoid assigning high-probability dead-end
     tasks without turning into a full execution guide.
     """
-    if not feature_uses_gluon_guidance(
-        "triton",
-        input_dialect=feature_meta.get("input_dialect"),
-        gluon_feature_mode=feature_meta.get("gluon_feature_mode"),
-        allowed_output_dialects=feature_meta.get("allowed_output_dialects"),
-    ):
+    if not feature_uses_gluon_guidance_from_meta(feature_meta):
         return ""
 
     lines = [
@@ -1031,6 +1304,132 @@ def _build_gluon_failure_guardrails(feature_meta: dict[str, Any]) -> str:
         "  - scheduler, barrier, or priority hints that may affect correctness",
         "- Avoid task prompts that assume NVIDIA-facing Gluon APIs translate by name, or that compile-only success is enough.",
     ]
+    return "\n".join(lines)
+
+
+def _aggregate_prior_per_shape(
+    round_evaluations: list[dict[str, Any]] | None,
+) -> dict[str, dict[str, float]]:
+    """Aggregate the most recent ``per_shape_speedups`` dict from round evals.
+
+    The orchestrator already writes ``per_shape_speedups`` into each round
+    evaluation; planner only needs the latest signal because the round-1
+    decisions stay valid until contradicted by round-N data.
+    """
+    if not round_evaluations:
+        return {}
+    for rev in reversed(round_evaluations):
+        if not isinstance(rev, dict):
+            continue
+        per_shape = rev.get("per_shape_speedups") or {}
+        if isinstance(per_shape, dict) and per_shape:
+            cleaned: dict[str, dict[str, float]] = {}
+            for shape, info in per_shape.items():
+                if not isinstance(info, dict):
+                    continue
+                speedup = info.get("speedup")
+                if isinstance(speedup, (int, float)):
+                    cleaned[str(shape)] = {
+                        "speedup": float(speedup),
+                        "baseline_ms": float(info.get("baseline_ms") or 0.0),
+                        "candidate_ms": float(info.get("candidate_ms") or 0.0),
+                    }
+            if cleaned:
+                return cleaned
+    return {}
+
+
+def _build_shape_coverage_guidance(
+    feature_meta: dict[str, Any],
+    *,
+    traits: list[str],
+    prior_per_shape: dict[str, dict[str, float]] | None = None,
+) -> str:
+    """Return planner guidance for multi-shape benchmarks.
+
+    Generic by design: this block applies to any kernel_type whose
+    benchmark exposes more than one shape via baseline_metrics. It does
+    not depend on Gluon-specific traits, but tightens the Gluon path
+    further when ``shape_layout_constexpr_risk`` /
+    ``shape_dispatch_required`` are present.
+    """
+    profile = str(
+        feature_meta.get("shape_coverage_profile") or DEFAULT_SHAPE_COVERAGE_PROFILE
+    ).lower()
+    if profile not in (SHAPE_COVERAGE_MULTI, SHAPE_COVERAGE_BUCKETED):
+        return ""
+    test_cases = feature_meta.get("benchmark_test_cases") or []
+    shape_count = feature_meta.get("benchmark_shape_count") or len(test_cases) or "?"
+    trait_set = set(traits)
+
+    lines = [
+        "## Shape Coverage Policy",
+        f"- Detected shape coverage profile: `{profile}` ({shape_count} cases).",
+        "- Correctness AND performance share the SAME multi-shape case set. "
+        "A patch that fails any shape's correctness is invalid, even if it is faster on others.",
+        "- Treat overall speedup as the geomean / mean across all cases. "
+        "Single-shape wins do not justify accepting per-shape regressions.",
+        "- Each task_prompt MUST self-classify as one of:",
+        "  - `single_shape_viability` (early correctness baseline only; not promotable without a multi-shape variant)",
+        "  - `shape_robust` (one parameterization that should hold across all observed shapes)",
+        "  - `shape_bucketed` (multiple internal variants + an explicit, documented dispatch condition)",
+        "- Do NOT hardcode `M`, `N`, `K`, `seq_len`, batch, or hidden size literals "
+        "unless the task is explicitly `shape_bucketed` AND the dispatch condition is documented.",
+    ]
+    if test_cases:
+        lines.append("- Observed cases (from baseline benchmark):")
+        for case in list(test_cases)[:8]:
+            params = case.get("params") if isinstance(case, dict) else {}
+            cid = case.get("case_id") if isinstance(case, dict) else None
+            baseline_ms = (
+                case.get("baseline_ms") if isinstance(case, dict) else None
+            )
+            lines.append(
+                f"  - `{cid or '?'}` params={params or {}} "
+                + (f"baseline_ms={baseline_ms:.5f}" if isinstance(baseline_ms, (int, float)) else "baseline_ms=?")
+            )
+        if len(test_cases) > 8:
+            lines.append(f"  - ... ({len(test_cases) - 8} more cases)")
+    if profile == SHAPE_COVERAGE_BUCKETED:
+        lines.append(
+            "- Because shapes span multiple buckets (small / medium / large), plan for "
+            "shape-bucketed dispatch backed by autotune or shape-specialized kernels gated "
+            "by host-side selection."
+        )
+    if "shape_layout_constexpr_risk" in trait_set:
+        lines.append(
+            "- Gluon `BLOCK_*` / `num_warps` / layout `instr_shape` are `constexpr`. "
+            "Every Gluon candidate must state how it stays valid across all observed shapes "
+            "(parametric layout, host-built layout passed as `constexpr`, or shape-bucketed dispatch)."
+        )
+    if "shape_dispatch_required" in trait_set:
+        lines.append(
+            "- For matrix paths (MFMA / WMMA / scaled-dot), `instr_shape` and operand layouts "
+            "depend on `BLOCK_M/N/K` and target arch. Plan paired candidates per bucket; "
+            "a single MFMA tile size rarely wins across all buckets."
+        )
+    if prior_per_shape:
+        slow = sorted(
+            shape
+            for shape, info in prior_per_shape.items()
+            if (info.get("speedup") or 1.0) < 0.95
+        )
+        fast = sorted(
+            shape
+            for shape, info in prior_per_shape.items()
+            if (info.get("speedup") or 1.0) > 1.10
+        )
+        if slow:
+            lines.append(
+                f"- Prior round per-shape regressions on shapes {slow}. "
+                "Next round MUST include at least one task that explicitly addresses these regressed shapes."
+            )
+        if fast and slow:
+            lines.append(
+                f"- Prior round wins on {fast} but lost on {slow}. "
+                "Treat this as evidence the candidate is shape-overfit; require a shape-robust "
+                "or shape-bucketed competitor in the new batch."
+            )
     return "\n".join(lines)
 
 
@@ -1104,6 +1503,9 @@ def _run_task_agent(
     rag_enabled: bool | None = None,
     preferred_output_dialects: list[str] | None = None,
     output_dialect_search_policy: str | None = None,
+    benchmark_shape_count: int | None = None,
+    benchmark_test_cases: list[dict[str, Any]] | None = None,
+    shape_coverage_profile: str | None = None,
 ) -> str:
     """Run a read-only planning agent and return the submitted JSON text."""
     from minisweagent.agents.default import DefaultAgent
@@ -1121,6 +1523,9 @@ def _run_task_agent(
         preferred_output_dialects=preferred_output_dialects,
         output_dialect_search_policy=output_dialect_search_policy,
         target_backend=target_backend,
+        benchmark_shape_count=benchmark_shape_count,
+        benchmark_test_cases=benchmark_test_cases,
+        shape_coverage_profile=shape_coverage_profile,
     )
 
     _allowed_names = {"str_replace_editor", "submit"}
@@ -1196,9 +1601,68 @@ def _run_task_agent(
                 profile = rev.get("profile_comparison", {})
                 if profile:
                     evals_text += f"- Profile comparison: {json.dumps(profile, default=str)[:500]}\n"
+                per_shape = rev.get("per_shape_speedups") or {}
+                if isinstance(per_shape, dict) and per_shape:
+                    regressed: list[str] = []
+                    evals_text += "- Per-shape speedups:\n"
+                    for shape, info in per_shape.items():
+                        if not isinstance(info, dict):
+                            continue
+                        sp = info.get("speedup")
+                        if isinstance(sp, (int, float)):
+                            evals_text += f"  - {shape}: {sp:.3f}x\n"
+                            if sp < 0.95:
+                                regressed.append(str(shape))
+                    if regressed:
+                        evals_text += f"- Per-shape regressions on: {regressed}\n"
                 evals_text += f"- Best patch: {rev.get('best_patch', 'N/A')}\n\n"
             round_evals_path = _write_temp(evals_text, "_round_evals.md")
             tmp_files.append(round_evals_path)
+
+        # Pre-load baseline metrics so we can enrich feature_meta with shape
+        # information before building any guidance blocks.
+        #
+        # baseline_metrics.json is the authoritative source for shape
+        # signals because the preprocessor writes it AFTER actually
+        # running ``perf_cmd`` on the kernel. discovery.json may carry an
+        # older / inaccurate profile (e.g. ``multi`` recorded before the
+        # bucketed Arena harness was wired up). When baseline_metrics
+        # has explicit ``benchmark_test_cases``, treat it as canonical
+        # and let it overwrite stale discovery values.
+        _bm_dict: dict[str, Any] = {}
+        if baseline_metrics_path and Path(baseline_metrics_path).exists():
+            try:
+                _bm_dict = json.loads(Path(baseline_metrics_path).read_text())
+            except (OSError, ValueError) as exc:
+                logger.debug("Failed to read baseline metrics for shape coverage: %s", exc)
+                _bm_dict = {}
+        _bm_cases = (_bm_dict or {}).get("benchmark_test_cases") if isinstance(_bm_dict, dict) else None
+        _bm_count = (_bm_dict or {}).get("benchmark_shape_count") if isinstance(_bm_dict, dict) else None
+        baseline_has_authoritative_cases = bool(_bm_cases)
+
+        if baseline_has_authoritative_cases:
+            feature_meta["benchmark_test_cases"] = list(_bm_cases or [])
+            if _bm_count is not None:
+                feature_meta["benchmark_shape_count"] = _bm_count
+            # Re-derive shape_coverage_profile from authoritative baseline
+            # data, replacing any value that came in via discovery / kwargs.
+            feature_meta["shape_coverage_profile"] = derive_shape_coverage_profile(
+                benchmark_shape_count=feature_meta.get("benchmark_shape_count"),
+                benchmark_test_cases=feature_meta.get("benchmark_test_cases"),
+            )
+        else:
+            if not feature_meta.get("benchmark_shape_count") and _bm_count is not None:
+                feature_meta["benchmark_shape_count"] = _bm_count
+            if not feature_meta.get("benchmark_test_cases"):
+                feature_meta["benchmark_test_cases"] = list(_bm_cases or [])
+            if (
+                str(feature_meta.get("shape_coverage_profile") or DEFAULT_SHAPE_COVERAGE_PROFILE).lower()
+                == DEFAULT_SHAPE_COVERAGE_PROFILE
+            ):
+                feature_meta["shape_coverage_profile"] = derive_shape_coverage_profile(
+                    benchmark_shape_count=feature_meta.get("benchmark_shape_count"),
+                    benchmark_test_cases=feature_meta.get("benchmark_test_cases"),
+                )
 
         template_vars = {
             "kernel_path": kernel_path,
@@ -1228,11 +1692,11 @@ def _run_task_agent(
             "workload_guidance": "",
             "gluon_planning_traits_guidance": "",
             "search_space_allocation_guidance": "",
+            "shape_coverage_guidance": "",
             "gluon_task_generation_guidance": _build_gluon_task_generation_guidance(feature_meta),
             "gluon_failure_guardrails": _build_gluon_failure_guardrails(feature_meta),
         }
 
-        _bm_dict: dict[str, Any] = {}
         try:
             from minisweagent.memory.integration import (  # pylint: disable=import-error,no-name-in-module
                 assemble_memory_context,
@@ -1241,7 +1705,7 @@ def _run_task_agent(
                 summarize_working_notebook,
             )
 
-            if baseline_metrics_path and Path(baseline_metrics_path).exists():
+            if not _bm_dict and baseline_metrics_path and Path(baseline_metrics_path).exists():
                 _bm_dict = json.loads(Path(baseline_metrics_path).read_text())
             _notebook_dir = None
             if baseline_metrics_path and Path(baseline_metrics_path).exists():
@@ -1285,6 +1749,11 @@ def _run_task_agent(
             num_gpus=num_gpus,
             previous_results_text=prev_results_summary,
             previous_tasks_text=prev_tasks_summary,
+        )
+        template_vars["shape_coverage_guidance"] = _build_shape_coverage_guidance(
+            feature_meta,
+            traits=gluon_traits,
+            prior_per_shape=_aggregate_prior_per_shape(round_evaluations),
         )
         template_vars["workload_guidance"] = _build_workload_guidance(_kernel_meta, _bm_dict)
 

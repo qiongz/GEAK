@@ -66,6 +66,7 @@ def _gluon_feature_meta(
     target_backend: str = "hip/gfx942",
 ) -> dict[str, Any]:
     return {
+        "kernel_type": "triton",
         "input_dialect": input_dialect,
         "gluon_feature_mode": "auto",
         "gluon_baseline_profile": "raw",

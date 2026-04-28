@@ -69,6 +69,9 @@ def tool_generate_tasks(
         "preferred_output_dialects": kernel_meta.get("preferred_output_dialects"),
         "output_dialect_search_policy": kernel_meta.get("output_dialect_search_policy"),
         "target_backend": kernel_meta.get("target_backend", ""),
+        "benchmark_shape_count": kernel_meta.get("benchmark_shape_count"),
+        "benchmark_test_cases": kernel_meta.get("benchmark_test_cases"),
+        "shape_coverage_profile": kernel_meta.get("shape_coverage_profile"),
         "num_gpus": len(ctx.get("gpu_ids", [0])),
     }
 
@@ -169,6 +172,11 @@ def tool_generate_tasks(
         preferred_output_dialects=kernel_meta.get("preferred_output_dialects"),
         output_dialect_search_policy=kernel_meta.get("output_dialect_search_policy"),
         target_backend=kernel_meta.get("target_backend", ""),
+        benchmark_shape_count=kernel_meta.get("benchmark_shape_count"),
+        benchmark_test_cases=kernel_meta.get("benchmark_test_cases"),
+        benchmark_test_cases_path=ctx.get("benchmark_test_cases_path")
+        or kernel_meta.get("benchmark_test_cases_path"),
+        shape_coverage_profile=kernel_meta.get("shape_coverage_profile"),
         repo_root=str(ctx.get("repo_root", "")),
         commandment=str(kwargs.get("commandment_path", "")),
         baseline_metrics=str(kwargs.get("baseline_metrics_path", "")),

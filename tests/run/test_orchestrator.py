@@ -235,6 +235,105 @@ class TestProbePreprocessDir:
         assert pc.gluon_feature_mode == "auto"
         assert pc.allowed_output_dialects == ["plain_triton", "amd_gluon"]
 
+    def test_resume_without_resolved_json_falls_back_to_discovery_kernel_file(
+        self, tmp_path: Path
+    ) -> None:
+        """Finding 1 regression: when resume-from-disk runs only have
+        ``discovery.json`` (no ``resolved.json``), ``_probe_preprocess_dir``
+        must still locate the kernel via ``discovery['kernel']['file']``
+        and re-infer kernel_type from source so Gluon does not silently
+        default to ``off``.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        kernel = repo / "kernel.py"
+        kernel.write_text(
+            "from triton.experimental import gluon\n"
+            "@gluon.jit\n"
+            "def kernel_fwd(x):\n"
+            "    return x\n"
+        )
+
+        pp = tmp_path / "pp"
+        pp.mkdir()
+        # Note: NO resolved.json on disk -- only discovery.json.
+        (pp / "discovery.json").write_text(
+            json.dumps(
+                {
+                    "kernel": {
+                        "file": str(kernel.resolve()),
+                        "name": "kernel_fwd",
+                        "type": "unknown",
+                    }
+                }
+            )
+        )
+
+        pc = _probe_preprocess_dir(pp)
+        assert pc.kernel_path == str(kernel.resolve())
+        assert pc.input_dialect == "amd_gluon"
+        assert pc.gluon_feature_mode == "auto"
+
+    def test_probe_preprocess_dir_baseline_cases_override_stale_discovery(
+        self, tmp_path: Path
+    ) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        kernel = repo / "kernel.py"
+        kernel.write_text("import triton\n")
+
+        pp = tmp_path / "pp"
+        pp.mkdir()
+        (pp / "resolved.json").write_text(
+            json.dumps(
+                {
+                    "local_file_path": str(kernel.resolve()),
+                    "local_repo_path": str(repo.resolve()),
+                }
+            )
+        )
+        (pp / "discovery.json").write_text(
+            json.dumps(
+                {
+                    "kernel": {
+                        "file": str(kernel.resolve()),
+                        "type": "triton",
+                        "shape_coverage_profile": "multi",
+                        "benchmark_shape_count": 2,
+                        "benchmark_test_cases": [
+                            {"case_id": "stale_a", "params": {"M": 16}},
+                            {"case_id": "stale_b", "params": {"M": 17}},
+                        ],
+                    }
+                }
+            )
+        )
+        (pp / "baseline_metrics.json").write_text(
+            json.dumps(
+                {
+                    "shape_coverage_profile": "bucketed",
+                    "benchmark_shape_count": 4,
+                    "benchmark_test_cases": [
+                        {"case_id": "perf1", "params": {"M": 32}},
+                        {"case_id": "perf2", "params": {"M": 64}},
+                        {"case_id": "perf3", "params": {"M": 128}},
+                        {"case_id": "perf4", "params": {"M": 256}},
+                    ],
+                }
+            )
+        )
+
+        pc = _probe_preprocess_dir(pp)
+        assert pc.shape_coverage_profile == "bucketed"
+        assert pc.benchmark_shape_count == 4
+        assert [c["case_id"] for c in pc.benchmark_test_cases or []] == [
+            "perf1",
+            "perf2",
+            "perf3",
+            "perf4",
+        ]
+
     def test_optional_artifact_paths(self, tmp_path: Path) -> None:
         pp = tmp_path / "pp"
         pp.mkdir()
