@@ -32,8 +32,14 @@ Do **not** stop at summarizing the skill. Apply it to the current kernel:
    - target backend and architecture
    - whether "Gluon available" and "this operator supports the target" are
      different questions
-4. Choose the action path for the current dialect.
-5. Benchmark the resulting candidate against the source baseline or a permitted
+4. Check the host-side integration contract:
+   - wrapper ABI and tensor shape assumptions
+   - host-created layouts passed as `constexpr`
+   - `num_warps`, `num_ctas`, block sizes, and target arch alignment
+   - arch guards such as `gfx942`, `gfx950`, `gfx1250`
+   - JIT/AOT fallback gates and prebuilt-kernel loading behavior
+5. Choose the action path for the current dialect.
+6. Benchmark the resulting candidate against the source baseline or a permitted
    fallback path.
 
 ## Output contract
@@ -46,6 +52,52 @@ Do **not** stop at summarizing the skill. Apply it to the current kernel:
 - If `amd_gluon` is allowed and structurally promising, generate an
   `amd_gluon` candidate early instead of spending the whole plan on fallback
   tuning.
+- Treat plain Triton winning the benchmark as a valid outcome, not as a failure
+  to use Gluon.
+
+## Planner traits, not kernel families
+
+When planning tasks, prefer composable traits over hard-coded kernel family
+labels. Kernel-family examples are useful, but the first planning layer should
+be:
+
+- dialect traits:
+  - `plain_triton -> amd_gluon`
+  - `nv_gluon -> amd_gluon`
+  - `amd_gluon -> amd_gluon`
+- layout traits:
+  - base `BlockedLayout`
+  - `SliceLayout` / broadcast / mask conversion
+  - source-first layouts such as `DistributedLinearLayout`,
+    `PartitionedSharedLayout`, host `TensorDescriptor`, 3D or 5D layout trees
+- memory traits:
+  - generic `gl.load` / `gl.store`
+  - AMD `buffer_load` / `buffer_store`
+  - shared memory, swizzle, descriptor, `tdm`, async copy
+- matrix traits:
+  - no matrix path
+  - `tl.dot` / `tl.dot_scaled`
+  - scaled MFMA / WMMA
+  - gfx1250 descriptor / WMMA path
+- execution traits:
+  - JIT vs AOT
+  - Triton minor-version compatibility
+  - target arch and operator-local support matrix
+
+Candidate task slots should follow the main GEAK planner style:
+
+- Prefer first:
+  - semantics-preserving AMD Gluon viability candidate
+  - trait-specific AMD Gluon candidate
+  - plain Triton fallback or competitor when allowed
+- Consider next:
+  - memory lowering after a correct layout candidate
+  - matrix lowering after result and operand layouts are clear
+  - in-dialect optimization for existing AMD Gluon
+- Deprioritize until later:
+  - descriptor, async, scheduler, persistent, atomics, work stealing
+  - launch-only or autotune-only changes
+  - any path that relies on compile-only success
 
 ## Input-dialect playbook
 
@@ -105,6 +157,10 @@ Use this exact order:
 - `tl.dot` or `tl.dot_scaled` is **not** a direct rename target. On AMD, the
   real path is usually result layout -> operand layouts -> `convert_layout` ->
   `mfma` / `mfma_scaled` / `wmma`.
+- A useful translator-derived mental model is:
+  source op traits -> target family -> layout helper -> op lowering.
+  For example, CDNA paths choose `AMDMFMALayout` and gfx1250 paths choose
+  `AMDWMMALayout`; both still require operand layouts and `convert_layout`.
 - Descriptor, tensor-memory, and async-copy concepts are vendor- and
   family-specific. Do not translate by name alone.
 
@@ -194,8 +250,14 @@ you see any of these:
 ## Anti-patterns
 
 - Introducing a new top-level `gluon` kernel type
+- Producing a new optimized `nv_gluon` output path
 - Keeping NVIDIA layout assumptions unchanged on AMD
 - Renaming NVIDIA APIs to guessed AMD names
+- Textually replacing `tl.dot` with an AMD matrix op without result and operand
+  layouts
+- Using MFMA when the kernel has no real matrix trait
+- Starting with descriptor, async, persistent, scheduler, atomics, or work
+  stealing before a simpler AMD Gluon candidate passes correctness
 - Treating compile-only success as enough to claim the rewrite is valid
 - Ignoring Triton minor-version compatibility when the codebase mixes JIT and
   AOT
@@ -205,10 +267,9 @@ you see any of these:
 ## Read next
 
 - `docs/triton_gluon.md`
-  - section `4.2` for the mechanical `plain_triton -> amd_gluon` rewrite order
-  - section `7.5` for feature-availability vs operator-support differences
-  - section `7.6` for optimization order by kernel family
-  - section `7.7` for cases that still require source-first reading
-  - section `8` for end-to-end examples
-  - appendix `A` for API, version, and troubleshooting checklists
+  - first search for `## Quick section map for agents`
+  - then search for the matching stable heading, for example
+    `### Trait: matrix_dot` or `### Trait: dialect_nv_gluon`
+  - read only that trait section and the headings it names; do not read the
+    entire guide unless the task remains ambiguous
 - `examples/triton_gluon_inputs/README.md`

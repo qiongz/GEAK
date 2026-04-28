@@ -249,6 +249,11 @@ them priority 15 behind kernel-body algorithmic work.
 14. If a "Gluon Failure Guardrails" block is present, treat it as
     mandatory. Avoid assigning high-priority tasks that assume risky layout
     conversions, direct API renames, or compile-only validation is enough.
+15. If a "Gluon Planning Traits" block is present, treat it as mandatory.
+    Allocate early tasks from its "Prefer First" slots before escalating to
+    "Consider Next" or "Deprioritize Until Later". Each Gluon task should name
+    the traits it is addressing and should not collapse the plan into one
+    generic "rewrite to Gluon" task.
 
 ## Output format
 
@@ -345,6 +350,9 @@ profiling data instead.
 {% endif %}
 {% if gluon_planning_contract %}
 {{ gluon_planning_contract }}
+{% endif %}
+{% if gluon_planning_traits_guidance %}
+{{ gluon_planning_traits_guidance }}
 {% endif %}
 {% if gluon_task_generation_guidance %}
 {{ gluon_task_generation_guidance }}

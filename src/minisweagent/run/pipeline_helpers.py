@@ -932,6 +932,9 @@ def _build_gluon_reference_block(
         "- Read the short working-set rules below first. Use these paths with `view` only when you need deeper detail."
     )
     lines.append(
+        "- For the GEAK Gluon guide, search for `## Quick section map for agents`, then search for `### Trait: ...` headings that match the task. Do not read the whole guide first."
+    )
+    lines.append(
         "- These reference files are read-only guidance. They may live outside REPO ROOT; you may `view` them, but do not modify them."
     )
     lines.append("")
@@ -944,6 +947,7 @@ def _build_gluon_working_set(feature_metadata: dict[str, Any] | None) -> list[st
 
     lines = [
         "## Gluon Working Set",
+        "- Use targeted reading: search the Gluon guide for `## Quick section map for agents`, then jump to the `### Trait: ...` headings relevant to this task.",
         "- Preserve launcher shape, indexing, masks, correctness behavior, and benchmark intent before changing algorithms.",
         "- Recover the implicit layout before changing APIs. In Gluon, `gl.arange(..., layout=...)` is not optional.",
         "- If layout depends on launch config, construct it on the host and pass it as a `constexpr`.",

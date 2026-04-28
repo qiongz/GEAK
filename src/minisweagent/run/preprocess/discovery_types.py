@@ -7,8 +7,12 @@ task planner, preprocessor, etc.).  The actual discovery logic lives in
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+from collections import Counter
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +38,7 @@ GLUON_BASELINE_PROFILE_MI3XX = "mi3xx"
 ALL_GLUON_BASELINE_PROFILES = frozenset((GLUON_BASELINE_PROFILE_RAW, GLUON_BASELINE_PROFILE_MI3XX))
 
 DEFAULT_TARGET_BACKEND = "hip/gfx942"
+_GFX_ARCH_RE = re.compile(r"\bgfx[0-9a-zA-Z]+\b")
 GENERAL_SKILL_TIER = "general"
 AUTHORING_SAFE_SKILL_TIER = "authoring_safe"
 BENCHMARK_SAFE_SKILL_TIER = "benchmark_safe"
@@ -153,6 +158,59 @@ def _normalize_gluon_baseline_profile(value: Any) -> str:
     }
     text = aliases.get(text, text)
     return text if text in ALL_GLUON_BASELINE_PROFILES else GLUON_BASELINE_PROFILE_RAW
+
+
+def _normalize_target_backend(value: Any) -> str | None:
+    """Normalize target backend strings such as ``gfx942`` or ``hip/gfx942``."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    match = _GFX_ARCH_RE.search(text)
+    if match:
+        return f"hip/{match.group(0)}"
+    return text
+
+
+@lru_cache(maxsize=1)
+def detect_rocm_target_backend() -> str | None:
+    """Best-effort early ROCm target detection using ``rocminfo``.
+
+    This intentionally does not use ``sudo``. In restricted environments users
+    should set ``GEAK_TARGET_BACKEND`` explicitly.
+    """
+    try:
+        result = subprocess.run(
+            ["rocminfo"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+
+    matches = _GFX_ARCH_RE.findall(result.stdout or "")
+    if not matches:
+        return None
+    counts = Counter(matches)
+    arch = counts.most_common(1)[0][0]
+    return f"hip/{arch.lower()}"
+
+
+def resolve_target_backend(value: Any = None) -> str:
+    """Resolve target backend for Triton-family planning.
+
+    Priority: explicit value, ``GEAK_TARGET_BACKEND``, early ``rocminfo``
+    detection, then the repository default.
+    """
+    return (
+        _normalize_target_backend(value)
+        or _normalize_target_backend(os.getenv("GEAK_TARGET_BACKEND"))
+        or detect_rocm_target_backend()
+        or DEFAULT_TARGET_BACKEND
+    )
 
 
 def _normalize_allowed_output_dialects(value: Any) -> list[str]:
@@ -364,7 +422,7 @@ def build_gluon_feature_metadata(
     normalized_profile = _normalize_gluon_baseline_profile(gluon_baseline_profile)
     if normalized_feature_mode == GLUON_FEATURE_MODE_OFF:
         normalized_profile = GLUON_BASELINE_PROFILE_RAW
-    normalized_target_backend = str(target_backend or DEFAULT_TARGET_BACKEND).strip() or DEFAULT_TARGET_BACKEND
+    normalized_target_backend = resolve_target_backend(target_backend)
     if normalized_feature_mode == GLUON_FEATURE_MODE_FORCE:
         normalized_outputs = [AMD_GLUON_DIALECT]
     elif normalized_feature_mode == GLUON_FEATURE_MODE_OFF:
