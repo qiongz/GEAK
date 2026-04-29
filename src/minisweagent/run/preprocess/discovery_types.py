@@ -10,11 +10,104 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 # Shared extension constants -- single source of truth
 CPP_EXTENSIONS = frozenset((".cpp", ".cc", ".cu", ".hip", ".cxx"))
 CPP_HEADER_EXTENSIONS = frozenset((".h", ".hpp"))
 ALL_KERNEL_EXTENSIONS = frozenset((".py",)) | CPP_EXTENSIONS
+
+# Shape coverage profiles (evaluation-facing only on this ablation branch).
+#
+# This branch intentionally stays Triton-only at the optimizer/planner layer.
+# The shape metadata below exists only so AgentKernelArena AB runs can emit the
+# same benchmark_test_cases.json / baseline_metrics shape contract as the
+# Triton-Gluon feature branch.
+SHAPE_COVERAGE_UNKNOWN = "unknown"
+SHAPE_COVERAGE_SINGLE = "single"
+SHAPE_COVERAGE_MULTI = "multi"
+SHAPE_COVERAGE_BUCKETED = "bucketed"
+DEFAULT_SHAPE_COVERAGE_PROFILE = SHAPE_COVERAGE_UNKNOWN
+_SHAPE_BUCKET_MIN_CASES = 4
+_SHAPE_BUCKET_MIN_RATIO = 4.0
+
+
+def _normalize_benchmark_test_cases(value: Any) -> list[dict[str, Any]]:
+    """Normalize benchmark test-case payloads into case_id / params / ms dicts."""
+    if not value:
+        return []
+    if isinstance(value, dict):
+        items = value.get("test_cases") or value.get("cases") or []
+    else:
+        items = value
+    if not isinstance(items, (list, tuple)):
+        return []
+    cases: list[dict[str, Any]] = []
+    for idx, raw in enumerate(items):
+        if not isinstance(raw, dict):
+            continue
+        case_id = str(raw.get("case_id") or raw.get("test_case_id") or raw.get("id") or f"case_{idx}")
+        params = raw.get("params") if isinstance(raw.get("params"), dict) else {}
+        if not params and isinstance(raw.get("metadata"), dict):
+            params = dict(raw.get("metadata") or {})
+        if not params:
+            for key in ("shape", "shapes", "input_shape", "input_shapes"):
+                if key in raw:
+                    params = {key: raw[key]}
+                    break
+        ms = raw.get("baseline_ms") or raw.get("ms") or raw.get("execution_time_ms") or raw.get("ori_time")
+        try:
+            ms_val = float(ms) if ms is not None else None
+        except (TypeError, ValueError):
+            ms_val = None
+        if ms_val is not None and ms_val <= 0:
+            ms_val = None
+        cases.append({"case_id": case_id, "params": dict(params or {}), "baseline_ms": ms_val})
+    return cases
+
+
+def _looks_bucketed(test_cases: list[dict[str, Any]]) -> bool:
+    """Return True if cases span multiple scale buckets on any single axis."""
+    if len(test_cases) < _SHAPE_BUCKET_MIN_CASES:
+        return False
+    axis_values: dict[str, list[float]] = {}
+    for c in test_cases:
+        params = c.get("params") or {}
+        for key, val in params.items():
+            if isinstance(val, bool):
+                continue
+            if isinstance(val, (int, float)) and val > 0:
+                axis_values.setdefault(str(key), []).append(float(val))
+            elif isinstance(val, (list, tuple)):
+                for idx, item in enumerate(val):
+                    if isinstance(item, (int, float)) and not isinstance(item, bool) and item > 0:
+                        axis_values.setdefault(f"{key}_dim_{idx}", []).append(float(item))
+    return any(
+        len(values) >= _SHAPE_BUCKET_MIN_CASES and max(values) / min(values) >= _SHAPE_BUCKET_MIN_RATIO
+        for values in axis_values.values()
+    )
+
+
+def derive_shape_coverage_profile(
+    *,
+    benchmark_shape_count: Any = None,
+    benchmark_test_cases: Any = None,
+) -> str:
+    """Map shape count and case parameters to unknown/single/multi/bucketed."""
+    cases = _normalize_benchmark_test_cases(benchmark_test_cases)
+    try:
+        count = int(benchmark_shape_count) if benchmark_shape_count is not None else 0
+    except (TypeError, ValueError):
+        count = 0
+    if not count and cases:
+        count = len(cases)
+    if count <= 0:
+        return SHAPE_COVERAGE_UNKNOWN
+    if count == 1:
+        return SHAPE_COVERAGE_SINGLE
+    if cases and _looks_bucketed(cases):
+        return SHAPE_COVERAGE_BUCKETED
+    return SHAPE_COVERAGE_MULTI
 
 
 @dataclass

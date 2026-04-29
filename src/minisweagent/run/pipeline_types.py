@@ -42,6 +42,10 @@ class PreprocessContext:
     codebase_context_path: str
     baseline_metrics_path: str
     profiling_result_path: str
+    benchmark_shape_count: int | None = None
+    benchmark_test_cases: list[dict] | None = None
+    benchmark_test_cases_path: str | None = None
+    shape_coverage_profile: str | None = None
     discovery: dict | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -58,6 +62,10 @@ class PreprocessContext:
             codebase_context_path=d.get("codebase_context_path", ""),
             baseline_metrics_path=d.get("baseline_metrics_path", ""),
             profiling_result_path=d.get("profiling_result_path", ""),
+            benchmark_shape_count=d.get("benchmark_shape_count"),
+            benchmark_test_cases=d.get("benchmark_test_cases"),
+            benchmark_test_cases_path=d.get("benchmark_test_cases_path"),
+            shape_coverage_profile=d.get("shape_coverage_profile"),
             discovery=d.get("discovery"),
         )
 

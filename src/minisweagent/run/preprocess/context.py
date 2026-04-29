@@ -33,6 +33,10 @@ class PreprocessContext:
     codebase_context_path: str | None = None
     baseline_metrics_path: str | None = None
     profiling_result_path: str | None = None
+    benchmark_shape_count: int | None = None
+    benchmark_test_cases: list[dict] | None = None
+    benchmark_test_cases_path: str | None = None
+    shape_coverage_profile: str | None = None
 
     # Inline data (kept in memory, not just a path)
     test_command: str | None = None
@@ -101,6 +105,10 @@ class PreprocessContext:
             if (out / "baseline_metrics.json").exists()
             else None,
             profiling_result_path=str(out / "profile.json") if (out / "profile.json").exists() else None,
+            benchmark_shape_count=ctx.get("benchmark_shape_count"),
+            benchmark_test_cases=ctx.get("benchmark_test_cases"),
+            benchmark_test_cases_path=ctx.get("benchmark_test_cases_path"),
+            shape_coverage_profile=ctx.get("shape_coverage_profile"),
             test_command=ctx.get("test_command"),
             discovery=ctx.get("discovery"),
             harness_results=ctx.get("harness_results"),

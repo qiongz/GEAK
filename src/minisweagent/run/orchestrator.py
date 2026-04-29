@@ -151,6 +151,23 @@ def _probe_preprocess_dir(pp_dir: Path):
         except (json.JSONDecodeError, OSError) as exc:
             logger.debug("_probe_preprocess_dir: failed to read discovery.json: %s", exc)
 
+    kernel_info = (discovery or {}).get("kernel") or {}
+    if not kernel_path and kernel_info.get("file"):
+        kernel_path = str(kernel_info.get("file"))
+        logger.debug("_probe_preprocess_dir: kernel_path from discovery.json: %s", kernel_path)
+
+    baseline_metrics: dict = {}
+    bm_path = pp_dir / "baseline_metrics.json"
+    if bm_path.exists():
+        try:
+            baseline_metrics = json.loads(bm_path.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.debug("_probe_preprocess_dir: failed to read baseline_metrics.json: %s", exc)
+
+    benchmark_test_cases = baseline_metrics.get("benchmark_test_cases") if isinstance(baseline_metrics, dict) else None
+    benchmark_shape_count = baseline_metrics.get("benchmark_shape_count") if isinstance(baseline_metrics, dict) else None
+    shape_coverage_profile = baseline_metrics.get("shape_coverage_profile") if isinstance(baseline_metrics, dict) else None
+
     return PreprocessContext(
         kernel_path=kernel_path,
         repo_root=repo_root,
@@ -162,6 +179,12 @@ def _probe_preprocess_dir(pp_dir: Path):
         if (pp_dir / "baseline_metrics.json").exists()
         else "",
         profiling_result_path=str(pp_dir / "profile.json") if (pp_dir / "profile.json").exists() else "",
+        benchmark_shape_count=benchmark_shape_count,
+        benchmark_test_cases=benchmark_test_cases,
+        benchmark_test_cases_path=str(pp_dir / "benchmark_test_cases.json")
+        if (pp_dir / "benchmark_test_cases.json").exists()
+        else None,
+        shape_coverage_profile=shape_coverage_profile,
         discovery=discovery,
     )
 
@@ -239,6 +262,10 @@ def main() -> None:
         "codebase_context_path": preprocess_ctx.codebase_context_path,
         "baseline_metrics_path": preprocess_ctx.baseline_metrics_path,
         "profiling_path": preprocess_ctx.profiling_result_path,
+        "benchmark_shape_count": preprocess_ctx.benchmark_shape_count,
+        "benchmark_test_cases": preprocess_ctx.benchmark_test_cases,
+        "benchmark_test_cases_path": preprocess_ctx.benchmark_test_cases_path,
+        "shape_coverage_profile": preprocess_ctx.shape_coverage_profile,
         "discovery": preprocess_ctx.discovery,
     }
     if preprocess_ctx.commandment_path and Path(preprocess_ctx.commandment_path).exists():
