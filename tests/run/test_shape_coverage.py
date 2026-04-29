@@ -282,41 +282,44 @@ def test_quota_keeps_base_and_shared_for_multi_shape() -> None:
     base, shared, extension = _base_extension_quotas(
         4, "weak", "none", shape_profile=SHAPE_COVERAGE_MULTI,
     )
-    assert base >= 1
+    assert base == 4
     assert shared >= 1
     assert extension >= 1
-    assert base + shared + extension <= 4
+    assert base + shared + extension > 4
 
 
 def test_quota_grows_extension_for_bucketed_with_5_gpus() -> None:
     base, shared, extension = _base_extension_quotas(
         5, "strong", "won", shape_profile=SHAPE_COVERAGE_BUCKETED,
     )
+    assert base == 5
+    assert shared == 2
     assert extension >= 2
-    assert base + shared + extension <= 5
+    assert base + shared + extension > 5
 
 
 def test_quota_interleaves_base_and_extension_on_one_gpu() -> None:
     base, shared, extension = _base_extension_quotas(
         1, "weak", "none", shape_profile=SHAPE_COVERAGE_UNKNOWN,
     )
-    assert (base, shared, extension) == (1, 0, 1)
-    assert base + shared + extension == 2
+    assert (base, shared, extension) == (5, 0, 1)
+    assert base + shared + extension == 6
 
 
 def test_serial_interleave_strategy_explains_candidate_count_can_exceed_gpus() -> None:
     text = _dialect_interleave_strategy(
         num_gpus=1,
-        base_slots=1,
+        base_slots=5,
         shared_slots=0,
         extension_slots=1,
         previous_signal="none",
         shape_profile=SHAPE_COVERAGE_UNKNOWN,
     )
     assert "serial_interleave" in text
-    assert "Candidate count: 2 task(s) for 1 GPU" in text
-    assert "Base Set plain-Triton task first" in text
-    assert "AMD Gluon Extension task" in text
+    assert "Candidate count: 6 task(s) for 1 GPU" in text
+    assert "full Base Set width" in text
+    assert "all Base Set plain-Triton tasks first" in text
+    assert "L0 AMD Gluon Extension task" in text
 
 
 def test_parallel_mixed_strategy_mentions_hybrid_followup_when_gluon_won() -> None:
@@ -360,8 +363,10 @@ def test_search_space_allocation_for_one_gpu_serial_interleave() -> None:
         num_gpus=1,
     )
     assert "Scheduling mode: `serial_interleave`" in text
-    assert "Base Set (plain Triton): at least 1 task(s)" in text
+    assert "Base Set (plain Triton): at least 5 task(s)" in text
     assert "Extension Set (AMD Gluon): 1 task(s)" in text
+    assert "Extension L0: minimal AMD Gluon viability" in text
+    assert "slots 2+ may be Extension L1" not in text
     assert "run them sequentially on the single GPU" in text
 
 
@@ -382,8 +387,11 @@ def test_search_space_allocation_for_eight_gpus_parallel_mixed_portfolio() -> No
         previous_results_text="gluon [BEST] verified_speedup=1.2x",
     )
     assert "Scheduling mode: `parallel_mixed_portfolio`" in text
-    assert "Base Set (plain Triton): at least 4 task(s)" in text
+    assert "Base Set (plain Triton): at least 8 task(s)" in text
+    assert "Shared Set (Triton/Gluon common strategies): 2 task(s)" in text
     assert "Extension Set (AMD Gluon): 3 task(s)" in text
+    assert "slots 2+ may be Extension L1" in text
+    assert "paired strategy mappings" in text
     assert "mixed/hybrid" in text
     assert "host-side shape/feature checks" in text
 
@@ -630,6 +638,11 @@ def test_previous_gluon_signal_won_when_best_patch_passed_after_early_failures()
 def test_previous_gluon_signal_won_via_structured_speedup_only() -> None:
     text = "gluon attempt: best_patch_speedup=1.07 (no '[best]' marker)"
     assert _previous_gluon_signal(text) == "won"
+
+
+def test_previous_gluon_signal_attempted_for_noise_level_positive_speedup() -> None:
+    text = "gluon-scaled-mm-viability: patch passed verified_speedup=1.0067x"
+    assert _previous_gluon_signal(text) == "attempted"
 
 
 def test_previous_gluon_signal_failed_when_no_winning_patch() -> None:

@@ -155,12 +155,13 @@ def test_search_space_allocation_for_two_gpus_preserves_base_and_extension() -> 
     )
 
     assert "## Search Space Allocation" in guidance
-    assert "Base Set (plain Triton): at least 1 task(s)" in guidance
+    assert "Base Set (plain Triton): at least 2 task(s)" in guidance
     assert "Extension Set (AMD Gluon): 1 task(s)" in guidance
-    assert "Do not replace all Base Set tasks with Gluon tasks" in guidance
+    assert "Do not replace or reduce Base Set tasks with Gluon tasks" in guidance
+    assert "Extension L0: minimal AMD Gluon viability" in guidance
 
 
-def test_search_space_allocation_for_large_budget_keeps_half_base() -> None:
+def test_search_space_allocation_for_large_budget_keeps_full_base() -> None:
     guidance = _build_search_space_allocation_guidance(
         _gluon_feature_meta("plain_triton"),
         traits=["semantics_contract", "dialect_plain_triton", "layout_basic", "matrix_dot"],
@@ -168,8 +169,10 @@ def test_search_space_allocation_for_large_budget_keeps_half_base() -> None:
     )
 
     assert "Gluon extension strength: strong" in guidance
-    assert "Base Set (plain Triton): at least 3 task(s)" in guidance
+    assert "Base Set (plain Triton): at least 6 task(s)" in guidance
+    assert "Shared Set (Triton/Gluon common strategies): 1 task(s)" in guidance
     assert "Extension Set (AMD Gluon): 2 task(s)" in guidance
+    assert "slots 2+ may be Extension L1" in guidance
 
 
 def test_search_space_allocation_degrades_after_gluon_failure() -> None:
@@ -182,6 +185,7 @@ def test_search_space_allocation_degrades_after_gluon_failure() -> None:
 
     assert "Previous Gluon signal: failed" in guidance
     assert "Extension Set (AMD Gluon): 1 task(s)" in guidance
+    assert "Extension L0: minimal AMD Gluon viability" in guidance
     assert "layout-only, translation-only, or memory-only" in guidance
 
 
@@ -192,6 +196,7 @@ def test_gluon_extension_strength_and_previous_signal_helpers() -> None:
     assert _previous_gluon_signal("gluon correctness failed") == "failed"
     assert _previous_gluon_signal("gluon slower performance regression") == "slower"
     assert _previous_gluon_signal("gluon [BEST] verified_speedup=1.2x") == "won"
+    assert _previous_gluon_signal("gluon [BEST] verified_speedup=1.0067x") == "attempted"
 
 
 # ---- Agent submits valid JSON -> tasks produced ----
@@ -374,10 +379,14 @@ def test_run_task_agent_plain_triton_auto_prefers_amd_gluon_first(
     assert run_kwargs["knowledge_base_path"] == str(general_kb)
     assert "Preferred output dialect order: amd_gluon, plain_triton" in run_kwargs["gluon_feature_context"]
     assert "prefer_amd_gluon_if_viable_else_plain_triton" in run_kwargs["gluon_feature_context"]
-    assert "Generate at least one early task" in run_kwargs["output_dialect_guidance"]
+    assert "after preserving the Base Set plain-Triton quota" in run_kwargs["output_dialect_guidance"]
+    assert "Extension L0" in run_kwargs["output_dialect_guidance"]
     assert "Keep a plain Triton fallback path alive" in run_kwargs["output_dialect_guidance"]
     assert "## Gluon Planning Traits" in run_kwargs["gluon_planning_traits_guidance"]
     assert "`dialect_plain_triton`" in run_kwargs["gluon_planning_traits_guidance"]
+    assert "Base Set (plain Triton): at least 5 task(s)" in run_kwargs["search_space_allocation_guidance"]
+    assert "Extension L0: minimal AMD Gluon viability" in run_kwargs["search_space_allocation_guidance"]
+    assert "Round 1 should include one L0 minimal AMD Gluon viability task" in run_kwargs["gluon_planning_traits_guidance"]
 
 
 @patch("minisweagent.tools.tools_runtime.get_tools_list", return_value=[{"name": "str_replace_editor"}, {"name": "submit"}])
