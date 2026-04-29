@@ -989,16 +989,25 @@ def _base_extension_quotas(
     previous_signal: str,
     shape_profile: str = SHAPE_COVERAGE_UNKNOWN,
 ) -> tuple[int, int, int]:
-    """Return recommended base/shared/extension slot counts.
+    """Return recommended Base/Shared/Extension candidate counts.
 
-    The shape coverage profile biases the allocation so that multi-shape
-    benchmarks always retain at least one shape-robust Base slot and so
-    that bucketed benchmarks can afford a paired Shared comparison plus
-    an extra trait-specific Extension slot when the budget allows it.
+    ``num_gpus`` is the parallel execution budget, not the total number of
+    candidates the planner may create. For ``num_gpus <= 1`` we deliberately
+    return more candidates than GPUs: one Base Set plain-Triton candidate and
+    one Extension Set AMD-Gluon candidate. The dispatcher queues those tasks
+    and runs them sequentially on the single GPU, giving low-cost smoke runs
+    the same Base-vs-Gluon coverage as multi-GPU runs.
+
+    For ``num_gpus >= 2`` the counts stay close to the GPU budget so each
+    round can run as a parallel portfolio. The shape coverage profile biases
+    the allocation so multi-shape benchmarks retain at least one
+    shape-robust Base slot and bucketed benchmarks can afford a paired
+    Shared comparison plus an extra trait-specific Extension slot.
     """
     budget = max(int(num_gpus or 1), 1)
     if budget <= 1:
-        return 1, 0, 0
+        # Serial interleave mode: run Base then Extension on the single GPU.
+        return 1, 0, 1
     if budget == 2:
         base, shared, extension = 1, 0, 1
     elif budget <= 4:
@@ -1042,6 +1051,61 @@ def _base_extension_quotas(
     return base, shared, extension
 
 
+def _dialect_interleave_strategy(
+    *,
+    num_gpus: int,
+    base_slots: int,
+    shared_slots: int,
+    extension_slots: int,
+    previous_signal: str,
+    shape_profile: str,
+) -> str:
+    """Render the scheduling strategy for the Base/Shared/Extension portfolio."""
+    budget = max(int(num_gpus or 1), 1)
+    total = base_slots + shared_slots + extension_slots
+    if budget <= 1:
+        return "\n".join(
+            [
+                "Scheduling mode: `serial_interleave`",
+                "- One GPU is available, but planner should still create both Base and Extension candidates.",
+                "- Dispatch will queue tasks and run them sequentially on the single GPU; this is intentional low-cost triage, not over-allocation.",
+                "- Recommended order: run the Base Set plain-Triton task first, then the AMD Gluon Extension task, then compare by the same correctness and benchmark contract.",
+                f"- Candidate count: {total} task(s) for {budget} GPU. This is allowed only because the mode is serial interleave.",
+            ]
+        )
+
+    if previous_signal == "won":
+        followup = (
+            "- Because a Gluon-related prior round appears promising, include at least one Base or Shared competitor "
+            "and one follow-up Gluon/mixed refinement so the final patch can combine the winning pieces without regressing Triton buckets."
+        )
+    elif previous_signal == "failed":
+        followup = (
+            "- Because prior Gluon work appears failed, keep the Extension task narrow (layout-only, translation-only, or memory-only) "
+            "while Base/Shared tasks continue the main Triton search."
+        )
+    elif previous_signal == "slower":
+        followup = (
+            "- Because prior Gluon work appears slower, keep the Extension task targeted at memory/matrix lowering and require a Base/Shared competitor."
+        )
+    else:
+        followup = (
+            "- No decisive Gluon prior signal yet; run Base, Shared, and Extension as a balanced portfolio and let benchmark choose."
+        )
+
+    return "\n".join(
+        [
+            "Scheduling mode: `parallel_mixed_portfolio`",
+            f"- {budget} GPU(s) are available; generate a mixed portfolio whose total task count stays close to the GPU budget ({total} task(s) recommended).",
+            "- Run Base Set plain-Triton, Shared Set paired variants, and Extension Set AMD-Gluon candidates side-by-side when budget allows.",
+            "- Later rounds may create mixed/hybrid strategies that keep the best plain-Triton path for shapes or operations where it wins and use AMD Gluon only where it passes correctness and beats the Base competitor; mixed patches must preserve per-shape no-regression.",
+            "- Mixed/hybrid patches must preserve the harness contract and must not drop the Base Triton no-regression path unless benchmark evidence across all shapes supports it.",
+            f"- Shape profile for scheduling: `{shape_profile}`.",
+            followup,
+        ]
+    )
+
+
 def _build_search_space_allocation_guidance(
     feature_meta: dict[str, Any],
     *,
@@ -1068,6 +1132,14 @@ def _build_search_space_allocation_guidance(
     base_slots, shared_slots, extension_slots = _base_extension_quotas(
         num_gpus, strength, previous_signal, shape_profile=shape_profile,
     )
+    interleave_strategy = _dialect_interleave_strategy(
+        num_gpus=num_gpus,
+        base_slots=base_slots,
+        shared_slots=shared_slots,
+        extension_slots=extension_slots,
+        previous_signal=previous_signal,
+        shape_profile=shape_profile,
+    )
 
     lines = [
         "## Search Space Allocation",
@@ -1076,15 +1148,17 @@ def _build_search_space_allocation_guidance(
         f"- Gluon extension strength: {strength}",
         f"- Previous Gluon signal: {previous_signal}",
         f"- Shape coverage profile: {shape_profile}",
+        interleave_strategy,
         "Recommended candidate allocation:",
-        f"- Base Set (plain Triton): at least {base_slots} task(s). Preserve the main Triton planner path: algorithmic rewrite, memory/layout cleanup, fusion, shape-specialized variants, and low-priority autotune/launch work.",
-        f"- Shared Set (Triton/Gluon common strategies): {shared_slots} task(s) when budget allows. Shared tasks must state whether they are a `plain_triton variant`, an `amd_gluon variant`, or a paired comparison.",
-        f"- Extension Set (AMD Gluon): {extension_slots} task(s). Start with minimal viability, then trait-specific lowering only when traits justify it.",
+        f"- Base Set (plain Triton): at least {base_slots} task(s). Preserve the main Triton planner path: algorithmic rewrite, memory/layout cleanup, fusion, shape-specialized variants, and low-priority autotune/launch work. Label these tasks as `Base Set` in task_prompt.",
+        f"- Shared Set (Triton/Gluon common strategies): {shared_slots} task(s) when budget allows. Shared tasks must state whether they are a `plain_triton variant`, an `amd_gluon variant`, or a paired comparison. Label these tasks as `Shared Set` in task_prompt.",
+        f"- Extension Set (AMD Gluon): {extension_slots} task(s). Start with minimal viability, then trait-specific lowering only when traits justify it. Label these tasks as `Extension Set` in task_prompt.",
         "Rules:",
         "- Do not replace all Base Set tasks with Gluon tasks.",
         "- Keep the same correctness and benchmark contract for all sets.",
         "- If a plain Triton candidate wins, accept it as the best result rather than forcing more Gluon work.",
         "- If a Triton strategy wins and maps cleanly to Gluon traits, a later round may create an AMD Gluon variant of that winning strategy.",
+        "- If an AMD Gluon candidate wins on only some shapes or sub-operations, a later round may create a `mixed/hybrid` candidate that dispatches between plain Triton and AMD Gluon by host-side shape/feature checks; the mixed path must keep per-shape no-regression and must be compared against a Base or Shared competitor.",
     ]
     if shape_profile in (SHAPE_COVERAGE_MULTI, SHAPE_COVERAGE_BUCKETED):
         lines.append(
@@ -1178,6 +1252,7 @@ def _build_gluon_planning_traits_guidance(
             "Escalation rules:",
             "- Round 1 should include a minimal AMD Gluon viability task, one trait-specific AMD Gluon task, and a plain Triton fallback/competitor when allowed.",
             "- In later rounds, if Gluon failed, shrink the next attempt to layout-only, translation-only, or memory-only work; if correctness passed but performance regressed, escalate memory/matrix lowering before scheduler or persistent work.",
+            "- In later rounds, if either the Base Set or Extension Set wins on only part of the benchmark surface, plan a mixed/hybrid candidate only when it preserves the Base Triton no-regression path and uses host-side dispatch or explicit feature checks to choose between plain Triton and AMD Gluon.",
         ]
     )
 
@@ -1206,6 +1281,7 @@ def _build_gluon_task_generation_guidance(feature_meta: dict[str, Any]) -> str:
         "  5. persistent scheduling, atomics, or work-stealing last",
         "- Favor early tasks that keep the original algorithm recognizable, make layout decisions explicit, and preserve correctness with the smallest possible semantic delta.",
         "- Treat the first passing AMD Gluon candidate as a platform for later aggressive optimizations, not as a final answer.",
+        "- Mixed/hybrid optimization is a later-round strategy: combine plain Triton and AMD Gluon only after both sides have benchmark evidence, and keep a Base or Shared competitor alive for no-regression.",
     ]
 
     if input_dialect == "plain_triton":
