@@ -96,6 +96,41 @@ _TRITON_FAMILY_MARKERS = (
     "from triton.experimental import gluon",
 )
 
+_BASE_FAMILY_SWIZZLE_TILE = "base_swizzle_and_tile_schedule"
+_BASE_FAMILY_SPLIT_K = "base_split_k_or_multipass_reduce"
+_BASE_FAMILY_SCALED_FUSION = "base_scaled_dot_fusion"
+_BASE_FAMILY_STREAMLINE = "base_hot_path_streamline"
+_BASE_FAMILY_PERSISTENT = "base_small_matrix_persistent_or_launch_amortization"
+_BASE_FAMILY_GENERIC_ALGO = "base_algorithmic_rewrite"
+_BASE_FAMILY_GENERIC_FUSION = "base_fusion_or_launch_reduction"
+_BASE_FAMILY_GENERIC_MEMORY = "base_memory_layout_cleanup"
+
+_BASE_FAMILY_DETAILS: dict[str, str] = {
+    _BASE_FAMILY_SWIZZLE_TILE: (
+        "tile schedule, swizzle/traversal, BLOCK_M/N/K, GROUP_SIZE_M, num_warps, and launch mapping"
+    ),
+    _BASE_FAMILY_SPLIT_K: "split-K, partial accumulation, separate reduction, or multi-pass reduce",
+    _BASE_FAMILY_SCALED_FUSION: "scale_a/scale_b fusion into tl.dot or the epilogue without extra launches",
+    _BASE_FAMILY_STREAMLINE: (
+        "redundant casts, mask/broadcast cleanup, pointer CSE, live-range and register-pressure reduction"
+    ),
+    _BASE_FAMILY_PERSISTENT: "small-matrix persistent, multi-tile per program, workqueue, or launch amortization",
+    _BASE_FAMILY_GENERIC_ALGO: "algorithmic kernel-body rewrite",
+    _BASE_FAMILY_GENERIC_FUSION: "operation fusion or launch-count reduction",
+    _BASE_FAMILY_GENERIC_MEMORY: "memory/layout cleanup on the hottest path",
+}
+
+_BASE_FAMILY_LABEL_MARKERS: dict[str, tuple[str, ...]] = {
+    _BASE_FAMILY_SWIZZLE_TILE: ("swizzle", "tile", "tiling", "schedule", "group_size"),
+    _BASE_FAMILY_SPLIT_K: ("split-k", "split_k", "split k", "multipass", "multi-pass", "reduction"),
+    _BASE_FAMILY_SCALED_FUSION: ("scale-fusion", "scale fusion", "scaled_dot", "scale", "fused-scale"),
+    _BASE_FAMILY_STREAMLINE: ("streamline", "redundant", "simplify", "cleanup", "eliminate"),
+    _BASE_FAMILY_PERSISTENT: ("persistent", "launch-amortization", "launch amortization", "workqueue"),
+    _BASE_FAMILY_GENERIC_ALGO: ("algorithm", "rewrite"),
+    _BASE_FAMILY_GENERIC_FUSION: ("fusion", "fuse"),
+    _BASE_FAMILY_GENERIC_MEMORY: ("memory", "coalesc", "layout"),
+}
+
 
 # ============================================================================
 # Kernel metadata extraction
@@ -321,12 +356,35 @@ def generate_tasks(
         num_gpus=num_gpus,
     )
 
+    required_base_families, expected_extension_slots = _task_generation_audit_inputs(
+        kernel_path=kernel_path,
+        kernel_name=kernel_name,
+        kernel_type=kernel_type,
+        function_names=function_names or [],
+        input_dialect=input_dialect,
+        gluon_feature_mode=gluon_feature_mode,
+        gluon_baseline_profile=gluon_baseline_profile,
+        allowed_output_dialects=allowed_output_dialects,
+        preferred_output_dialects=preferred_output_dialects,
+        output_dialect_search_policy=output_dialect_search_policy,
+        target_backend=target_backend,
+        benchmark_shape_count=benchmark_shape_count,
+        benchmark_test_cases=benchmark_test_cases,
+        shape_coverage_profile=shape_coverage_profile,
+        baseline_metrics_path=baseline_metrics_path,
+        previous_results_dir=previous_results_dir,
+        previous_tasks_dir=previous_tasks_dir,
+        num_gpus=num_gpus,
+    )
+
     return _parse_llm_response(
         submitted_text,
         agent_class,
         kernel_path=kernel_path,
         commandment_path=str(commandment_path) if commandment_path else None,
         baseline_metrics_path=str(baseline_metrics_path) if baseline_metrics_path else None,
+        required_base_families=required_base_families,
+        expected_extension_slots=expected_extension_slots,
     )
 
 
@@ -429,6 +487,138 @@ def generate_tasks_from_content(
                 logger.debug("Failed to remove temp file %s", f)
 
 
+def _patch_feature_meta_from_baseline_metrics(
+    feature_meta: dict[str, Any],
+    baseline_metrics_path: str | Path | None,
+) -> str | None:
+    """Patch feature metadata with authoritative shape data from baseline metrics.
+
+    ``_run_task_agent`` uses this information to render planner guidance. Task
+    files need the same patch before frontmatter is written so workers that read
+    metadata, rather than planner prose, receive the multi-shape contract too.
+    """
+    if not baseline_metrics_path:
+        return None
+    path = Path(baseline_metrics_path)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        logger.debug("Failed to read baseline metrics for shape metadata: %s", exc)
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    cases = payload.get("benchmark_test_cases")
+    count = payload.get("benchmark_shape_count")
+    if cases:
+        feature_meta["benchmark_test_cases"] = list(cases or [])
+        if count is not None:
+            feature_meta["benchmark_shape_count"] = count
+        feature_meta["shape_coverage_profile"] = derive_shape_coverage_profile(
+            benchmark_shape_count=feature_meta.get("benchmark_shape_count"),
+            benchmark_test_cases=feature_meta.get("benchmark_test_cases"),
+        )
+    else:
+        if not feature_meta.get("benchmark_shape_count") and count is not None:
+            feature_meta["benchmark_shape_count"] = count
+        if not feature_meta.get("benchmark_test_cases"):
+            feature_meta["benchmark_test_cases"] = list(cases or [])
+        if (
+            str(feature_meta.get("shape_coverage_profile") or DEFAULT_SHAPE_COVERAGE_PROFILE).lower()
+            == DEFAULT_SHAPE_COVERAGE_PROFILE
+        ):
+            feature_meta["shape_coverage_profile"] = derive_shape_coverage_profile(
+                benchmark_shape_count=feature_meta.get("benchmark_shape_count"),
+                benchmark_test_cases=feature_meta.get("benchmark_test_cases"),
+            )
+
+    cases_path = payload.get("benchmark_test_cases_path")
+    return str(cases_path) if cases_path else None
+
+
+def _load_baseline_metrics(path: str | Path | None) -> dict[str, Any]:
+    """Load baseline metrics JSON if available."""
+    if not path:
+        return {}
+    metrics_path = Path(path)
+    if not metrics_path.exists():
+        return {}
+    try:
+        payload = json.loads(metrics_path.read_text())
+    except (OSError, ValueError) as exc:
+        logger.debug("Failed to read baseline metrics: %s", exc)
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _task_generation_audit_inputs(
+    *,
+    kernel_path: str,
+    kernel_name: str,
+    kernel_type: str,
+    function_names: list[str],
+    input_dialect: str,
+    gluon_feature_mode: str | None,
+    gluon_baseline_profile: str,
+    allowed_output_dialects: list[str] | None,
+    preferred_output_dialects: list[str] | None,
+    output_dialect_search_policy: str | None,
+    target_backend: str,
+    benchmark_shape_count: int | None,
+    benchmark_test_cases: list[dict[str, Any]] | None,
+    shape_coverage_profile: str | None,
+    baseline_metrics_path: Path | None,
+    previous_results_dir: Path | None,
+    previous_tasks_dir: Path | None,
+    num_gpus: int,
+) -> tuple[list[str], int]:
+    """Return Base family and Extension layer expectations for submitted tasks."""
+    feature_meta = build_gluon_feature_metadata(
+        Path(kernel_path),
+        kernel_type,
+        input_dialect=input_dialect,
+        gluon_feature_mode=gluon_feature_mode,
+        gluon_baseline_profile=gluon_baseline_profile,
+        allowed_output_dialects=allowed_output_dialects,
+        preferred_output_dialects=preferred_output_dialects,
+        output_dialect_search_policy=output_dialect_search_policy,
+        target_backend=target_backend,
+        benchmark_shape_count=benchmark_shape_count,
+        benchmark_test_cases=benchmark_test_cases,
+        shape_coverage_profile=shape_coverage_profile,
+    )
+    _patch_feature_meta_from_baseline_metrics(feature_meta, baseline_metrics_path)
+    baseline_metrics = _load_baseline_metrics(baseline_metrics_path)
+    if not baseline_metrics and not feature_meta.get("benchmark_test_cases"):
+        return [], 0
+    signal_text = _read_kernel_signal_text(
+        kernel_path=kernel_path,
+        kernel_name=kernel_name,
+        function_names=function_names,
+        baseline_metrics=baseline_metrics,
+    )
+    traits = _infer_gluon_planning_traits(feature_meta, signal_text)
+    required_families = _base_triton_mandatory_families(feature_meta, traits, baseline_metrics)
+
+    extension_slots = 0
+    if feature_uses_gluon_guidance_from_meta(feature_meta):
+        prior_text = ""
+        if previous_results_dir and Path(previous_results_dir).is_dir():
+            prior_text += _scan_previous_results(Path(previous_results_dir))
+        if previous_tasks_dir and Path(previous_tasks_dir).is_dir():
+            prior_text += "\n" + _scan_previous_tasks(Path(previous_tasks_dir))
+        previous_signal = _previous_gluon_signal(_filter_gluon_relevant_text(prior_text))
+        _, _, extension_slots = _base_extension_quotas(
+            num_gpus,
+            _gluon_extension_strength(traits),
+            previous_signal,
+            shape_profile=str(feature_meta.get("shape_coverage_profile") or DEFAULT_SHAPE_COVERAGE_PROFILE).lower(),
+        )
+    return required_families, extension_slots
+
+
 def write_task_files(
     tasks: list[AgentTask],
     output_dir: Path,
@@ -482,6 +672,8 @@ def write_task_files(
         benchmark_test_cases=benchmark_test_cases,
         shape_coverage_profile=shape_coverage_profile,
     )
+    baseline_cases_path = _patch_feature_meta_from_baseline_metrics(feature_meta, baseline_metrics)
+    effective_benchmark_test_cases_path = benchmark_test_cases_path or baseline_cases_path or ""
     allowed_skill_tiers = allowed_skill_tiers_for_feature(
         kernel_type,
         gluon_feature_mode=feature_meta["gluon_feature_mode"],
@@ -513,7 +705,7 @@ def write_task_files(
             "shape_coverage_profile": feature_meta.get("shape_coverage_profile"),
             "benchmark_shape_count": feature_meta.get("benchmark_shape_count"),
             "benchmark_test_cases": list(feature_meta.get("benchmark_test_cases") or []),
-            "benchmark_test_cases_path": benchmark_test_cases_path or "",
+            "benchmark_test_cases_path": effective_benchmark_test_cases_path,
             "repo_root": repo_root,
             "commandment": commandment,
             "baseline_metrics": baseline_metrics,
@@ -750,6 +942,85 @@ def _infer_gluon_planning_traits(
             deduped.append(trait)
             seen.add(trait)
     return deduped
+
+
+def _baseline_bottleneck(baseline_metrics: dict[str, Any] | None) -> str:
+    """Return a normalized bottleneck string from baseline metrics."""
+    if not isinstance(baseline_metrics, dict):
+        return ""
+    for key in ("bottleneck", "bottleneck_type", "primary_bottleneck"):
+        value = baseline_metrics.get(key)
+        if value:
+            return str(value).strip().lower()
+    top = baseline_metrics.get("top_kernels") or []
+    if isinstance(top, list):
+        for item in top:
+            if isinstance(item, dict) and item.get("bottleneck"):
+                return str(item.get("bottleneck")).strip().lower()
+    return ""
+
+
+def _base_triton_mandatory_families(
+    feature_meta: dict[str, Any],
+    traits: list[str],
+    baseline_metrics: dict[str, Any] | None = None,
+) -> list[str]:
+    """Return Base Triton families that must be covered before Gluon can add width."""
+    if str(feature_meta.get("kernel_type") or "").strip().lower() != "triton":
+        return []
+
+    trait_set = set(traits)
+    shape_profile = str(
+        feature_meta.get("shape_coverage_profile") or DEFAULT_SHAPE_COVERAGE_PROFILE
+    ).lower()
+    bottleneck = _baseline_bottleneck(baseline_metrics)
+    duration = 0.0
+    if isinstance(baseline_metrics, dict):
+        try:
+            duration = float(baseline_metrics.get("duration_us") or baseline_metrics.get("benchmark_duration_us") or 0.0)
+        except (TypeError, ValueError):
+            duration = 0.0
+
+    matrix_like = bool(
+        trait_set.intersection({"matrix_dot", "matrix_scaled_dot", "matrix_wmma_descriptor"})
+    )
+    shape_sensitive = shape_profile in (SHAPE_COVERAGE_MULTI, SHAPE_COVERAGE_BUCKETED)
+    latency_like = "latency" in bottleneck or (duration > 0 and duration <= 250.0)
+    scaled_like = "matrix_scaled_dot" in trait_set
+
+    if matrix_like or scaled_like or (shape_sensitive and latency_like):
+        return [
+            _BASE_FAMILY_SWIZZLE_TILE,
+            _BASE_FAMILY_SPLIT_K,
+            _BASE_FAMILY_SCALED_FUSION,
+            _BASE_FAMILY_STREAMLINE,
+            _BASE_FAMILY_PERSISTENT,
+        ]
+
+    return [
+        _BASE_FAMILY_GENERIC_ALGO,
+        _BASE_FAMILY_GENERIC_FUSION,
+        _BASE_FAMILY_GENERIC_MEMORY,
+    ]
+
+
+def _render_base_family_checklist(required_families: list[str]) -> list[str]:
+    """Render mandatory Base family guidance lines."""
+    if not required_families:
+        return []
+    lines = [
+        "Mandatory Base Set family checklist:",
+        "- Every Base Set task must include `Base family: <family_id>` in task_prompt.",
+        "- Fill these families before creating extra Base variants:",
+    ]
+    lines.extend(
+        f"  - `{family}`: {_BASE_FAMILY_DETAILS.get(family, 'planner-required plain Triton direction')}"
+        for family in required_families
+    )
+    lines.append(
+        "- Autotune-only or generic memory-coalescing tasks do not satisfy a missing mandatory family unless they are attached to one of the family IDs above."
+    )
+    return lines
 
 
 def _gluon_trait_headings(traits: list[str]) -> list[str]:
@@ -1104,6 +1375,7 @@ def _build_search_space_allocation_guidance(
     *,
     traits: list[str],
     num_gpus: int,
+    baseline_metrics: dict[str, Any] | None = None,
     previous_results_text: str = "",
     previous_tasks_text: str = "",
 ) -> str:
@@ -1125,6 +1397,12 @@ def _build_search_space_allocation_guidance(
     base_slots, shared_slots, extension_slots = _base_extension_quotas(
         num_gpus, strength, previous_signal, shape_profile=shape_profile,
     )
+    required_base_families = _base_triton_mandatory_families(
+        feature_meta,
+        traits,
+        baseline_metrics,
+    )
+    base_slots = max(base_slots, len(required_base_families))
     interleave_strategy = _dialect_interleave_strategy(
         num_gpus=num_gpus,
         base_slots=base_slots,
@@ -1163,10 +1441,13 @@ def _build_search_space_allocation_guidance(
         "- Keep the same correctness and benchmark contract for all sets.",
         "- Layering order: Base Set -> Extension L0 viability -> Shared paired mapping -> Extension L1 trait-specific lowering -> later-round Hybrid/Mixed dispatch.",
         "- Round 1 with only one Extension slot should produce exactly one L0 minimal viability task, not multiple Gluon tasks.",
+        "- Shared Set tasks must include `Shared source family: <base_family_id>` when they map a Base strategy into a paired comparison.",
+        "- Extension Set tasks must include `Extension layer: L0`, `Extension layer: L1`, or `Extension layer: Hybrid` in task_prompt.",
         "- If a plain Triton candidate wins, accept it as the best result rather than forcing more Gluon work.",
         "- If a Triton strategy wins and maps cleanly to Gluon traits, a later round may create an AMD Gluon variant of that winning strategy.",
         "- If an AMD Gluon candidate wins on only some shapes or sub-operations, a later round may create a `mixed/hybrid` candidate that dispatches between plain Triton and AMD Gluon by host-side shape/feature checks; the mixed path must keep per-shape no-regression and must be compared against a Base or Shared competitor.",
     ]
+    lines.extend(_render_base_family_checklist(required_base_families))
     if shape_profile in (SHAPE_COVERAGE_MULTI, SHAPE_COVERAGE_BUCKETED):
         lines.append(
             "- Multi-shape rule: at least one Base Set candidate MUST be `shape_robust`; "
@@ -1817,6 +2098,7 @@ def _run_task_agent(
             feature_meta,
             traits=gluon_traits,
             num_gpus=num_gpus,
+            baseline_metrics=_bm_dict,
             previous_results_text=prev_results_summary,
             previous_tasks_text=prev_tasks_summary,
         )
@@ -1916,6 +2198,76 @@ def _run_task_agent(
                 logger.debug("Failed to remove temp file %s", f)
 
 
+def _strict_base_family_audit_enabled() -> bool:
+    return os.getenv("GEAK_STRICT_BASE_FAMILY_AUDIT", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def _explicit_base_family(task_text: str) -> str | None:
+    match = re.search(r"base\s+family\s*:\s*`?([a-z0-9_/-]+)`?", task_text, re.IGNORECASE)
+    return match.group(1).strip().lower() if match else None
+
+
+def _task_matches_base_family(task: AgentTask, family: str) -> bool:
+    text = f"{task.label}\n{task.task}".lower()
+    explicit = _explicit_base_family(text)
+    if explicit:
+        return explicit == family
+    return any(marker in text for marker in _BASE_FAMILY_LABEL_MARKERS.get(family, ()))
+
+
+def _is_gluon_extension_task(task: AgentTask) -> bool:
+    text = f"{task.label}\n{task.task}".lower()
+    return "gluon" in text or "extension set" in text or "extension layer:" in text
+
+
+def _has_l0_extension_tag(task: AgentTask) -> bool:
+    text = f"{task.label}\n{task.task}".lower()
+    return "extension layer: l0" in text or " l0 " in f" {text} " or "-l0-" in text
+
+
+def _audit_base_family_coverage(
+    tasks: list[AgentTask],
+    required_families: list[str],
+    *,
+    expected_extension_slots: int | None = None,
+) -> None:
+    """Reject task plans that drop mandatory Base families or over-expand Gluon."""
+    if not required_families and not expected_extension_slots:
+        return
+
+    missing = [
+        family
+        for family in required_families
+        if not any(_task_matches_base_family(task, family) for task in tasks)
+    ]
+    extension_tasks = [task for task in tasks if _is_gluon_extension_task(task)]
+    extension_errors: list[str] = []
+    if expected_extension_slots == 1:
+        if len(extension_tasks) != 1:
+            extension_errors.append(
+                f"expected exactly one AMD Gluon Extension L0 task, found {len(extension_tasks)}"
+            )
+        elif not _has_l0_extension_tag(extension_tasks[0]):
+            extension_errors.append("single AMD Gluon Extension task must be tagged `Extension layer: L0`")
+
+    errors = []
+    if missing:
+        errors.append("missing Base Set mandatory families: " + ", ".join(missing))
+    errors.extend(extension_errors)
+    if not errors:
+        return
+
+    message = "Task-generation coverage audit failed: " + "; ".join(errors)
+    if _strict_base_family_audit_enabled():
+        raise ValueError(message)
+    logger.warning(message)
+
+
 def _parse_llm_response(
     content: str,
     agent_class: type,
@@ -1923,6 +2275,8 @@ def _parse_llm_response(
     kernel_path: str | None = None,
     commandment_path: str | None = None,
     baseline_metrics_path: str | None = None,
+    required_base_families: list[str] | None = None,
+    expected_extension_slots: int | None = None,
 ) -> list[AgentTask]:
     """Parse JSON response into AgentTask objects."""
     content = content.strip()
@@ -1990,7 +2344,13 @@ def _parse_llm_response(
     if not tasks:
         raise ValueError("LLM response contained no valid tasks")
 
-    return sorted(tasks, key=lambda t: t.priority)
+    sorted_tasks = sorted(tasks, key=lambda t: t.priority)
+    _audit_base_family_coverage(
+        sorted_tasks,
+        required_base_families or [],
+        expected_extension_slots=expected_extension_slots,
+    )
+    return sorted_tasks
 
 
 # ============================================================================
