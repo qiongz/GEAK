@@ -23,6 +23,7 @@ from minisweagent.agents.heterogeneous.task_generator import (
     _base_extension_quotas,
     _build_search_space_allocation_guidance,
     _build_shape_coverage_guidance,
+    _dialect_interleave_strategy,
     _gluon_extension_strength,
     _infer_gluon_planning_traits,
     _previous_gluon_signal,
@@ -295,6 +296,44 @@ def test_quota_grows_extension_for_bucketed_with_5_gpus() -> None:
     assert base + shared + extension <= 5
 
 
+def test_quota_interleaves_base_and_extension_on_one_gpu() -> None:
+    base, shared, extension = _base_extension_quotas(
+        1, "weak", "none", shape_profile=SHAPE_COVERAGE_UNKNOWN,
+    )
+    assert (base, shared, extension) == (1, 0, 1)
+    assert base + shared + extension == 2
+
+
+def test_serial_interleave_strategy_explains_candidate_count_can_exceed_gpus() -> None:
+    text = _dialect_interleave_strategy(
+        num_gpus=1,
+        base_slots=1,
+        shared_slots=0,
+        extension_slots=1,
+        previous_signal="none",
+        shape_profile=SHAPE_COVERAGE_UNKNOWN,
+    )
+    assert "serial_interleave" in text
+    assert "Candidate count: 2 task(s) for 1 GPU" in text
+    assert "Base Set plain-Triton task first" in text
+    assert "AMD Gluon Extension task" in text
+
+
+def test_parallel_mixed_strategy_mentions_hybrid_followup_when_gluon_won() -> None:
+    text = _dialect_interleave_strategy(
+        num_gpus=8,
+        base_slots=4,
+        shared_slots=2,
+        extension_slots=2,
+        previous_signal="won",
+        shape_profile=SHAPE_COVERAGE_BUCKETED,
+    )
+    assert "parallel_mixed_portfolio" in text
+    assert "mixed/hybrid" in text
+    assert "Base or Shared competitor" in text
+    assert "per-shape no-regression" in text
+
+
 def test_search_space_allocation_mentions_multi_shape_rule() -> None:
     text = _build_search_space_allocation_guidance(
         _gluon_meta_with_shape(
@@ -312,6 +351,41 @@ def test_search_space_allocation_mentions_multi_shape_rule() -> None:
     )
     assert "Shape coverage profile: multi" in text
     assert "shape_robust" in text
+
+
+def test_search_space_allocation_for_one_gpu_serial_interleave() -> None:
+    text = _build_search_space_allocation_guidance(
+        _gluon_meta_with_shape(SHAPE_COVERAGE_UNKNOWN, cases=[], count=None),
+        traits=["semantics_contract", "dialect_plain_triton", "layout_basic", "matrix_none"],
+        num_gpus=1,
+    )
+    assert "Scheduling mode: `serial_interleave`" in text
+    assert "Base Set (plain Triton): at least 1 task(s)" in text
+    assert "Extension Set (AMD Gluon): 1 task(s)" in text
+    assert "run them sequentially on the single GPU" in text
+
+
+def test_search_space_allocation_for_eight_gpus_parallel_mixed_portfolio() -> None:
+    text = _build_search_space_allocation_guidance(
+        _gluon_meta_with_shape(
+            SHAPE_COVERAGE_BUCKETED,
+            cases=[
+                {"case_id": "perf1", "params": {"M": 32, "K": 64, "N": 64}},
+                {"case_id": "perf2", "params": {"M": 64, "K": 128, "N": 128}},
+                {"case_id": "perf3", "params": {"M": 128, "K": 256, "N": 256}},
+                {"case_id": "perf4", "params": {"M": 256, "K": 512, "N": 512}},
+            ],
+            count=4,
+        ),
+        traits=["semantics_contract", "dialect_plain_triton", "layout_basic", "matrix_dot", "shape_dispatch_required"],
+        num_gpus=8,
+        previous_results_text="gluon [BEST] verified_speedup=1.2x",
+    )
+    assert "Scheduling mode: `parallel_mixed_portfolio`" in text
+    assert "Base Set (plain Triton): at least 4 task(s)" in text
+    assert "Extension Set (AMD Gluon): 3 task(s)" in text
+    assert "mixed/hybrid" in text
+    assert "host-side shape/feature checks" in text
 
 
 def test_shape_coverage_guidance_block_lists_cases_and_buckets() -> None:
