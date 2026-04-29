@@ -183,6 +183,10 @@ wrapper-only or dispatch-only tasks before kernel-body avenues are exhausted.
 Dispatch-path checks are allowed but LOW priority. Only propose them when the
 profile strongly suggests an unfused or misrouted entry path, and still assign
 them priority 15 behind kernel-body algorithmic work.
+Exception: when a mandatory Search Space Allocation block explicitly reserves a
+Base Set host/dispatch/cache task for a latency-bound or small-matrix case, that
+task is a no-regression Base competitor rather than padding. It may use a medium
+priority after the required kernel-body Base tasks.
 
 ## Your analysis process
 
@@ -222,9 +226,10 @@ them priority 15 behind kernel-body algorithmic work.
    work).
 11. If an "Output Dialect Planning Policy" block is present, treat it as
    mandatory. In particular, when it says to prefer AMD Gluon first for a
-   Triton-family input, generate at least one early task that evaluates an
-   AMD Gluon path before filling the batch with only fallback tuning. For
-   `nv_gluon` inputs, that early task should explicitly translate
+   Triton-family input, generate at least one early Extension L0 task that
+   evaluates an AMD Gluon path after preserving the Base Set quota. Do not
+   replace Base Set plain-Triton tasks with Gluon tasks. For `nv_gluon`
+   inputs, that early task should explicitly translate
    vendor-specific APIs or layout assumptions into AMD-facing Gluon before
    tuning, while still keeping any allowed plain-Triton fallback unless the
    policy explicitly requires AMD Gluon.
@@ -236,8 +241,11 @@ them priority 15 behind kernel-body algorithmic work.
 13. If a "Gluon Task Staging Policy" block is present, treat it as
     mandatory. In particular, for `plain_triton -> amd_gluon` paths, do not
     spend the highest-priority slots only on the hardest persistent or
-    work-stealing designs before generating at least one minimal compileable
-    amd_gluon rewrite task and one safer semantics-preserving structural step.
+    work-stealing designs before generating one Extension L0 minimal
+    compileable amd_gluon rewrite task and one safer semantics-preserving
+    structural step. Only generate Extension L1, Shared paired, or Hybrid/mixed
+    tasks when the Search Space Allocation grants those layers or prior
+    benchmark evidence justifies them.
 14. If a "Gluon Failure Guardrails" block is present, treat it as
     mandatory. Avoid assigning high-priority tasks that assume risky layout
     conversions, direct API renames, or compile-only validation is enough.
@@ -250,7 +258,10 @@ them priority 15 behind kernel-body algorithmic work.
     Preserve the Base Set plain-Triton task quota; AMD Gluon tasks are an
     additive Extension Set, not a replacement for the main Triton search. Shared
     strategies must state their dialect variant (`plain_triton variant`,
-    `amd_gluon variant`, or paired comparison).
+    `amd_gluon variant`, or paired comparison). If this block recommends more
+    tasks than GPUs, keep the task count; the GPU pool queues overflow tasks.
+    Follow the layer order Base Set -> Extension L0 viability -> Shared paired
+    mapping -> Extension L1 trait-specific lowering -> later-round Hybrid/mixed.
 17. If a "Shape Coverage Policy" block is present, treat it as mandatory.
     Each task_prompt MUST self-classify as exactly one of `single_shape_viability`,
     `shape_robust`, or `shape_bucketed`, and MUST NOT hardcode shape literals
@@ -370,7 +381,13 @@ Generate optimization tasks for the kernel at {{ kernel_path }}.
 ## Workload / Backend Guidance
 {{ workload_guidance }}
 {% endif %}
-{% if num_gpus > 1 %}## GPU Budget
+{% if search_space_allocation_guidance %}## GPU Budget
+Available GPUs: {{ num_gpus }}
+Search Space Allocation may recommend more total tasks than GPUs. Preserve the
+recommended Base, Shared, and Extension counts; the GPU pool queues overflow
+tasks instead of requiring the planner to trim the portfolio to {{ num_gpus }}.
+Each task uses 1 GPU unless explicitly stated otherwise.
+{% elif num_gpus > 1 %}## GPU Budget
 Available GPUs: {{ num_gpus }}
 Generate enough tasks so the total num_gpus across all tasks is close to {{ num_gpus }}.
 It is acceptable to leave some GPUs idle rather than padding the batch with
