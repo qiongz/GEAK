@@ -1,5 +1,6 @@
 """Tests for the agent-based task generator."""
 
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -7,7 +8,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from minisweagent.agents.heterogeneous.task_generator import (
+    _BASE_FAMILY_PERSISTENT,
+    _BASE_FAMILY_SCALED_FUSION,
+    _BASE_FAMILY_SPLIT_K,
+    _BASE_FAMILY_STREAMLINE,
+    _BASE_FAMILY_SWIZZLE_TILE,
     _SYSTEM_PROMPT,
+    _base_triton_mandatory_families,
     _build_gluon_planning_traits_guidance,
     _build_search_space_allocation_guidance,
     _build_workload_guidance,
@@ -155,7 +162,7 @@ def test_search_space_allocation_for_two_gpus_preserves_base_and_extension() -> 
     )
 
     assert "## Search Space Allocation" in guidance
-    assert "Base Set (plain Triton): at least 2 task(s)" in guidance
+    assert "Base Set (plain Triton): at least 3 task(s)" in guidance
     assert "Extension Set (AMD Gluon): 1 task(s)" in guidance
     assert "Do not replace or reduce Base Set tasks with Gluon tasks" in guidance
     assert "Extension L0: minimal AMD Gluon viability" in guidance
@@ -173,6 +180,45 @@ def test_search_space_allocation_for_large_budget_keeps_full_base() -> None:
     assert "Shared Set (Triton/Gluon common strategies): 1 task(s)" in guidance
     assert "Extension Set (AMD Gluon): 2 task(s)" in guidance
     assert "slots 2+ may be Extension L1" in guidance
+
+
+def test_base_triton_mandatory_families_for_scaled_mm_latency_bucketed() -> None:
+    meta = {
+        **_gluon_feature_meta("plain_triton"),
+        "shape_coverage_profile": "bucketed",
+        "benchmark_shape_count": 5,
+        "benchmark_test_cases": [{"case_id": "perf1", "params": {"M": 32, "K": 64, "N": 64}}],
+    }
+    families = _base_triton_mandatory_families(
+        meta,
+        ["semantics_contract", "dialect_plain_triton", "matrix_scaled_dot", "shape_coverage_bucketed"],
+        {"bottleneck": "latency", "duration_us": 147.3},
+    )
+
+    assert families == [
+        _BASE_FAMILY_SWIZZLE_TILE,
+        _BASE_FAMILY_SPLIT_K,
+        _BASE_FAMILY_SCALED_FUSION,
+        _BASE_FAMILY_STREAMLINE,
+        _BASE_FAMILY_PERSISTENT,
+    ]
+
+
+def test_search_space_allocation_lists_base_family_checklist() -> None:
+    guidance = _build_search_space_allocation_guidance(
+        {**_gluon_feature_meta("plain_triton"), "shape_coverage_profile": "bucketed"},
+        traits=["semantics_contract", "dialect_plain_triton", "layout_basic", "matrix_scaled_dot"],
+        num_gpus=1,
+        baseline_metrics={"bottleneck": "latency", "duration_us": 147.3},
+    )
+
+    assert "Mandatory Base Set family checklist" in guidance
+    assert "`base_swizzle_and_tile_schedule`" in guidance
+    assert "`base_split_k_or_multipass_reduce`" in guidance
+    assert "`base_scaled_dot_fusion`" in guidance
+    assert "`base_hot_path_streamline`" in guidance
+    assert "`base_small_matrix_persistent_or_launch_amortization`" in guidance
+    assert "Base family: <family_id>" in guidance
 
 
 def test_search_space_allocation_degrades_after_gluon_failure() -> None:
@@ -197,6 +243,118 @@ def test_gluon_extension_strength_and_previous_signal_helpers() -> None:
     assert _previous_gluon_signal("gluon slower performance regression") == "slower"
     assert _previous_gluon_signal("gluon [BEST] verified_speedup=1.2x") == "won"
     assert _previous_gluon_signal("gluon [BEST] verified_speedup=1.0067x") == "attempted"
+
+
+def test_audit_rejects_missing_split_k_or_persistent_base_family() -> None:
+    degraded = json.dumps(
+        [
+            {
+                "label": "triton-scale-simplify-kernel-body",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nsimplify scale and masks",
+            },
+            {
+                "label": "triton-small-tile-rewrite",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Base Set task\nBase family: base_swizzle_and_tile_schedule\nsmall tile rewrite",
+            },
+            {
+                "label": "triton-fused-scale-dot-loop",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Base Set task\nBase family: base_scaled_dot_fusion\nfuse scale into dot",
+            },
+            {
+                "label": "amd-gluon-l0-viability",
+                "priority": 8,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Extension Set task\nExtension layer: L0\nminimal gluon viability",
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="base_split_k_or_multipass_reduce"):
+        _parse_llm_response(
+            degraded,
+            FakeAgentClass,
+            required_base_families=[
+                _BASE_FAMILY_SWIZZLE_TILE,
+                _BASE_FAMILY_SPLIT_K,
+                _BASE_FAMILY_SCALED_FUSION,
+                _BASE_FAMILY_STREAMLINE,
+                _BASE_FAMILY_PERSISTENT,
+            ],
+            expected_extension_slots=1,
+        )
+
+
+def test_audit_accepts_main_like_five_base_plus_gluon_l0() -> None:
+    accepted = json.dumps(
+        [
+            {
+                "label": "triton-swizzle-and-tile-optimization",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Base Set task\nBase family: base_swizzle_and_tile_schedule\noptimize tile traversal",
+            },
+            {
+                "label": "triton-split-k-reduction",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Base Set task\nBase family: base_split_k_or_multipass_reduce\ntry split-K reduction",
+            },
+            {
+                "label": "triton-scale-fusion-into-dot",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Base Set task\nBase family: base_scaled_dot_fusion\nfuse scale into tl.dot",
+            },
+            {
+                "label": "triton-eliminate-redundant-ops-streamline",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nremove casts and redundant masks",
+            },
+            {
+                "label": "triton-small-matrix-persistent-kernel",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Base Set task\nBase family: base_small_matrix_persistent_or_launch_amortization\npersistent small matrix path",
+            },
+            {
+                "label": "amd-gluon-l0-viability",
+                "priority": 8,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Extension Set task\nExtension layer: L0\nminimal AMD Gluon viability",
+            },
+        ]
+    )
+
+    tasks = _parse_llm_response(
+        accepted,
+        FakeAgentClass,
+        required_base_families=[
+            _BASE_FAMILY_SWIZZLE_TILE,
+            _BASE_FAMILY_SPLIT_K,
+            _BASE_FAMILY_SCALED_FUSION,
+            _BASE_FAMILY_STREAMLINE,
+            _BASE_FAMILY_PERSISTENT,
+        ],
+        expected_extension_slots=1,
+    )
+    assert [task.label for task in tasks][-1] == "amd-gluon-l0-viability"
 
 
 # ---- Agent submits valid JSON -> tasks produced ----
@@ -525,6 +683,58 @@ def test_write_task_files_records_plain_triton_gluon_preference(tmp_path: Path):
     meta, _body = read_task_file(paths[0])
     assert meta["preferred_output_dialects"] == ["amd_gluon", "plain_triton"]
     assert meta["output_dialect_search_policy"] == "prefer_amd_gluon_if_viable_else_plain_triton"
+
+
+def test_write_task_files_patches_shape_metadata_from_baseline_metrics(tmp_path: Path):
+    tasks = _parse_llm_response(
+        '[{"label": "opt", "priority": 5, "agent_type": "strategy_agent", "task_prompt": "Do it"}]',
+        FakeAgentClass,
+    )
+    _write_knowledge_files(tmp_path)
+    cases_path = tmp_path / "benchmark_test_cases.json"
+    bm_path = tmp_path / "baseline_metrics.json"
+    bm_path.write_text(
+        json.dumps(
+            {
+                "benchmark_shape_count": 4,
+                "benchmark_test_cases": [
+                    {"case_id": "perf1", "params": {"M": 32, "K": 64, "N": 64}, "baseline_ms": 0.03},
+                    {"case_id": "perf2", "params": {"M": 64, "K": 128, "N": 128}, "baseline_ms": 0.04},
+                    {"case_id": "perf3", "params": {"M": 128, "K": 256, "N": 256}, "baseline_ms": 0.05},
+                    {"case_id": "perf4", "params": {"M": 256, "K": 512, "N": 512}, "baseline_ms": 0.06},
+                ],
+                "benchmark_test_cases_path": str(cases_path),
+                "shape_coverage_profile": "bucketed",
+            }
+        )
+    )
+
+    paths = write_task_files(
+        tasks,
+        tmp_path,
+        kernel_path=str(tmp_path / "kernel.py"),
+        kernel_type="triton",
+        input_dialect="plain_triton",
+        gluon_feature_mode="auto",
+        gluon_baseline_profile="raw",
+        allowed_output_dialects=["plain_triton", "amd_gluon"],
+        target_backend="hip/gfx942",
+        benchmark_shape_count=None,
+        benchmark_test_cases=[],
+        shape_coverage_profile="unknown",
+        baseline_metrics=str(bm_path),
+    )
+
+    meta, _body = read_task_file(paths[0])
+    assert meta["shape_coverage_profile"] == "bucketed"
+    assert meta["benchmark_shape_count"] == 4
+    assert [case["case_id"] for case in meta["benchmark_test_cases"]] == [
+        "perf1",
+        "perf2",
+        "perf3",
+        "perf4",
+    ]
+    assert meta["benchmark_test_cases_path"] == str(cases_path)
 
 
 def test_extract_kernel_meta_reinfers_unknown_gluon_type(tmp_path: Path):
