@@ -7,6 +7,7 @@ task planner, preprocessor, etc.).  The actual discovery logic lives in
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import subprocess
@@ -15,6 +16,8 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # Shared extension constants -- single source of truth
 CPP_EXTENSIONS = frozenset((".cpp", ".cc", ".cu", ".hip", ".cxx"))
@@ -537,6 +540,22 @@ def derive_shape_coverage_profile(
     return SHAPE_COVERAGE_MULTI
 
 
+@lru_cache(maxsize=128)
+def _warn_gluon_dialect_kernel_type_mismatch(kernel_type: str, input_dialect: str) -> None:
+    """Warn once for inconsistent Gluon metadata that would disable guidance."""
+    if input_dialect not in {NV_GLUON_DIALECT, AMD_GLUON_DIALECT}:
+        return
+    if kernel_type == "triton":
+        return
+    logger.warning(
+        "Gluon input_dialect=%s was provided with kernel_type=%s; "
+        "Gluon guidance is disabled unless kernel_type is triton. "
+        "Keep Gluon sources on the Triton-family route or fix discovery/config metadata.",
+        input_dialect,
+        kernel_type or "unknown",
+    )
+
+
 def feature_uses_gluon_guidance(
     kernel_type: Any,
     *,
@@ -555,14 +574,16 @@ def feature_uses_gluon_guidance(
     and avoids the historical ``feature_uses_gluon_guidance("triton", ...)``
     hard-coded literals.
     """
-    if str(kernel_type or "").strip().lower() != "triton":
+    normalized_kernel_type = str(kernel_type or "").strip().lower() or "unknown"
+    normalized_input_dialect = _normalize_input_dialect(input_dialect) or PLAIN_TRITON_DIALECT
+    if normalized_kernel_type != "triton":
+        _warn_gluon_dialect_kernel_type_mismatch(normalized_kernel_type, normalized_input_dialect)
         return False
 
-    normalized_input_dialect = _normalize_input_dialect(input_dialect) or PLAIN_TRITON_DIALECT
     normalized_feature_mode = _normalize_gluon_feature_mode(
         gluon_feature_mode,
         input_dialect=normalized_input_dialect,
-        kernel_type=kernel_type,
+        kernel_type=normalized_kernel_type,
     )
     if normalized_feature_mode == GLUON_FEATURE_MODE_OFF:
         return False
@@ -618,15 +639,17 @@ def build_gluon_feature_metadata(
     content: str | None = None,
 ) -> dict[str, Any]:
     """Build the shared Gluon feature metadata contract."""
+    normalized_kernel_type = str(kernel_type or "unknown").strip().lower() or "unknown"
     normalized_input_dialect = _normalize_input_dialect(input_dialect) or infer_input_dialect(
         kernel_path,
-        kernel_type,
+        normalized_kernel_type,
         content=content,
     )
+    _warn_gluon_dialect_kernel_type_mismatch(normalized_kernel_type, normalized_input_dialect)
     normalized_feature_mode = _normalize_gluon_feature_mode(
         gluon_feature_mode,
         input_dialect=normalized_input_dialect,
-        kernel_type=kernel_type,
+        kernel_type=normalized_kernel_type,
     )
     normalized_profile = _normalize_gluon_baseline_profile(gluon_baseline_profile)
     if normalized_feature_mode == GLUON_FEATURE_MODE_OFF:
@@ -680,7 +703,7 @@ def build_gluon_feature_metadata(
     )
 
     return {
-        "kernel_type": str(kernel_type or "unknown").strip().lower() or "unknown",
+        "kernel_type": normalized_kernel_type,
         "input_dialect": normalized_input_dialect,
         "gluon_feature_mode": normalized_feature_mode,
         "gluon_baseline_profile": normalized_profile,
@@ -783,7 +806,7 @@ class KernelMeta:
 
     kernel_path: str = ""
     kernel_name: str = ""
-    kernel_type: str = "unknown"  # triton, hip, ck, asm, unknown
+    kernel_type: str = "unknown"  # triton, hip, asm, flydsl, unknown
     kernel_language: str = "python"  # python, cpp, asm
     function_names: list[str] = field(default_factory=list)
     workspace_path: str = ""

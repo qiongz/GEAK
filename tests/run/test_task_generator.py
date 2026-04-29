@@ -292,6 +292,46 @@ def test_run_task_agent_enables_skills_for_triton(mock_default_agent, _mock_tool
 
 @patch("minisweagent.tools.tools_runtime.get_tools_list", return_value=[{"name": "str_replace_editor"}, {"name": "submit"}])
 @patch("minisweagent.agents.default.DefaultAgent")
+def test_run_task_agent_uses_round_scoped_log_file(mock_default_agent, _mock_tools, tmp_path: Path):
+    model = FakePlanningModel()
+    mock_default_agent.return_value.run.return_value = ("Submitted", "[]")
+    _write_knowledge_files(tmp_path)
+    log_dir = tmp_path / "taskgen_logs"
+
+    submitted = _run_task_agent(
+        kernel_path=str(tmp_path / "kernel.py"),
+        kernel_name="test_kernel",
+        kernel_type="triton",
+        kernel_language="python",
+        function_names=["kernel_fwd"],
+        workspace_path=str(tmp_path),
+        input_dialect="plain_triton",
+        gluon_feature_mode="off",
+        gluon_baseline_profile="raw",
+        allowed_output_dialects=["plain_triton"],
+        target_backend="hip/gfx942",
+        base_task_context="ctx",
+        model=model,
+        profiling_path=None,
+        commandment_path=None,
+        baseline_metrics_path=None,
+        deep_search_path=None,
+        previous_results_dir=None,
+        discovery_path=None,
+        codebase_context_path=None,
+        previous_tasks_dir=None,
+        round_evaluations=None,
+        current_round=3,
+        num_gpus=1,
+        output_dir=log_dir,
+    )
+
+    assert submitted == "[]"
+    assert mock_default_agent.return_value.log_file == log_dir / "task_generator_round_3.log"
+
+
+@patch("minisweagent.tools.tools_runtime.get_tools_list", return_value=[{"name": "str_replace_editor"}, {"name": "submit"}])
+@patch("minisweagent.agents.default.DefaultAgent")
 def test_run_task_agent_raw_profile_keeps_single_skill_tier(
     mock_default_agent, _mock_tools, tmp_path: Path
 ):

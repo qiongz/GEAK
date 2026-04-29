@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Advanced Micro Devices, Inc. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the multi-shape coverage planner extension.
 
 Covers four layers:
@@ -17,6 +20,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from minisweagent.agents.heterogeneous.task_generator import (
     _aggregate_prior_per_shape,
@@ -773,6 +777,28 @@ def test_feature_uses_gluon_guidance_from_meta_reads_kernel_type_from_meta() -> 
     # Empty / None feature_meta is safe.
     assert feature_uses_gluon_guidance_from_meta({}) is False
     assert feature_uses_gluon_guidance_from_meta(None) is False
+
+
+def test_gluon_input_dialect_with_non_triton_kernel_type_warns(tmp_path: Path) -> None:
+    from minisweagent.run.preprocess.discovery_types import (
+        build_gluon_feature_metadata,
+        feature_uses_gluon_guidance_from_meta,
+    )
+
+    with patch("minisweagent.run.preprocess.discovery_types.logger.warning") as mock_warning:
+        meta = build_gluon_feature_metadata(
+            tmp_path / "kernel.py",
+            "other",
+            input_dialect="amd_gluon",
+            gluon_feature_mode="auto",
+        )
+
+    assert meta["kernel_type"] == "other"
+    assert meta["input_dialect"] == "amd_gluon"
+    assert feature_uses_gluon_guidance_from_meta(meta) is False
+    mock_warning.assert_called_once()
+    assert "Gluon input_dialect=%s was provided with kernel_type=%s" in mock_warning.call_args.args[0]
+    assert mock_warning.call_args.args[1:3] == ("amd_gluon", "other")
 
 
 def test_filter_falls_back_to_whole_text_when_no_structure() -> None:

@@ -104,6 +104,31 @@ Otherwise, respond normally.
 
         return "\n".join(blocks)
 
+    @staticmethod
+    def _list_skill_material_subdirs(skill_root: Path) -> list[Path]:
+        """Immediate subdirectories of the skill folder (same directory as SKILL.md), resolved."""
+        root = skill_root.resolve()
+        if not root.is_dir():
+            return []
+        out: list[Path] = []
+        for child in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+            if child.is_dir() and not child.name.startswith("."):
+                out.append(child.resolve())
+        return out
+
+    @staticmethod
+    def _format_skill_material_paths(skill_root: Path) -> str:
+        """Human-readable block listing material dirs; empty if none."""
+        subdirs = SkillRuntime._list_skill_material_subdirs(skill_root)
+        if not subdirs:
+            return ""
+        bullets = "\n".join(f"- `{p}`" for p in subdirs)
+        return (
+            "\n\n## Skill material paths\n\n"
+            "Material for this skill (e.g. docs/, scripts/) is available under these directories:\n\n"
+            f"{bullets}\n"
+        )
+
     def load_skill_by_name(self, skill_name: str) -> dict:
         """Load a skill by its registered name."""
         results = {
@@ -123,7 +148,8 @@ Otherwise, respond normally.
 
         skill_md = skill.path / "SKILL.md"
         content = skill_md.read_text(encoding="utf-8")
-        results["output"] = f"\n# Loaded skill: {skill.name}\n{content}"
+        material = self._format_skill_material_paths(skill.path)
+        results["output"] = f"\n# Loaded skill: {skill.name}{material}\n{content}"
         skill.loaded = True
         return results
 

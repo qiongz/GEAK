@@ -1,6 +1,8 @@
 # Triton-Gluon
 
-This is the single GEAK document for the Triton-family Gluon feature.
+This is the single GEAK agent-facing document for the Triton-family Gluon
+feature. It is primarily read by planner and worker agents through
+`gluon_guide_path`, not by end users during normal GEAK invocation.
 
 The goal is not just to explain the API surface. The goal is to help GEAK
 correctly read, translate, generate, and optimize:
@@ -11,6 +13,23 @@ correctly read, translate, generate, and optimize:
 
 while staying grounded in what current Triton-family and AMD-facing Gluon
 implementations actually support today.
+
+## Repository wiring
+
+Latest `main` keeps structured optimization knowledge under the RAG MCP tree:
+
+```text
+mcp_tools/rag-mcp/knowledge-base/amd-knowledge-base/layer-3-libraries/compilers/triton-gluon-on-rocm.md
+```
+
+GEAK still injects this document explicitly into Triton-Gluon task prompts as
+`gluon_kb_path`. The RAG `query` / `optimize` tools may also retrieve it when
+RAG is enabled, but planner prompts should not depend on RAG alone. For
+Triton-Gluon tasks, the deterministic context files are:
+
+- `docs/triton_gluon.md` as `gluon_guide_path`;
+- the RAG MCP AMD KB entry above as `gluon_kb_path`;
+- `examples/triton_gluon_inputs/README.md` as `gluon_examples_path`.
 
 ## Quick section map for agents
 
@@ -465,8 +484,12 @@ kernel type.
   - `plain_triton`
   - `nv_gluon`
   - `amd_gluon`
+- if discovery, task frontmatter, or config metadata mentions a Gluon source,
+  keep the top-level route as `kernel_type = triton`; represent Gluon-specific
+  state through `input_dialect`, output dialect policy, and planner search
+  guidance inside the Triton-family path
 - default Triton runs use `gluon_feature_mode = auto`, so AMD Gluon is part of
-  the candidate search space without requiring the user to ask for it
+  the candidate search space when the planner receives Triton-family metadata
 - use `gluon_feature_mode` only as an explicit control for ablation or forced
   debugging:
   - `off`
@@ -481,6 +504,11 @@ Valid optimized outputs:
 - `amd_gluon`
 
 GEAK should never create a new optimized `nv_gluon` output path.
+
+Separate translation paths, such as latest-main `kernel_type = pytorch2flydsl`
+or detected `kernel_type = flydsl`, are independent of this contract. They may
+trigger FlyDSL translation / homogeneous routing, but they should not change how
+Triton or Triton-Gluon kernels are classified.
 
 ## 2. Runtime, version, and compilation model
 

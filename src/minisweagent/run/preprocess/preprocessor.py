@@ -179,6 +179,19 @@ def _focused_harness_candidate(disc_dict: dict[str, Any]) -> tuple[str, str] | N
     return focused_cmd, focused_harness
 
 
+def _restore_harness_file(harness_path: Path, original_source: str) -> bool:
+    try:
+        if not harness_path.is_file():
+            return False
+        current_source = harness_path.read_text()
+        if current_source == original_source:
+            return False
+        harness_path.write_text(original_source)
+        return True
+    except OSError:
+        return False
+
+
 def _normalize_candidate_identifier(value: str | Path) -> str:
     text = Path(str(value)).stem.lower()
     for prefix in ("benchmark_", "bench_", "test_", "focused_", "example_"):
@@ -412,6 +425,7 @@ def run_preprocessor(
     gluon_baseline_profile: str | None = None,
     target_backend: str | None = None,
     benchmark_timeout: int = 3600,
+    target_language: str | None = None,
 ) -> dict[str, Any]:
     """Run all preprocessing steps and return a context dict.
 
@@ -552,6 +566,12 @@ def run_preprocessor(
     ctx.update(feature_meta)
 
     logger.info("  Kernel: %s", kernel_path)
+
+    def _print(msg: str) -> None:
+        if console:
+            console.print(msg)
+        else:
+            print(msg, file=sys.stderr)
 
     # ── Fast path for eval_command: skip Steps 2-4 ───────────────────
     if eval_command:
@@ -888,6 +908,8 @@ def run_preprocessor(
                 # ── 3d. Shape fixer: verify shapes match benchmark/test file ──
                 if (benchmarks or tests) and _uta_model:
                     logger.info("--- Step 3d: Shape fixer (verify shapes) ---")
+                    harness_file: Path | None = None
+                    original_harness_source: str | None = None
                     try:
                         from minisweagent.run.preprocess.shape_fixer_agent import run_shape_fixer
 
@@ -905,29 +927,73 @@ def run_preprocessor(
                             bench_file = Path(tests[0]["file"])
                             logger.info("  Shape source (fallback to top test): %s", bench_file)
                         if harness_file.is_file() and bench_file is not None and bench_file.is_file():
-                            shapes_ok = run_shape_fixer(
-                                model=_uta_model,
-                                repo=Path(repo_root),
-                                harness_path=harness_file,
-                                benchmark_file=bench_file,
-                                kernel_path=Path(kernel_path),
-                                log_dir=output_dir,
-                                gpu_id=gpu_id,
-                            )
-                            if shapes_ok:
-                                logger.info("  Shape verification: OK")
-                                ok_revalidate, _, harness_results = execute_harness_validation(
-                                    str(harness_file),
-                                    repo_root=repo_root,
+                            original_harness_source = harness_file.read_text()
+                            shape_feedback: list[str] | None = None
+                            shape_fix_attempt = 0
+                            while True:
+                                shapes_ok = run_shape_fixer(
+                                    model=_uta_model,
+                                    repo=Path(repo_root),
+                                    harness_path=harness_file,
+                                    benchmark_file=bench_file,
+                                    kernel_path=Path(kernel_path),
+                                    log_dir=output_dir,
                                     gpu_id=gpu_id,
+                                    validation_feedback=shape_feedback,
                                 )
-                                if ok_revalidate:
-                                    logger.info("  Re-validation after shape fix: ALL MODES PASSED")
+                                if shapes_ok:
+                                    if shape_feedback:
+                                        logger.info("  Shape repair with failure context: OK")
+                                    else:
+                                        logger.info("  Shape verification: OK")
+
+                                    ok_revalidate, revalidate_errors, candidate_results = execute_harness_validation(
+                                        str(harness_file),
+                                        repo_root=repo_root,
+                                        gpu_id=gpu_id,
+                                    )
+                                    if ok_revalidate:
+                                        harness_results = candidate_results
+                                        logger.info("  Re-validation after shape fix: ALL MODES PASSED")
+                                        break
+
+                                    if shape_fix_attempt == 0:
+                                        shape_feedback = revalidate_errors
+                                        shape_fix_attempt += 1
+                                        logger.info(
+                                            "  Re-validation after shape fix: FAILED "
+                                            "(retrying shape fixer with failure context)"
+                                        )
+                                        continue
+
+                                    restored = original_harness_source is not None and _restore_harness_file(
+                                        harness_file, original_harness_source
+                                    )
+                                    if restored:
+                                        logger.info(
+                                            "  Re-validation after shape fix: FAILED "
+                                            "(restored original harness and kept the pre-fix validation results)"
+                                        )
+                                    else:
+                                        logger.info("  Re-validation after shape fix: FAILED")
+                                    break
+
+                                if shape_feedback:
+                                    logger.info("  Shape fixer repair attempt did not complete successfully")
                                 else:
-                                    logger.info("  Re-validation after shape fix: FAILED (reverting)")
-                            else:
-                                logger.info("  Shape fixer did not complete successfully")
+                                    logger.info("  Shape fixer did not complete successfully")
+                                if original_harness_source is not None and _restore_harness_file(
+                                    harness_file, original_harness_source
+                                ):
+                                    logger.info("  Restored original harness after incomplete shape fixer run")
+                                break
                     except Exception as exc:
+                        if (
+                            harness_file is not None
+                            and original_harness_source is not None
+                            and _restore_harness_file(harness_file, original_harness_source)
+                        ):
+                            logger.info("  Restored original harness after shape fixer failure")
                         logger.warning("Shape fixer failed: %s", exc, exc_info=True)
             except Exception as exc:
                 logger.warning(
@@ -982,6 +1048,44 @@ def run_preprocessor(
             testcase_selection["test_command"] = test_command
             testcase_selection["harness_path"] = ctx.get("harness_path")
             (output_dir / "testcase_selection.json").write_text(json.dumps(testcase_selection, indent=2, default=str))
+
+        # ── Step 4: Translation (conditional, after UTA) ─────────────
+        if target_language:
+            _print("[bold cyan]--- Step 4: Translation ---[/bold cyan]" if console else "--- Step 4: Translation ---")
+            from minisweagent.run.preprocess.translate import run_translation
+
+            translation_output_dir = output_dir / "translation"
+            translation_result = run_translation(
+                kernel_path=Path(kernel_path),
+                output_dir=translation_output_dir,
+                gpu_id=gpu_id,
+                target_language=target_language,
+                model=model,
+                model_factory=model_factory,
+                repo=Path(repo_root) if repo_root else None,
+                console=console,
+            )
+            ctx.update(translation_result)
+            if translation_result.get("translation_success"):
+                kernel_path = translation_result["translation_kernel_path"]
+                ctx["kernel_path"] = kernel_path
+                _print(f"  Translated kernel: {kernel_path}")
+                _harness = next(translation_output_dir.glob("test_*_translation_harness.py"), None)
+                if _harness and _harness.exists():
+                    test_command = f"{sys.executable} {_harness} --flydsl-kernel {kernel_path}"
+                    ctx["test_command"] = test_command
+                    ctx["harness_path"] = str(_harness)
+                    _print(f"  Translation harness as test_command: {test_command}")
+            else:
+                _errors = translation_result.get("translation_errors", [])
+                _src = translation_result.get("translation_source_language") or "source"
+                _print(
+                    f"  [yellow]Translation failed — continuing with original {_src} kernel[/yellow]"
+                    if console
+                    else f"  Translation failed — continuing with original {_src} kernel"
+                )
+                for _e in (_errors or [])[-3:]:
+                    _print(f"    {_e}")
 
         # GEAK_HARNESS_ONLY=1 skips profiling, baseline, and commandment steps.
         # Used by test_harness_variance.py to validate harness shapes quickly.
@@ -1091,7 +1195,7 @@ def run_preprocessor(
                     command=perf_cmd,
                     backend="metrix",
                     num_replays=3,
-                    quick=True,
+                    quick=False,
                     gpu_devices=str(gpu_id),
                     workdir=_cwd,
                 )
@@ -1469,6 +1573,11 @@ def main() -> None:
         default=None,
         help="Optional target backend override (default: hip/gfx942).",
     )
+    parser.add_argument(
+        "--kernel-type",
+        default=None,
+        help="Kernel type (e.g. pytorch2flydsl). Triggers translation when applicable.",
+    )
     args = parser.parse_args()
 
     try:
@@ -1499,6 +1608,7 @@ def main() -> None:
     print(f"  gluon_feature_mode:   {args.gluon_feature_mode}")
     print(f"  baseline_profile:     {args.gluon_baseline_profile}")
     print(f"  target_backend:       {args.target_backend}")
+    print(f"  kernel_type:          {args.kernel_type}")
     print("-" * 60)
     print(f"  GEAK_MODEL:                 {os.environ.get('GEAK_MODEL', '<not set>')}")
     print(f"  GEAK_MODEL_ENSEMBLE:        {os.environ.get('GEAK_MODEL_ENSEMBLE', '<not set>')}")
@@ -1523,6 +1633,7 @@ def main() -> None:
         gluon_feature_mode=args.gluon_feature_mode,
         gluon_baseline_profile=args.gluon_baseline_profile,
         target_backend=args.target_backend,
+        target_language="flydsl" if args.kernel_type == "pytorch2flydsl" else None,
     )
 
     print(json.dumps(ctx, indent=2, default=str))

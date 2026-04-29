@@ -103,10 +103,27 @@ def setup_eval_worktree(repo_root: str, patch_file: str, output_dir: Path) -> Pa
 
     patch_text = patch_path.read_text(encoding="utf-8", errors="replace")
     # errors="replace" is the Unicode error handling mode for str.decode()
+
+    # Discover sibling sub-agent worktree object stores so a 3-way fallback
+    # can bridge patch-lineage mismatches (e.g. when sub-agents were seeded
+    # with a pre-wrapped kernel blob whose ancestry the eval worktree does
+    # not share). We walk up from the patch file, find the first ``worktrees``
+    # directory, and collect the ``.git/objects`` path of each slot.
+    sibling_alternates: list[Path] = []
+    for ancestor in patch_path.resolve().parents:
+        wt_root = ancestor / "worktrees"
+        if wt_root.is_dir():
+            for slot in sorted(wt_root.iterdir()):
+                objects_dir = slot / ".git" / "objects"
+                if objects_dir.is_dir():
+                    sibling_alternates.append(objects_dir)
+            break
+
     apply_result, removed_paths = apply_patch_with_generated_helper_fallback(
         patch_text=patch_text,
         cwd=eval_dir,
         env=git_env,
+        object_alternates=sibling_alternates,
     )
     if removed_paths:
         logger.warning(
@@ -162,7 +179,17 @@ def build_eval_env(
     env["GEAK_GPU_DEVICE"] = str(gpu_id)
     env["HIP_VISIBLE_DEVICES"] = str(gpu_id)
     env["GEAK_BENCHMARK_EXTRA_ARGS"] = f"--iterations {iters}"
-    env["PYTHONPATH"] = f"{work_dir}:{repo_root}:{env.get('PYTHONPATH', '')}"
+    pp_parts = [str(work_dir), repo_root]
+    if "/tests/" in harness_path:
+        try:
+            hp = Path(harness_path).resolve()
+            for _ in range(3):
+                hp = hp.parent
+            pp_parts.append(str(hp))
+        except (OSError, ValueError):
+            pass
+    pp_parts.append(env.get("PYTHONPATH", ""))
+    env["PYTHONPATH"] = ":".join(p for p in pp_parts if p)
     alloc_conf = env.get("PYTORCH_CUDA_ALLOC_CONF", "")
     if "expandable_segments" in alloc_conf:
         logger.debug("build_eval_env: removing PYTORCH_CUDA_ALLOC_CONF with expandable_segments.")
@@ -581,6 +608,31 @@ def evaluate_round_best(
                 "candidate_shape_latency_ms": br.get("candidate_shape_latency_ms") or {},
             }
         )
+
+    if not candidates:
+        # Fallback: check for best_patch.diff directly in the round directory.
+        # The heterogeneous orchestrator LLM sometimes creates patches directly
+        # (e.g. when dispatch_tasks fails and it edits kernel.py manually).
+        for diff_name in ("best_patch.diff", "best_patch.patch"):
+            fallback_patch = results_dir / diff_name
+            if fallback_patch.exists() and fallback_patch.stat().st_size > 0:
+                logger.info(
+                    "Round %d: no best_results.json found, but found fallback patch: %s",
+                    round_num,
+                    fallback_patch,
+                )
+                candidates.append(
+                    {
+                        "task": "orchestrator_direct",
+                        "patch_file": str(fallback_patch),
+                        "speedup": 1.0,
+                        "kernel_time_ms": None,
+                        "per_shape_speedups": {},
+                        "baseline_shape_latency_ms": {},
+                        "candidate_shape_latency_ms": {},
+                    }
+                )
+                break
 
     if not candidates:
         logger.info("Round %d: no valid candidates for evaluation", round_num)
