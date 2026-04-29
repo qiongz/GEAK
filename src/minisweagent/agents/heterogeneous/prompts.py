@@ -270,6 +270,11 @@ priority after the required kernel-body Base tasks.
     tasks than GPUs, keep the task count; the GPU pool queues overflow tasks.
     Follow the layer order Base Set -> Extension L0 viability -> Shared paired
     mapping -> Extension L1 trait-specific lowering -> later-round Hybrid/mixed.
+    Base Set quota means mandatory family coverage first. Every Base Set
+    task_prompt must include `Base family: <family_id>` when the block lists a
+    family checklist. Shared tasks that map a Base strategy must include
+    `Shared source family: <family_id>`. Extension tasks must include
+    `Extension layer: L0`, `Extension layer: L1`, or `Extension layer: Hybrid`.
 17. If a "Shape Coverage Policy" block is present, treat it as mandatory.
     Each task_prompt MUST self-classify as exactly one of `single_shape_viability`,
     `shape_robust`, or `shape_bucketed`, and MUST NOT hardcode shape literals
@@ -317,6 +322,13 @@ sub-agent receives these paths automatically from the task metadata.
 compare its results against the baseline metrics provided in the task
 metadata. The sub-agent should report the specific metric improvement
 (e.g. duration reduction, bandwidth improvement) relative to baseline.
+
+**Family/layer tags**: If Search Space Allocation lists mandatory Base
+families, every Base Set task_prompt MUST contain exactly one line in the form
+`Base family: <family_id>`. Shared paired tasks MUST contain `Shared source
+family: <family_id>`. AMD Gluon Extension tasks MUST contain `Extension layer:
+L0`, `Extension layer: L1`, or `Extension layer: Hybrid`. These tags are used
+to audit that Base Triton coverage has not regressed.
 
 **COMMANDMENT adherence**: Each task_prompt MUST instruct the sub-agent
 to read and follow the COMMANDMENT file. The COMMANDMENT defines the
