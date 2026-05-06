@@ -18,6 +18,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from minisweagent.agents.heterogeneous.task_generator import (
     _aggregate_prior_per_shape,
     _base_extension_quotas,
@@ -33,8 +35,11 @@ from minisweagent.run.pipeline_helpers import (
     inject_pipeline_context,
 )
 from minisweagent.run.preprocess.benchmark_parsing import (
+    compute_best_patch,
     discover_performance_report,
+    extract_latency_ms,
     parse_performance_report_json,
+    parse_shape_latencies_ms,
     parse_test_case_count,
 )
 from minisweagent.run.preprocess.discovery_types import (
@@ -219,6 +224,45 @@ def test_parse_performance_report_json_torch2hip_baseline_only(tmp_path: Path) -
     cases = parse_performance_report_json(path)
     assert cases is not None
     assert [c["ms"] for c in cases] == [0.456, 1.234]
+
+
+def test_parse_case_id_shape_latencies_and_total_objective() -> None:
+    output = "pa_decode_small: 0.1759 ms\npa_decode_medium: 0.1823 ms\n"
+    assert parse_shape_latencies_ms(output) == {
+        "pa_decode_small": 0.1759,
+        "pa_decode_medium": 0.1823,
+    }
+    assert extract_latency_ms(output) == pytest.approx(0.3582)
+
+
+def test_compute_best_patch_uses_per_case_total_latency(tmp_path: Path) -> None:
+    patch_dir = tmp_path / "results" / "round_1" / "task"
+    patch_dir.mkdir(parents=True)
+    root = patch_dir.parent.parent
+    (root / "benchmark_baseline.txt").write_text(
+        "pa_decode_small: 0.1759 ms\npa_decode_medium: 0.1823 ms\n"
+    )
+    (patch_dir / "patch_1.patch").write_text("diff --git a/kernel.py b/kernel.py\n")
+    (patch_dir / "patch_1_test.txt").write_text(
+        "pa_decode_small: 0.1606 ms\npa_decode_medium: 0.1659 ms\n"
+    )
+    (patch_dir / "patch_2.patch").write_text("diff --git a/kernel.py b/kernel.py\n")
+    # Faster on small but a clear regression on medium; should be rejected.
+    (patch_dir / "patch_2_test.txt").write_text(
+        "pa_decode_small: 0.1000 ms\npa_decode_medium: 0.2500 ms\n"
+    )
+
+    best = compute_best_patch(patch_dir)
+    assert best is not None
+    assert best["best_patch_id"] == "patch_1"
+    assert best["objective"] == "total_shape_latency_ms"
+    assert best["baseline_latency_ms"] == pytest.approx(0.3582)
+    assert best["candidate_latency_ms"] == pytest.approx(0.3265)
+    assert best["baseline_shape_geomean_ms"] == pytest.approx(0.179071, rel=1e-5)
+    assert best["candidate_shape_geomean_ms"] == pytest.approx(0.163228, rel=1e-5)
+    assert best["best_patch_speedup"] == pytest.approx(1.09709, rel=1e-5)
+    assert best["per_shape_speedups"]["pa_decode_small"]["speedup"] == pytest.approx(1.095268, rel=1e-5)
+    assert best["per_shape_speedups"]["pa_decode_medium"]["speedup"] == pytest.approx(1.098854, rel=1e-5)
 
 
 def test_shape_list_bucket_detection_uses_dimension_indices() -> None:
