@@ -221,6 +221,31 @@ def test_search_space_allocation_lists_base_family_checklist() -> None:
     assert "Base family: <family_id>" in guidance
 
 
+def test_search_space_allocation_includes_evidence_anchored_composition() -> None:
+    guidance = _build_search_space_allocation_guidance(
+        {**_gluon_feature_meta("plain_triton"), "shape_coverage_profile": "multi"},
+        traits=["semantics_contract", "dialect_plain_triton", "layout_basic", "memory_amd_buffer", "matrix_dot"],
+        num_gpus=8,
+        baseline_metrics={"bottleneck": "memory", "duration_us": 180.0},
+        previous_results_text=(
+            "### base-split-k\n"
+            "- patch_8 [BEST] verified_speedup=1.85x\n"
+            "### ext-l1-gluon-buffer-load\n"
+            "- patch_3 verified_speedup=1.07x\n"
+        ),
+        previous_tasks_text="- **ext-l1-gluon-buffer-load** (input_dialect=amd_gluon): buffer load policy\n",
+    )
+
+    assert "## Evidence-Anchored Composition" in guidance
+    assert "safe anchor" in guidance
+    assert "`shared_transplant`" in guidance
+    assert "`gluon_variant`" in guidance
+    assert "`hybrid_dispatch`" in guidance
+    assert "`memory_access_policy`" in guidance
+    assert "Comparison target: safe_anchor" in guidance
+    assert "generate at least one `shared_transplant` or `gluon_variant` task" in guidance
+
+
 def test_search_space_allocation_degrades_after_gluon_failure() -> None:
     guidance = _build_search_space_allocation_guidance(
         _gluon_feature_meta("plain_triton"),
@@ -900,5 +925,7 @@ def test_system_prompt_deprioritizes_dispatch_path_work():
     assert "- 15: Wrapper/launch-config/dispatch-only changes (lowest priority)" in _SYSTEM_PROMPT
     assert 'Generate at least 3 tasks from the "Prefer First" families' in _SYSTEM_PROMPT
     assert 'If an "Output Dialect Planning Policy" block is present' in _SYSTEM_PROMPT
+    assert 'If an "Evidence-Anchored Composition" block is present' in _SYSTEM_PROMPT
+    assert "Composition type: base_refine | shared_transplant | gluon_variant | hybrid_dispatch" in _SYSTEM_PROMPT
     assert "leave some gpus idle" in _SYSTEM_PROMPT.lower()
     assert "Generate at least one priority-0 task that specifically checks the dispatch path" not in _SYSTEM_PROMPT
