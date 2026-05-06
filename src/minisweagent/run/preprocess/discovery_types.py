@@ -474,6 +474,22 @@ def _normalize_benchmark_test_cases(value: Any) -> list[dict[str, Any]]:
     return cases
 
 
+@lru_cache(maxsize=128)
+def _warn_gluon_dialect_kernel_type_mismatch(kernel_type: str, input_dialect: str) -> None:
+    """Warn once for inconsistent Gluon metadata that would disable guidance."""
+    if input_dialect not in {NV_GLUON_DIALECT, AMD_GLUON_DIALECT}:
+        return
+    if str(kernel_type or "").strip().lower() == "triton":
+        return
+    logger.warning(
+        "Gluon input_dialect=%s was provided with kernel_type=%s; "
+        "Gluon guidance is disabled unless kernel_type is triton. "
+        "Keep Gluon sources on the Triton-family route or fix discovery/config metadata.",
+        input_dialect,
+        kernel_type,
+    )
+
+
 def _shape_signature_text(test_cases: list[dict[str, Any]]) -> str:
     """Serialize ``benchmark_test_cases`` params into a search signature."""
     chunks: list[str] = []
@@ -555,10 +571,12 @@ def feature_uses_gluon_guidance(
     and avoids the historical ``feature_uses_gluon_guidance("triton", ...)``
     hard-coded literals.
     """
-    if str(kernel_type or "").strip().lower() != "triton":
+    normalized_kernel_type = str(kernel_type or "").strip().lower()
+    normalized_input_dialect = _normalize_input_dialect(input_dialect) or PLAIN_TRITON_DIALECT
+    if normalized_kernel_type != "triton":
+        _warn_gluon_dialect_kernel_type_mismatch(normalized_kernel_type, normalized_input_dialect)
         return False
 
-    normalized_input_dialect = _normalize_input_dialect(input_dialect) or PLAIN_TRITON_DIALECT
     normalized_feature_mode = _normalize_gluon_feature_mode(
         gluon_feature_mode,
         input_dialect=normalized_input_dialect,
@@ -618,11 +636,13 @@ def build_gluon_feature_metadata(
     content: str | None = None,
 ) -> dict[str, Any]:
     """Build the shared Gluon feature metadata contract."""
+    normalized_kernel_type = str(kernel_type or "unknown").strip().lower() or "unknown"
     normalized_input_dialect = _normalize_input_dialect(input_dialect) or infer_input_dialect(
         kernel_path,
         kernel_type,
         content=content,
     )
+    _warn_gluon_dialect_kernel_type_mismatch(normalized_kernel_type, normalized_input_dialect)
     normalized_feature_mode = _normalize_gluon_feature_mode(
         gluon_feature_mode,
         input_dialect=normalized_input_dialect,
@@ -680,7 +700,7 @@ def build_gluon_feature_metadata(
     )
 
     return {
-        "kernel_type": str(kernel_type or "unknown").strip().lower() or "unknown",
+        "kernel_type": normalized_kernel_type,
         "input_dialect": normalized_input_dialect,
         "gluon_feature_mode": normalized_feature_mode,
         "gluon_baseline_profile": normalized_profile,

@@ -86,7 +86,10 @@ _GEAK_REPO_ROOT = get_repo_root()
 
 _KNOWLEDGE_BASE_REL = "knowledge_base/optimization_strategies.py"
 _GLUON_GUIDE_REL = "docs/triton_gluon.md"
-_GLUON_KB_REL = "knowledge-base/amd-knowledge-base/layer-3-libraries/compilers/triton-gluon-on-rocm.md"
+_GLUON_KB_REL = (
+    "mcp_tools/rag-mcp/knowledge-base/amd-knowledge-base/"
+    "layer-3-libraries/compilers/triton-gluon-on-rocm.md"
+)
 _GLUON_EXAMPLES_REL = "examples/triton_gluon_inputs/README.md"
 _TRITON_FAMILY_MARKERS = (
     "@triton",
@@ -767,6 +770,15 @@ def _find_knowledge_base(workspace: Path) -> Path | None:
     return _find_repo_relative_file(workspace, _KNOWLEDGE_BASE_REL)
 
 
+def _resolve_existing_repo_file(relative_paths: list[str]) -> Path | None:
+    """Resolve the first existing repo-relative file from an ordered set."""
+    for rel_path in relative_paths:
+        candidate = (_GEAK_REPO_ROOT / rel_path).resolve()
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def _resolve_task_knowledge_paths(
     workspace: Path,
     *,
@@ -784,15 +796,9 @@ def _resolve_task_knowledge_paths(
         allowed_output_dialects=feature_meta.get("allowed_output_dialects"),
     )
 
-    gluon_guide_path = (_GEAK_REPO_ROOT / _GLUON_GUIDE_REL).resolve() if uses_gluon_guidance else None
-    gluon_kb_path = (_GEAK_REPO_ROOT / _GLUON_KB_REL).resolve() if uses_gluon_guidance else None
-    gluon_examples_path = (_GEAK_REPO_ROOT / _GLUON_EXAMPLES_REL).resolve() if uses_gluon_guidance else None
-    if gluon_guide_path and not gluon_guide_path.exists():
-        gluon_guide_path = None
-    if gluon_kb_path and not gluon_kb_path.exists():
-        gluon_kb_path = None
-    if gluon_examples_path and not gluon_examples_path.exists():
-        gluon_examples_path = None
+    gluon_guide_path = _resolve_existing_repo_file([_GLUON_GUIDE_REL]) if uses_gluon_guidance else None
+    gluon_kb_path = _resolve_existing_repo_file([_GLUON_KB_REL]) if uses_gluon_guidance else None
+    gluon_examples_path = _resolve_existing_repo_file([_GLUON_EXAMPLES_REL]) if uses_gluon_guidance else None
 
     primary_knowledge_path = knowledge_base_path
     if primary_knowledge_path is None and uses_gluon_guidance:
@@ -2165,7 +2171,7 @@ def _run_task_agent(
         if output_dir:
             _log_dir = Path(output_dir)
             _log_dir.mkdir(parents=True, exist_ok=True)
-            agent.log_file = _log_dir / "task_generator.log"
+            agent.log_file = _log_dir / f"task_generator_round_{current_round}.log"
 
         _context_files = [
             k
