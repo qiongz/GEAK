@@ -57,6 +57,68 @@ Do **not** stop at summarizing the skill. Apply it to the current kernel:
 - Treat plain Triton winning the benchmark as a valid outcome, not as a failure
   to use Gluon.
 
+## Evidence-anchored composition
+
+Gluon is additive in three possible ways:
+
+- **Gluon-positive**: the final best patch is `amd_gluon` or `mixed` and beats
+  the best Base Set competitor.
+- **Gluon-informed**: the final best patch is still `plain_triton`, but it
+  transplants a component first validated in a Shared or Extension task.
+- **Gluon-neutral**: Gluon candidates pass or fail independently, but the final
+  best patch uses only Base evidence.
+
+When prior-round evidence exists, do not treat Base and Gluon as a binary
+choice. Anchor composition on the current safe path:
+
+1. Identify the **safe anchor**:
+   - prefer the best verified Base Set patch;
+   - if no Base patch is usable, use the best verified non-regressing patch;
+   - if no verified patch exists, fall back to the original baseline.
+2. Identify portable components from Shared or Extension evidence:
+   - `algorithm_decomposition`
+   - `tiling_or_blocking`
+   - `memory_access_policy`
+   - `layout_or_indexing`
+   - `matrix_lowering`
+   - `mask_or_boundary_simplification`
+   - `accumulator_representation`
+   - `launch_or_dispatch_policy`
+   - `scheduler_or_persistent_policy`
+   - `dtype_or_precision_policy`
+3. Generate composition candidates around the safe anchor:
+   - `base_refine`: continue optimizing the safe anchor.
+   - `shared_transplant`: preserve the safe anchor algorithm and transplant one
+     portable component from Shared/Extension evidence. Output may remain
+     `plain_triton`.
+   - `gluon_variant`: re-express the safe anchor algorithm in AMD Gluon when
+     the useful component requires explicit layout, AMD buffer paths, matrix
+     lowering, or other dialect-specific machinery.
+   - `hybrid_dispatch`: use host-side shape or feature dispatch only when
+     per-shape or sub-operation evidence shows different winners.
+
+Composition candidates must compare against the safe anchor, not only the
+original baseline. Reject a composition if it regresses any benchmark shape
+relative to the safe anchor.
+
+Usually portable / stackable components:
+
+- memory access policy (`eviction_policy`, cache/load ordering, buffer-load
+  insight);
+- mask or boundary simplification;
+- indexing / pointer arithmetic cleanup;
+- dtype / cast / precision cleanup;
+- shape dispatch when different shapes have different winners.
+
+Usually mutually exclusive without a new design:
+
+- two different tiling or blocking schemes;
+- 1D accumulator versus 2D accumulator;
+- split-K / multipass reduction versus persistent single-kernel scheduling;
+- full plain-Triton loop structure versus full Gluon explicit-layout rewrite;
+- autotune-key dispatch versus manual host-side dispatch;
+- two patches that both change launcher signature or constexpr contract.
+
 ## Multi-shape correctness == performance
 
 Modern Triton/Gluon harnesses (AgentKernelArena PR #32, AITER repository

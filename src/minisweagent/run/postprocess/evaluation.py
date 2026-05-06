@@ -432,6 +432,13 @@ def run_profile(
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning("Failed to parse profile output: %s", exc)
         return
+    if isinstance(profile_result, dict) and profile_result.get("success") is False:
+        logger.warning("PROFILE reported failure: %s", profile_result.get("error", "unknown error"))
+        round_eval["profile_comparison"] = {
+            "success": False,
+            "error": profile_result.get("error", "PROFILE reported failure"),
+        }
+        return
 
     baseline_metrics_path = pp_dir / "baseline_metrics.json"
     if not baseline_metrics_path.exists():
@@ -446,7 +453,12 @@ def run_profile(
 
     from minisweagent.run.preprocess.baseline import build_baseline_metrics
 
-    optimized_metrics = build_baseline_metrics(profile_result, include_all=True)
+    try:
+        optimized_metrics = build_baseline_metrics(profile_result, include_all=True)
+    except (TypeError, ValueError) as exc:
+        logger.warning("PROFILE comparison skipped: %s", exc)
+        round_eval["profile_comparison"] = {"error": str(exc)}
+        return
     comparison: dict[str, Any] = {
         "baseline": baseline_metrics,
         "optimized": optimized_metrics,

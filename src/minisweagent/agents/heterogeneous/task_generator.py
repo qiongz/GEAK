@@ -374,6 +374,7 @@ def generate_tasks(
         baseline_metrics_path=baseline_metrics_path,
         previous_results_dir=previous_results_dir,
         previous_tasks_dir=previous_tasks_dir,
+        current_round=current_round,
         num_gpus=num_gpus,
     )
 
@@ -572,6 +573,7 @@ def _task_generation_audit_inputs(
     baseline_metrics_path: Path | None,
     previous_results_dir: Path | None,
     previous_tasks_dir: Path | None,
+    current_round: int,
     num_gpus: int,
 ) -> tuple[list[str], int]:
     """Return Base family and Extension layer expectations for submitted tasks."""
@@ -608,7 +610,7 @@ def _task_generation_audit_inputs(
         if previous_results_dir and Path(previous_results_dir).is_dir():
             prior_text += _scan_previous_results(Path(previous_results_dir))
         if previous_tasks_dir and Path(previous_tasks_dir).is_dir():
-            prior_text += "\n" + _scan_previous_tasks(Path(previous_tasks_dir))
+            prior_text += "\n" + _scan_previous_tasks(Path(previous_tasks_dir), current_round)
         previous_signal = _previous_gluon_signal(_filter_gluon_relevant_text(prior_text))
         _, _, extension_slots = _base_extension_quotas(
             num_gpus,
@@ -1021,6 +1023,34 @@ def _render_base_family_checklist(required_families: list[str]) -> list[str]:
         "- Autotune-only or generic memory-coalescing tasks do not satisfy a missing mandatory family unless they are attached to one of the family IDs above."
     )
     return lines
+
+
+def _build_evidence_anchored_composition_guidance(has_prior_evidence: bool) -> str:
+    """Render generic Base/Gluon composition rules for later-round planning."""
+    lines = [
+        "## Evidence-Anchored Composition",
+        "- Do not treat Base Triton and AMD Gluon as a binary choice. Use prior evidence to compose around the current safe anchor.",
+        "- Safe anchor selection: prefer the best verified Base Set patch; if no Base patch is usable, use the best verified non-regressing patch; otherwise use the original baseline.",
+        "- Portable component types: `algorithm_decomposition`, `tiling_or_blocking`, `memory_access_policy`, `layout_or_indexing`, `matrix_lowering`, `mask_or_boundary_simplification`, `accumulator_representation`, `launch_or_dispatch_policy`, `scheduler_or_persistent_policy`, `dtype_or_precision_policy`.",
+        "- Usually portable components include memory/load policy, mask or boundary simplification, indexing/pointer cleanup, dtype/cast cleanup, and shape dispatch evidence.",
+        "- Usually mutually exclusive components include two tile schemes, 1D vs 2D accumulator, split-K vs persistent scheduling, full Triton loop structure vs full Gluon layout rewrite, autotune-key dispatch vs manual host dispatch, and two launcher/constexpr contract changes.",
+        "- Composition task types:",
+        "  - `base_refine`: continue optimizing the safe anchor.",
+        "  - `shared_transplant`: preserve the safe anchor algorithm and transplant one portable component from Shared/Extension evidence; output may remain plain Triton.",
+        "  - `gluon_variant`: re-express the safe anchor algorithm in AMD Gluon only when the useful component requires explicit layout, AMD buffer paths, matrix lowering, or dialect-specific machinery.",
+        "  - `hybrid_dispatch`: use host-side shape/feature dispatch only when per-shape or sub-operation evidence shows different winners.",
+        "- Every composition task must include `Composition type: ...`, `Safe anchor: ...`, `Source component: ...`, and `Comparison target: safe_anchor` in task_prompt.",
+        "- Composition candidates must compare against the safe anchor, not only the original baseline, and must reject any per-shape regression relative to that safe anchor.",
+    ]
+    if has_prior_evidence:
+        lines.append(
+            "- Prior-round evidence is available: generate at least one `shared_transplant` or `gluon_variant` task that preserves the safe anchor and applies one portable component from Shared/Extension evidence when such a component is present."
+        )
+    else:
+        lines.append(
+            "- No prior-round evidence yet: do not force composition in round 1; generate Base anchors and Gluon/Shared evidence so later rounds can compose safely."
+        )
+    return "\n".join(lines)
 
 
 def _gluon_trait_headings(traits: list[str]) -> list[str]:
@@ -1467,6 +1497,8 @@ def _build_search_space_allocation_guidance(
         lines.append("- Prior Gluon work produced only weak or inconclusive evidence; keep Gluon at L0/narrow refinement and spend extra width on Base Triton no-regression tasks.")
     elif previous_signal == "won":
         lines.append("- Because prior Gluon work appears promising, Gluon-specific refinement may expand, but keep a Base or Shared competitor.")
+    has_prior_evidence = bool((previous_results_text or "").strip() or (previous_tasks_text or "").strip())
+    lines.append(_build_evidence_anchored_composition_guidance(has_prior_evidence))
     return "\n".join(lines)
 
 

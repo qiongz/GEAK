@@ -275,6 +275,14 @@ priority after the required kernel-body Base tasks.
     one Base Set task must be `shape_robust`; Extension Set tasks beyond round 1
     must NOT be `single_shape_viability`. When prior per-shape regressions are
     listed, generate at least one task that explicitly addresses those shapes.
+18. If an "Evidence-Anchored Composition" block is present, treat it as
+    mandatory. Identify the safe anchor from prior verified evidence, then
+    generate composition tasks around that anchor instead of treating Base and
+    Gluon as a binary choice. Composition tasks must preserve the safe-anchor
+    algorithm, transplant at most one portable component unless the prompt
+    explicitly asks for a bundle, and compare against the safe anchor as well as
+    the original baseline. Do not combine mutually exclusive components in one
+    task.
 
 ## Output format
 
@@ -321,6 +329,13 @@ families, every Base Set task_prompt MUST contain exactly one line in the form
 family: <family_id>`. AMD Gluon Extension tasks MUST contain `Extension layer:
 L0`, `Extension layer: L1`, or `Extension layer: Hybrid`. These tags are used
 to audit that Base Triton coverage has not regressed.
+
+**Composition tags**: If Evidence-Anchored Composition is present, every
+composition task_prompt MUST include:
+- `Composition type: base_refine | shared_transplant | gluon_variant | hybrid_dispatch`
+- `Safe anchor: <task>/<patch or original_baseline>`
+- `Source component: <component_type> from <task>/<patch or none>`
+- `Comparison target: safe_anchor`
 
 **COMMANDMENT adherence**: Each task_prompt MUST instruct the sub-agent
 to read and follow the COMMANDMENT file. The COMMANDMENT defines the
