@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+_PER_SHAPE_REGRESSION_SPEEDUP_FLOOR = 0.95
 
 
 def parse_median_latency_ms(output: str) -> float | None:
@@ -331,13 +333,42 @@ def discover_performance_report(
 def parse_shape_latencies_ms(output: str) -> dict[str, float]:
     """Extract per-shape latencies from harness benchmark output.
 
-    Expected format:
+    Expected formats:
         ``(32,4096): 0.0503 ms``
+        ``pa_decode_small: 0.1759 ms``
     """
     shape_latencies: dict[str, float] = {}
     for m in re.finditer(r"^\s*(\([^)]*\)):\s*([\d.]+(?:e[+-]?\d+)?)\s*ms\s*$", output, re.MULTILINE):
         shape_latencies[m.group(1)] = float(m.group(2))
+    for m in re.finditer(
+        r"^\s*([A-Za-z][A-Za-z0-9_.\-/]*)\s*:\s*([\d.]+(?:e[+-]?\d+)?)\s*ms\s*$",
+        output,
+        re.MULTILINE,
+    ):
+        case_id = m.group(1)
+        # Skip generic summary labels that are already handled by explicit
+        # latency parsers; per-case IDs should remain as shape keys.
+        if case_id.lower() in {"median", "geomean", "mean", "total", "latency"}:
+            continue
+        shape_latencies[case_id] = float(m.group(2))
     return shape_latencies
+
+
+def _parse_shape_total_latency_ms(output: str) -> float | None:
+    """Return total latency across parsed per-shape benchmark lines."""
+    shape_latencies = parse_shape_latencies_ms(output)
+    if not shape_latencies:
+        return None
+    total = sum(shape_latencies.values())
+    return total if total > 0 else None
+
+
+def _geomean_ms(shape_latencies: dict[str, float]) -> float | None:
+    """Return geometric mean latency for positive per-shape timings."""
+    values = [value for value in shape_latencies.values() if value > 0]
+    if not values:
+        return None
+    return math.exp(sum(math.log(value) for value in values) / len(values))
 
 
 def extract_benchmark_config_lines(output: str) -> list[str] | None:
@@ -429,6 +460,9 @@ def _extract_latency(text: str) -> float | None:
     val = parse_google_benchmark_ms(text)
     if val is not None:
         return val
+    val = _parse_shape_total_latency_ms(text)
+    if val is not None:
+        return val
 
     return _universal_latency_fallback(text)
 
@@ -476,6 +510,15 @@ def compute_shape_speedups(
             "speedup": round(baseline_ms / candidate_ms, 6),
         }
     return results
+
+
+def _has_significant_shape_regression(
+    shape_speedups: dict[str, dict[str, float]],
+    *,
+    floor: float = _PER_SHAPE_REGRESSION_SPEEDUP_FLOOR,
+) -> bool:
+    """Return True when any parsed shape regresses beyond the noise floor."""
+    return any((info.get("speedup") or 0.0) < floor for info in shape_speedups.values())
 
 
 def _find_original_baseline_ms(patch_dir: Path) -> float | None:
@@ -540,6 +583,8 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
     best_patch_size: int = 0
     best_shape_speedups: dict[str, dict[str, float]] = {}
     best_candidate_shape_latencies: dict[str, float] = {}
+    best_candidate_shape_geomean: float | None = None
+    baseline_shape_geomean = _geomean_ms(baseline_shape_latencies)
 
     for test_file in sorted(patch_dir.glob("patch_*_test.txt")):
         name = test_file.stem.replace("_test", "")
@@ -556,6 +601,15 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         if candidate_ms is None or candidate_ms <= 0:
             continue
         candidate_shape_latencies = parse_shape_latencies_ms(candidate_text)
+        shape_speedups = compute_shape_speedups(baseline_shape_latencies, candidate_shape_latencies)
+        if shape_speedups and _has_significant_shape_regression(shape_speedups):
+            logger.info(
+                "Skipping %s due to per-shape regression below %.2fx: %s",
+                name,
+                _PER_SHAPE_REGRESSION_SPEEDUP_FLOOR,
+                shape_speedups,
+            )
+            continue
 
         speedup = baseline_ms / candidate_ms
         if speedup > best_speedup:
@@ -566,7 +620,8 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
             best_test_file = str(test_file)
             best_patch_size = psz
             best_candidate_shape_latencies = candidate_shape_latencies
-            best_shape_speedups = compute_shape_speedups(baseline_shape_latencies, candidate_shape_latencies)
+            best_candidate_shape_geomean = _geomean_ms(candidate_shape_latencies)
+            best_shape_speedups = shape_speedups
 
     if best_patch_id is None or best_speedup <= 1.0:
         return None
@@ -582,7 +637,12 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         "baseline_source": baseline_source,
         "baseline_shape_latency_ms": baseline_shape_latencies,
         "candidate_shape_latency_ms": best_candidate_shape_latencies,
+        "baseline_shape_geomean_ms": round(baseline_shape_geomean, 6) if baseline_shape_geomean else None,
+        "candidate_shape_geomean_ms": (
+            round(best_candidate_shape_geomean, 6) if best_candidate_shape_geomean else None
+        ),
         "per_shape_speedups": best_shape_speedups,
+        "objective": "total_shape_latency_ms" if best_shape_speedups else "latency_ms",
         "llm_selection_analysis": (
             f"Deterministic: baseline={baseline_ms:.4f}ms ({baseline_source}), "
             f"candidate={best_candidate_ms:.4f}ms from {best_patch_id}. "
