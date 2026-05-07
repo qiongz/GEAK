@@ -23,15 +23,12 @@ If the primary routed docs lack a detail:
 
 1. Re-check the `Task routing` table in `00_always_read.md`.
 2. Read the nearest primary doc listed above.
-3. If the detail is still missing, read only the missing section from
-   `docs/triton_gluon.md`.
-4. Use the long-form detail narrowly.
-5. Report which split-doc route was insufficient so the missing detail can be
+3. If the detail is still missing, stop instead of guessing.
+4. Report which split-doc route was insufficient so the missing detail can be
    moved into the proper primary doc.
 
 ## Do Not Guess
 
 If a Gluon API, layout rule, architecture support rule, or benchmark contract is
-not present in the routed split docs, do not invent it from memory. Either use
-the final long-form escape hatch above or report the missing documentation as a
-blocker.
+not present in the routed split docs, do not invent it from memory. Report the
+missing documentation as a blocker so the primary split docs can be updated.

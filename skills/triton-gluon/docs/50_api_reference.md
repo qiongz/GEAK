@@ -4,6 +4,22 @@ Read this file when a worker needs concrete API surface, code skeletons, or
 failure-driven debug order. It expands the concise rules in
 `20_component_traits.md`.
 
+Do not read this whole file by default. Use the routed section(s) below.
+
+## Read Only These Sections
+
+| If the task needs... | Read |
+| --- | --- |
+| import path, `@gluon.jit`, launcher, host-created layouts | `imports`, `jit_entry_and_host_launcher` |
+| exact common Gluon API names (`full`, reductions, shape ops, atomics) | `core_language_and_layout_surface`, `common_language_api_surface` |
+| plain Triton -> Gluon mechanical rewrite mapping | `common_rewrite_table` |
+| AOT compile, signatures, target triples, scratch failures | `aot_compile_api_surface`, `version_and_compatibility_checklist` |
+| shared memory, barriers, async phase ordering | `shared_memory_synchronization_cluster` |
+| descriptor/TDM/tensor-memory concepts | `descriptor_and_tensor_memory_surface` |
+| AMD MFMA/WMMA/scaled quick syntax | `amd_quick_patterns` |
+| NVIDIA TMA/WGMMA/Blackwell recognition only | `nvidia_quick_patterns` |
+| failure triage | `common_failures_and_fix_order`; read `common_pitfalls` only if stuck |
+
 ## Internal Index
 
 - `imports`

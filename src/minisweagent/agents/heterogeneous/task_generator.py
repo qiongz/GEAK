@@ -86,7 +86,6 @@ _GEAK_REPO_ROOT = get_repo_root()
 
 _KNOWLEDGE_BASE_REL = "knowledge_base/optimization_strategies.py"
 _GLUON_SKILL_REL = "skills/triton-gluon/SKILL.md"
-_GLUON_GUIDE_REL = "docs/triton_gluon.md"
 _GLUON_KB_REL = "knowledge-base/amd-knowledge-base/layer-3-libraries/compilers/triton-gluon-on-rocm.md"
 _GLUON_EXAMPLES_REL = "examples/triton_gluon_inputs/README.md"
 _GLUON_SPLIT_DOC_RELS = {
@@ -798,7 +797,6 @@ def _resolve_task_knowledge_paths(
     )
 
     gluon_skill_path = (_GEAK_REPO_ROOT / _GLUON_SKILL_REL).resolve() if uses_gluon_guidance else None
-    gluon_guide_path = (_GEAK_REPO_ROOT / _GLUON_GUIDE_REL).resolve() if uses_gluon_guidance else None
     gluon_kb_path = (_GEAK_REPO_ROOT / _GLUON_KB_REL).resolve() if uses_gluon_guidance else None
     gluon_examples_path = (_GEAK_REPO_ROOT / _GLUON_EXAMPLES_REL).resolve() if uses_gluon_guidance else None
     split_doc_paths = {
@@ -807,8 +805,6 @@ def _resolve_task_knowledge_paths(
     } if uses_gluon_guidance else {}
     if gluon_skill_path and not gluon_skill_path.exists():
         gluon_skill_path = None
-    if gluon_guide_path and not gluon_guide_path.exists():
-        gluon_guide_path = None
     if gluon_kb_path and not gluon_kb_path.exists():
         gluon_kb_path = None
     if gluon_examples_path and not gluon_examples_path.exists():
@@ -821,12 +817,11 @@ def _resolve_task_knowledge_paths(
 
     primary_knowledge_path = knowledge_base_path
     if primary_knowledge_path is None and uses_gluon_guidance:
-        primary_knowledge_path = gluon_kb_path or gluon_guide_path
+        primary_knowledge_path = gluon_kb_path
 
     resolved = {
         "knowledge_base_path": str(primary_knowledge_path) if primary_knowledge_path else "",
         "gluon_skill_path": str(gluon_skill_path) if gluon_skill_path else "",
-        "gluon_guide_path": str(gluon_guide_path) if gluon_guide_path else "",
         "gluon_kb_path": str(gluon_kb_path) if gluon_kb_path else "",
         "gluon_examples_path": str(gluon_examples_path) if gluon_examples_path else "",
     }
@@ -1697,7 +1692,7 @@ def _build_gluon_planning_traits_guidance(
         "## Gluon Planning Traits",
         f"- Detected traits: {', '.join(f'`{trait}`' for trait in traits)}",
         "- Use these traits to allocate candidate task slots. They are planning constraints, not implementation templates.",
-        "- Read guidance: do not read the whole long guide first. Start with `skills/triton-gluon/docs/00_always_read.md`, use its `stable_split_doc_index`, then view only the split-doc files and stable headings relevant to this task:",
+        "- Read guidance: start with `skills/triton-gluon/docs/00_always_read.md`, use its `stable_split_doc_index`, then view only the split-doc files and stable headings relevant to this task:",
         *[f"  - `{heading}`" for heading in _gluon_trait_headings(traits)],
         "",
         "Prefer First:",

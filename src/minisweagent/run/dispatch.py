@@ -498,7 +498,6 @@ def task_file_to_agent_task(task_file: Path):
         feature_metadata=feature_meta,
         knowledge_base_path=meta.get("knowledge_base_path"),
         gluon_skill_path=meta.get("gluon_skill_path"),
-        gluon_guide_path=meta.get("gluon_guide_path"),
         gluon_kb_path=meta.get("gluon_kb_path"),
         gluon_examples_path=meta.get("gluon_examples_path"),
         gluon_always_read_path=meta.get("gluon_always_read_path"),

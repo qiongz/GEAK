@@ -5,6 +5,9 @@ the stable contract shared by Base, Shared, Extension, and Hybrid tasks.
 
 ## Internal Index
 
+- `non_negotiables`
+- `required_before_editing_or_save_and_test`
+- `self_check`
 - `product_contract`
 - `stable_split_doc_index`
 - `semantic_contract`
@@ -14,6 +17,42 @@ the stable contract shared by Base, Shared, Extension, and Hybrid tasks.
 - `multi_shape_contract`
 - `detailed_reference_index`
 - `anti_patterns`
+
+## non_negotiables
+
+- Keep `kernel_type = triton`.
+- Valid optimized outputs are `plain_triton`, `amd_gluon`, or `mixed`.
+- Never produce optimized `nv_gluon`.
+- Required `amd_gluon` tasks must produce real AMD Gluon or a valid `mixed`
+  path. Pure Triton fallback is not a success.
+- `mixed` means explicit host-side dispatch between verified plain Triton and
+  AMD Gluon paths; it is not an input dialect.
+- Gluon is additive. Do not remove Base Set coverage.
+- Compile-only success is not enough.
+
+## required_before_editing_or_save_and_test
+
+- Read this file first.
+- Use `stable_split_doc_index` and `Task routing` to choose exact split-doc
+  files and headings.
+- If task metadata provides `required_gluon_docs`, view every listed absolute
+  path with `str_replace_editor command="view"` before editing or calling
+  `save_and_test`.
+- Do not guess Gluon API names from memory.
+- If routed docs lack a required detail, read `70_backup_details.md`; use
+  the missing-doc report path there if the detail is still absent.
+
+## self_check
+
+Before reporting success:
+
+- Required docs were viewed through `str_replace_editor view`.
+- Source semantics, wrapper ABI, masks, dtype behavior, and benchmark intent are
+  preserved.
+- Required `amd_gluon` output is `amd_gluon` or valid `mixed`, not pure Triton.
+- Required `mixed` output contains visible dispatch/no-regression semantics.
+- Every benchmark shape passes correctness and avoids material regression.
+- The patch does not modify harness, environment, or benchmark contract.
 
 ## product_contract
 
@@ -30,11 +69,10 @@ the stable contract shared by Base, Shared, Extension, and Hybrid tasks.
 
 ## stable_split_doc_index
 
-Use this stable index instead of reading the long-form guide first. Do not
+Use this stable index instead of reading broad background references. Do not
 implement from memory or guess missing Gluon APIs. A planner or worker must map
 the task to the exact file and heading below before generating or editing a
-Gluon candidate. The heading names intentionally mirror `docs/triton_gluon.md`
-so prompts and worker tasks can jump to the same trait names in split docs.
+Gluon candidate.
 
 Worker gate: the planner or dispatch metadata may provide `required_gluon_docs`.
 Before editing or calling `save_and_test`, view every listed absolute path with
@@ -124,12 +162,12 @@ Task routing:
 | real attention/decode/GEMM/preshuffled/gfx1250 pattern | `60_real_patterns.md`, `real_patterns_from_aiter` and `optimization_paths_by_kernel_family` |
 | source shows `DistributedLinearLayout`, `PartitionedSharedLayout`, host `TensorDescriptor`, nested 3D/5D layouts, unshuffle transforms, JIT/AOT package gates | `60_real_patterns.md`, `source_first_triggers`; then read operator-local source before editing |
 | one schematic example would help | at most one relevant section in `40_examples.md` after reading the trait/policy file above |
-| routed split docs still lack a needed nuance or rationale | `70_backup_details.md`; do not jump directly to `docs/triton_gluon.md` |
+| routed split docs still lack a needed nuance or rationale | `70_backup_details.md`; report the missing route if still unresolved |
 
 If a task does not match any route above, stop and read `00_always_read.md`
 again plus the closest trait/policy file. If the routed primary docs lack the
-required detail, read `70_backup_details.md` before using
-`docs/triton_gluon.md`.
+required detail, read `70_backup_details.md` and report the missing split-doc
+route if still unresolved.
 
 ## semantic_contract
 
@@ -245,7 +283,7 @@ Read only the file needed for the current task:
 - One schematic example is enough: read at most one relevant section from
   `40_examples.md`.
 - If the primary split docs still do not answer the question, read
-  `70_backup_details.md` before using `docs/triton_gluon.md`.
+  `70_backup_details.md` and report the missing route if still unresolved.
 
 ## anti_patterns
 
