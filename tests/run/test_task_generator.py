@@ -431,6 +431,95 @@ def test_parse_llm_response_infers_mixed_for_hybrid_before_extension_default() -
     assert tasks[0].config["required_output_dialect"] == "mixed"
 
 
+def test_parse_llm_response_infers_memory_lowering_profile_for_l1_buffer_task() -> None:
+    tasks = _parse_llm_response(
+        json.dumps(
+            [
+                {
+                    "label": "ext-l1-amd-gluon-buffer-loads",
+                    "priority": 7,
+                    "agent_type": "strategy_agent",
+                    "kernel_language": "python",
+                    "task_prompt": "Extension Set task\nExtension layer: L1\nRefine the verified Gluon anchor with buffer_load and buffer_store for KV cache memory path.",
+                }
+            ]
+        ),
+        FakeAgentClass,
+    )
+
+    cfg = tasks[0].config
+    assert cfg["gluon_doc_profile"] == "memory_lowering"
+    assert "gluon_component_traits_path" in cfg["required_gluon_docs"]
+    assert "gluon_architecture_notes_path" in cfg["required_gluon_docs"]
+    assert "gluon_api_reference_path" in cfg["required_gluon_docs"]
+    assert "gluon_real_patterns_path" in cfg["required_gluon_docs"]
+
+
+def test_parse_llm_response_infers_gluon_variant_from_anchor_profile() -> None:
+    tasks = _parse_llm_response(
+        json.dumps(
+            [
+                {
+                    "label": "compose-gluon-variant",
+                    "priority": 6,
+                    "agent_type": "strategy_agent",
+                    "kernel_language": "python",
+                    "task_prompt": (
+                        "Extension Set task\n"
+                        "Composition type: gluon_variant\n"
+                        "Safe anchor: round_1/base-best/patch_4\n"
+                        "Source component: matrix_lowering from round_1/ext-l0/patch_2\n"
+                        "Comparison target: safe_anchor\n"
+                        "Allowed change: re-express safe anchor algorithm in AMD Gluon only\n"
+                        "Reject if: changes launcher ABI or adds scheduler changes"
+                    ),
+                }
+            ]
+        ),
+        FakeAgentClass,
+    )
+
+    cfg = tasks[0].config
+    assert cfg["gluon_doc_profile"] == "gluon_variant_from_anchor"
+    assert "gluon_component_traits_path" in cfg["required_gluon_docs"]
+    assert "gluon_architecture_notes_path" in cfg["required_gluon_docs"]
+    assert "gluon_api_reference_path" in cfg["required_gluon_docs"]
+    assert "gluon_real_patterns_path" in cfg["required_gluon_docs"]
+
+
+def test_parse_llm_response_infers_hybrid_dispatch_from_evidence_profile() -> None:
+    tasks = _parse_llm_response(
+        json.dumps(
+            [
+                {
+                    "label": "hybrid-dispatch-from-evidence",
+                    "priority": 6,
+                    "agent_type": "strategy_agent",
+                    "kernel_language": "python",
+                    "task_prompt": (
+                        "Extension Set task\n"
+                        "Extension layer: Hybrid\n"
+                        "Composition type: hybrid_dispatch\n"
+                        "Safe anchor: round_2/base-best/patch_7\n"
+                        "Source component: launch_or_dispatch_policy from per-shape evidence\n"
+                        "Comparison target: safe_anchor\n"
+                        "Allowed change: add host-side per-shape dispatch only\n"
+                        "Reject if: removes Base path for regressed shapes"
+                    ),
+                }
+            ]
+        ),
+        FakeAgentClass,
+    )
+
+    cfg = tasks[0].config
+    assert cfg["gluon_doc_profile"] == "hybrid_dispatch_from_evidence"
+    assert cfg["required_output_dialect"] == "mixed"
+    assert "gluon_component_traits_path" in cfg["required_gluon_docs"]
+    assert "gluon_architecture_notes_path" in cfg["required_gluon_docs"]
+    assert "gluon_real_patterns_path" in cfg["required_gluon_docs"]
+
+
 def test_extension_audit_does_not_count_shared_gluon_variant_as_extension() -> None:
     tasks = _parse_llm_response(
         json.dumps(

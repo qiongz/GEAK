@@ -84,11 +84,32 @@ Composition type: base_refine | shared_transplant | gluon_variant | hybrid_dispa
 Safe anchor: <task>/<patch or original_baseline>
 Source component: <component_type> from <task>/<patch or none>
 Comparison target: safe_anchor
+Allowed change: <one component or one dispatch decision>
+Reject if: <conditions that invalidate the patch>
 ```
 
 Composition candidates must compare against the safe anchor, not only the
 original baseline. A patch that is faster than the original baseline but slower
 than the safe anchor is not a valid composition win.
+
+L2 / composition constraints:
+
+- Change at most one component unless the task explicitly says
+  `bundle_allowed=true`.
+- `base_refine` may refine the safe Base anchor, but must not add a Gluon
+  rewrite.
+- `shared_transplant` may transplant one portable component into the safe
+  anchor. It must preserve launcher ABI and safe-anchor algorithm unless the
+  allowed change says otherwise.
+- `gluon_variant` / `gluon_variant_from_anchor` must re-express the safe-anchor
+  algorithm in AMD Gluon. It must preserve anchor semantics before adding
+  memory, matrix, scheduler, or dispatch changes.
+- `hybrid_dispatch` / `hybrid_dispatch_from_evidence` must add visible
+  host-side shape/feature dispatch around verified Base and Gluon candidates.
+  It must keep the Base path for shapes or sub-operations where Base wins.
+- Reject a composition if it changes multiple mutually exclusive components,
+  changes launcher/constexpr contract without saying so, drops the safe anchor,
+  or regresses any benchmark shape.
 
 ## trait_policy_separation
 
@@ -152,7 +173,7 @@ the source of truth for worker `save_and_test` gating; heuristic inference is
 only for old or hand-written tasks.
 
 ```yaml
-gluon_doc_profile: extension_l0_minimal | nv_to_amd_translation | matrix_lowering | shape_bucketed_dispatch | jit_aot_sensitive | shared_transplant | hybrid_dispatch
+gluon_doc_profile: extension_l0_minimal | nv_to_amd_translation | memory_lowering | matrix_lowering | shape_bucketed_dispatch | jit_aot_sensitive | shared_transplant | gluon_variant_from_anchor | hybrid_dispatch | hybrid_dispatch_from_evidence
 required_gluon_docs:
   - gluon_skill_path
   - gluon_always_read_path
@@ -165,6 +186,11 @@ Profile guidance:
   `gluon_api_reference_path`.
 - `nv_to_amd_translation`: add `gluon_component_traits_path`,
   `gluon_architecture_notes_path`, and `gluon_real_patterns_path`.
+- `memory_lowering`: add `gluon_component_traits_path`,
+  `gluon_architecture_notes_path`, `gluon_api_reference_path`, and
+  `gluon_real_patterns_path`. This profile must refine a verified Gluon layout
+  anchor; do not wrap the original plain Triton body in `@gluon.jit` just to add
+  `buffer_load` / `buffer_store`.
 - `matrix_lowering`: add `gluon_component_traits_path`,
   `gluon_architecture_notes_path`, and `gluon_api_reference_path`.
 - `shape_bucketed_dispatch`: add `gluon_component_traits_path`,
@@ -174,8 +200,15 @@ Profile guidance:
 - `shared_transplant`: add `gluon_component_traits_path` and
   `gluon_real_patterns_path` when the source component comes from real Gluon or
   aiter evidence.
+- `gluon_variant_from_anchor`: add `gluon_component_traits_path`,
+  `gluon_architecture_notes_path`, `gluon_api_reference_path`, and
+  `gluon_real_patterns_path`. The task must name the safe anchor and preserve
+  its algorithm before changing performance components.
 - `hybrid_dispatch`: add `gluon_component_traits_path`,
   `gluon_architecture_notes_path`, and `gluon_real_patterns_path`.
+- `hybrid_dispatch_from_evidence`: add `gluon_component_traits_path`,
+  `gluon_architecture_notes_path`, and `gluon_real_patterns_path`. The task must
+  name per-shape or sub-operation evidence for each dispatch branch.
 
 Do not include `gluon_examples_doc_path` unless the task explicitly needs a
 schematic example. Examples are not common context.
@@ -186,13 +219,18 @@ Round 1:
 
 - fill mandatory Base families;
 - include one Extension L0 if AMD Gluon is allowed;
+- for layout-heavy kernels, make Extension L0 a narrow compileable subpath
+  rather than a full-kernel Gluon rewrite;
 - include small Shared probes when budget allows.
 
 Round 2:
 
 - refine the safe Base anchor;
 - add shared transplants from useful Extension / Shared evidence;
-- create Gluon variants only when traits or evidence justify them.
+- create Gluon variants only when traits or evidence justify them;
+- make Extension L1 memory/buffer lowering refine the best correctness-passing
+  Gluon L0 anchor. If no Gluon anchor passed, shrink the task to a layout or
+  memory smoke path instead of restarting from plain Triton.
 
 Round 3:
 

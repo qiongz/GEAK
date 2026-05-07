@@ -1130,7 +1130,11 @@ def _infer_search_set_and_required_output(label: str, task_prompt: str, item: di
 def _infer_gluon_doc_profile(label: str, task_prompt: str, search_set: str, required_output: str) -> str:
     text = f"{label}\n{task_prompt}\n{search_set}\n{required_output}".lower()
     if "hybrid_dispatch" in text or "extension layer: hybrid" in text or required_output == "mixed":
+        if "evidence" in text or "safe anchor" in text or "per-shape" in text or "sub-operation" in text:
+            return "hybrid_dispatch_from_evidence"
         return "hybrid_dispatch"
+    if "gluon_variant" in text or "gluon variant" in text:
+        return "gluon_variant_from_anchor"
     if "shared_transplant" in text or search_set == "shared":
         return "shared_transplant"
     if "nv_gluon" in text or "nvidia" in text or "translation" in text:
@@ -1139,6 +1143,8 @@ def _infer_gluon_doc_profile(label: str, task_prompt: str, search_set: str, requ
         return "shape_bucketed_dispatch"
     if any(marker in text for marker in ("jit", "aot", "prebuilt", "compile_gluon", "signature", "waves_per_eu", "scratch")):
         return "jit_aot_sensitive"
+    if any(marker in text for marker in ("buffer", "buffer_load", "buffer_store", "memory", "load", "store", "kv", "cache")):
+        return "memory_lowering"
     if any(marker in text for marker in ("matrix", "dot", "mfma", "wmma", "scaled", "gemm", "fp8", "fp4")):
         return "matrix_lowering"
     if search_set == "extension" and required_output == "amd_gluon":
@@ -1166,9 +1172,9 @@ def _infer_required_gluon_doc_keys(
 
     if any(marker in text for marker in ("gluon", "amd_gluon", "nv_gluon", "extension", "shared", "matrix", "memory", "layout")):
         add("gluon_component_traits_path")
-    if required_output == "amd_gluon" or profile in {"extension_l0_minimal", "matrix_lowering", "jit_aot_sensitive"}:
+    if required_output == "amd_gluon" or profile in {"extension_l0_minimal", "memory_lowering", "matrix_lowering", "jit_aot_sensitive", "gluon_variant_from_anchor"}:
         add("gluon_api_reference_path")
-    if profile in {"nv_to_amd_translation", "matrix_lowering", "shape_bucketed_dispatch", "jit_aot_sensitive", "hybrid_dispatch"} or any(
+    if profile in {"nv_to_amd_translation", "memory_lowering", "matrix_lowering", "shape_bucketed_dispatch", "jit_aot_sensitive", "gluon_variant_from_anchor", "hybrid_dispatch", "hybrid_dispatch_from_evidence"} or any(
         marker in text
         for marker in (
             "gfx",
@@ -1192,7 +1198,7 @@ def _infer_required_gluon_doc_keys(
         )
     ):
         add("gluon_architecture_notes_path")
-    if profile in {"nv_to_amd_translation", "shape_bucketed_dispatch", "shared_transplant", "hybrid_dispatch"} or any(
+    if profile in {"nv_to_amd_translation", "memory_lowering", "shape_bucketed_dispatch", "shared_transplant", "gluon_variant_from_anchor", "hybrid_dispatch", "hybrid_dispatch_from_evidence"} or any(
         marker in text
         for marker in (
             "aiter",

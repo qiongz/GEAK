@@ -16,6 +16,7 @@ Do not read this whole file by default. Use the routed section(s) below.
 | AOT compile, signatures, target triples, scratch failures | `aot_compile_api_surface`, `version_and_compatibility_checklist` |
 | shared memory, barriers, async phase ordering | `shared_memory_synchronization_cluster` |
 | descriptor/TDM/tensor-memory concepts | `descriptor_and_tensor_memory_surface` |
+| `[:, None]`, `[None, :]`, or broadcast layout errors | `slice_broadcast_recipe` |
 | AMD MFMA/WMMA/scaled quick syntax | `amd_quick_patterns` |
 | NVIDIA TMA/WGMMA/Blackwell recognition only | `nvidia_quick_patterns` |
 | failure triage | `common_failures_and_fix_order`; read `common_pitfalls` only if stuck |
@@ -28,6 +29,7 @@ Do not read this whole file by default. Use the routed section(s) below.
 - `common_language_api_surface`
 - `common_rewrite_table`
 - `aot_compile_api_surface`
+- `slice_broadcast_recipe`
 - `shared_memory_synchronization_cluster`
 - `descriptor_and_tensor_memory_surface`
 - `amd_quick_patterns`
@@ -200,6 +202,44 @@ Planning implications:
 | `tl.dot` / `tl.dot_scaled` | result layout + operand layouts + `convert_layout` + target-specific matrix op | Always; not a direct rename target |
 | tensor descriptor helpers | target-specific descriptor family | Only when the target family actually supports descriptors or tensor memory |
 | implicit shared-memory staging | `allocate_shared_memory` after the first correct candidate | Only after blocked-layout or matrix path is correct |
+
+## slice_broadcast_recipe
+
+Gluon broadcasting is parent-layout sensitive. Treat `[:, None]` and
+`[None, :]` as layout operations, not plain NumPy syntax.
+
+Bad pattern:
+
+```python
+# H index comes from [H, C], R index comes from [H, R].
+# The expanded tensors do not share one parent layout.
+head_hc = gl.arange(0, H, layout=gl.SliceLayout(1, blocked_hc))
+offs_r = gl.arange(0, R, layout=gl.SliceLayout(0, blocked_hr))
+expr = head_hc[:, None] * stride_h + offs_r[None, :]
+```
+
+Good pattern:
+
+```python
+# Both 1D tensors are slices of the same [H, R] parent layout.
+slice_h_hr: gl.constexpr = gl.SliceLayout(1, blocked_hr)
+slice_r_hr: gl.constexpr = gl.SliceLayout(0, blocked_hr)
+head_hr = gl.arange(0, H, layout=slice_h_hr)
+offs_r_hr = gl.arange(0, R, layout=slice_r_hr)
+expr = head_hr[:, None] * stride_h + offs_r_hr[None, :]
+```
+
+Rules:
+
+- Pick the logical parent layout for each 2D expression first.
+- Derive every broadcasted 1D index from `SliceLayout(axis, parent)` of that
+  exact parent.
+- Use separate index tensors for separate parent contexts (`head_hc`,
+  `head_hr`, etc.).
+- Avoid `convert_layout` as a way to re-parent a 1D tensor before
+  `[:, None]` / `[None, :]`; regenerate the index from the right parent layout.
+- Mask tensors follow the same rule. Mask layout mismatches are correctness
+  problems, not cleanup opportunities.
 
 ## aot_compile_api_surface
 

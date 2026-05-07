@@ -1,6 +1,7 @@
 # Triton-Gluon
 
-This is the single GEAK document for the Triton-family Gluon feature.
+Legacy long-form backup for the Triton-family Gluon feature. Agent-facing
+workflow and targeted references now live under `skills/triton-gluon/docs/`.
 
 Note: the agent-facing guide is now split for faster targeted reading under
 `skills/triton-gluon/docs/`. Keep this long document as a backup reference.
