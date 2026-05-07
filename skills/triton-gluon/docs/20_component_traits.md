@@ -36,6 +36,9 @@ Search policy and task allocation live in `10_search_policies.md`.
   chain. Do not mix a `gl.arange(..., layout=...)` for one axis with leftover
   `tl.arange`, `tl.zeros`, `tl.full`, `tl.load`, `tl.where`, or `tl.dot` for
   the same Gluon subpath.
+- Device scalar/math in the edited Gluon subpath should also stay in Gluon
+  namespace: use `gl.cdiv`, `gl.minimum`, `gl.maximum`, `gl.exp`, `gl.where`,
+  etc. Host-side launch math outside `@gluon.jit` may still use `triton.cdiv`.
 - `BlockedLayout.size_per_thread` should be derived from the tile and launch
   contract. Avoid arbitrary values; on current Gluon layouts values are expected
   to be powers of two and to multiply with `threads_per_warp` and
@@ -93,6 +96,16 @@ Good signs:
 - existing AMD Gluon code path uses buffer operations.
 
 Do not mix CDNA memory assumptions with gfx1250 descriptor paths.
+
+Buffer dtype rules:
+
+- `buffer_load` `other` must be a typed Gluon value compatible with the loaded
+  element dtype. Prefer `gl.full(shape, 0.0, ptr.dtype.element_ty, layout=...)`
+  over a bare Python literal.
+- `buffer_store` `stored_value` must match the destination pointer element dtype.
+  Cast accumulators or widened compute values before storing.
+- If the task cannot name the loaded dtype, stored dtype, and value layout before
+  editing, keep the patch on generic `gl.load` / `gl.store`.
 
 ### Trait: memory_shared_async_descriptor
 

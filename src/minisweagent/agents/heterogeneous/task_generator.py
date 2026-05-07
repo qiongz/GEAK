@@ -757,6 +757,8 @@ def write_task_files(
                 metadata["gluon_doc_profile"] = t.config["gluon_doc_profile"]
             if t.config.get("required_gluon_docs"):
                 metadata["required_gluon_docs"] = list(t.config["required_gluon_docs"])
+            if t.config.get("required_patch_target_symbols"):
+                metadata["required_patch_target_symbols"] = list(t.config["required_patch_target_symbols"])
         body = f"# {t.label}\n\n{t.task}\n"
         write_task_file(task_path, metadata, body)
         paths.append(task_path)
@@ -1101,6 +1103,30 @@ def _build_evidence_anchored_composition_guidance(has_prior_evidence: bool) -> s
 def _parse_tagged_value(text: str, tag: str) -> str | None:
     match = re.search(rf"{re.escape(tag)}\s*:\s*`?([A-Za-z0-9_/-]+)`?", text, re.IGNORECASE)
     return match.group(1).strip().lower() if match else None
+
+
+def _infer_required_patch_target_symbols(task_prompt: str, item: dict[str, Any] | None = None) -> list[str]:
+    item = item or {}
+    raw = item.get("required_patch_target_symbols")
+    if isinstance(raw, str):
+        symbols = [part.strip().strip("`") for part in raw.split(",")]
+    elif isinstance(raw, list):
+        symbols = [str(part).strip().strip("`") for part in raw]
+    else:
+        symbols = []
+
+    for match in re.finditer(
+        r"^\s*(?:Target symbol|Required patch target symbols?)\s*:\s*(.+?)\s*$",
+        task_prompt,
+        re.IGNORECASE | re.MULTILINE,
+    ):
+        symbols.extend(part.strip().strip("`") for part in match.group(1).split(","))
+
+    unique: list[str] = []
+    for symbol in symbols:
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", symbol) and symbol not in unique:
+            unique.append(symbol)
+    return unique
 
 
 def _infer_search_set_and_required_output(label: str, task_prompt: str, item: dict[str, Any] | None = None) -> tuple[str, str]:
@@ -1656,6 +1682,9 @@ def _build_search_space_allocation_guidance(
         "- Round 1 with only one Extension slot should produce exactly one L0 minimal viability task, not multiple Gluon tasks.",
         "- Shared Set tasks must include `Shared source family: <base_family_id>` when they map a Base strategy into a paired comparison.",
         "- Extension Set tasks must include `Extension layer: L0`, `Extension layer: L1`, or `Extension layer: Hybrid` in task_prompt.",
+        "- Stage-specific Extension L1 tasks must include `Target symbol: <function/helper>` in task_prompt and top-level `required_patch_target_symbols`; a patch that only changes a different stage is not a valid success.",
+        "- AMD Gluon tasks must reject leftover `tl.*` device APIs in the edited `@gluon.jit` path, including scalar/math calls such as `tl.cdiv`, `tl.minimum`, `tl.maximum`, and `tl.exp`; host launch math outside the Gluon kernel is separate.",
+        "- Buffer lowering tasks must state the `buffer_load other` dtype/layout and `buffer_store stored_value` dtype contract before asking the worker to edit.",
         "- Plain Triton fallback is not a valid success for `required_output_dialect=amd_gluon`; fallback is only evidence after a real Gluon attempt using `from triton.experimental import gluon` fails and the failure is recorded.",
         "- If a plain Triton candidate wins, accept it as the best result rather than forcing more Gluon work.",
         "- If a Triton strategy wins and maps cleanly to Gluon traits, a later round may create an AMD Gluon variant of that winning strategy.",
@@ -2598,6 +2627,9 @@ def _parse_llm_response(
             "gluon_doc_profile": gluon_doc_profile,
             "required_gluon_docs": required_gluon_docs,
         }
+        required_patch_target_symbols = _infer_required_patch_target_symbols(task_prompt, item)
+        if required_patch_target_symbols:
+            cfg["required_patch_target_symbols"] = required_patch_target_symbols
 
         tasks.append(
             AgentTask(

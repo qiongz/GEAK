@@ -740,6 +740,8 @@ def test_run_task_agent_plain_triton_auto_prefers_amd_gluon_first(
     assert "Knowledge lookup contract: write a Gluon knowledge lookup plan before" in system_prompt
     assert "Implementation contract: write a Gluon implementation plan before" in system_prompt
     assert "leftover plain Triton tensor APIs" in system_prompt
+    assert "required_patch_target_symbols" in system_prompt
+    assert "AMD buffer ops" in system_prompt
 
 
 @patch("minisweagent.tools.tools_runtime.get_tools_list", return_value=[{"name": "str_replace_editor"}, {"name": "submit"}])

@@ -60,8 +60,15 @@ torch2hip tasks.
      `gl.full(..., layout=...)`;
    - every broadcast or `[:, None]` / `[None, :]` expression and its matching
      `SliceLayout(axis, parent)`;
+   - every `tl.*` device scalar/math use in the edited Gluon path and its
+     `gl.*` equivalent (`gl.cdiv`, `gl.minimum`, `gl.maximum`, `gl.exp`,
+     `gl.where`, etc.);
+   - for buffer ops, the loaded element dtype, typed `other` value/layout, and
+     `stored_value` dtype before using `buffer_load` / `buffer_store`;
    - whether the task is L0, L1, or Hybrid, and the single subpath/component it
-     is allowed to change.
+     is allowed to change. If the task names a stage/helper, write
+     `Target symbol: <symbol>` and do not modify a different stage as the
+     successful patch.
 
 `save_and_test` enforces the required-doc gate for Gluon tasks.
 
@@ -109,6 +116,10 @@ implementation plan above, then edit only the scoped path.
   `convert_layout`, and valid `AMDMFMALayout.instr_shape` are known.
 - Module wiring: define the Gluon helper in the edited module before importing
   or dispatching to it. Do not reference guessed `_..._gluon` symbols.
+- Buffer ops: prefer generic `gl.load` / `gl.store` first. When using AMD
+  `buffer_load`, create `other` as a typed Gluon tensor compatible with
+  `ptr.dtype.element_ty`; when using `buffer_store`, cast `stored_value` to the
+  destination pointer element dtype if needed.
 
 ## Planner Metadata Contract
 

@@ -378,14 +378,24 @@ Required AMD Gluon Extension task_prompt content:
   If no anchor exists, tell the worker to shrink to an L0-style layout/memory
   smoke path rather than doing MFMA or buffer lowering from the original plain
   Triton body.
+- For stage-specific L1 tasks, include `Target symbol: <function/helper>` in
+  task_prompt and top-level `required_patch_target_symbols`. The selected patch
+  must touch that symbol; changing a different stage is target mismatch.
+- Require Gluon device scalar/math (`gl.cdiv`, `gl.minimum`, `gl.maximum`,
+  `gl.exp`, `gl.where`, etc.) in the edited `@gluon.jit` path instead of
+  leftover `tl.*` device math. Host launch math may remain outside the kernel.
+- For AMD buffer ops, require the implementation plan to name `other`
+  dtype/layout and `stored_value` dtype. Do not ask for buffer lowering if the
+  worker cannot derive those dtypes from pointer element types.
 - Include `Reject if:` conditions covering leftover plain Triton tensor APIs
   inside the edited `@gluon.jit` path, guessed `_..._gluon` imports, invalid
   MFMA/instr_shape assumptions, and parent-layout/broadcast mismatch.
 
 **Gluon documentation gate metadata**: For Triton-family tasks that use Gluon
 guidance, task objects should include optional top-level fields
-`gluon_doc_profile` and `required_gluon_docs`. `gluon_doc_profile` should be one
-of `extension_l0_minimal`, `nv_to_amd_translation`, `memory_lowering`,
+`gluon_doc_profile`, `required_gluon_docs`, and, for stage/helper-specific
+tasks, `required_patch_target_symbols`. `gluon_doc_profile` should be one of
+`extension_l0_minimal`, `nv_to_amd_translation`, `memory_lowering`,
 `matrix_lowering`, `shape_bucketed_dispatch`, `jit_aot_sensitive`,
 `shared_transplant`, `gluon_variant_from_anchor`, `hybrid_dispatch`, or
 `hybrid_dispatch_from_evidence` when one applies.
