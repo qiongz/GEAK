@@ -242,7 +242,8 @@ Gluon implementation plan:
 - Module wiring: helper functions being defined and how the host dispatch calls
   them.
   If the task names a stage or helper, include `Target symbol: <symbol>` and
-  only report success if the patch touches that symbol.
+  only report success if the patch touches that exact symbol and executes the
+  intended Gluon path.
 ```
 
 Rules:
@@ -260,6 +261,10 @@ Rules:
 - If a stage-specific L1 task cannot name the exact function/helper it must
   touch, reduce or rewrite the task before editing. Changing a different stage
   is not a valid success.
+- Defining `target_gluon` while the host/wrapper still dispatches the plain
+  `target` path is not a valid Gluon execution result. The plan must name the
+  call/dispatch line that executes the Gluon helper, or directly convert the
+  original target function that existing dispatch already calls.
 - If L1 has no correctness-passing Gluon/mixed anchor, do not attempt MFMA or
   buffer lowering over the full original kernel; shrink to an L0-style smoke
   path and record that no anchor exists.

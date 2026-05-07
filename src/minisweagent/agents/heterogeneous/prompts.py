@@ -380,7 +380,9 @@ Required AMD Gluon Extension task_prompt content:
   Triton body.
 - For stage-specific L1 tasks, include `Target symbol: <function/helper>` in
   task_prompt and top-level `required_patch_target_symbols`. The selected patch
-  must touch that symbol; changing a different stage is target mismatch.
+  must touch that exact symbol and execute the intended Gluon path; defining a
+  `_..._gluon` helper while dispatch still uses the plain Triton path is target
+  mismatch.
 - Require Gluon device scalar/math (`gl.cdiv`, `gl.minimum`, `gl.maximum`,
   `gl.exp`, `gl.where`, etc.) in the edited `@gluon.jit` path instead of
   leftover `tl.*` device math. Host launch math may remain outside the kernel.

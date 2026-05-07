@@ -68,7 +68,9 @@ torch2hip tasks.
    - whether the task is L0, L1, or Hybrid, and the single subpath/component it
      is allowed to change. If the task names a stage/helper, write
      `Target symbol: <symbol>` and do not modify a different stage as the
-     successful patch.
+     successful patch. If you define a new `_..._gluon` helper, wire the host or
+     caller so that helper is actually executed; a definition-only helper while
+     the dispatch still uses the plain Triton path is not a valid result.
 
 `save_and_test` enforces the required-doc gate for Gluon tasks.
 
@@ -116,6 +118,9 @@ implementation plan above, then edit only the scoped path.
   `convert_layout`, and valid `AMDMFMALayout.instr_shape` are known.
 - Module wiring: define the Gluon helper in the edited module before importing
   or dispatching to it. Do not reference guessed `_..._gluon` symbols.
+- Stage execution: for stage-specific L1 tasks, touching a target symbol means
+  exact identifier use plus an executed Gluon path. A `_target_gluon` helper does
+  not satisfy `target` unless the patch also dispatches/calls that helper.
 - Buffer ops: prefer generic `gl.load` / `gl.store` first. When using AMD
   `buffer_load`, create `other` as a typed Gluon tensor compatible with
   `ptr.dtype.element_ty`; when using `buffer_store`, cast `stored_value` to the
