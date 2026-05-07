@@ -761,6 +761,9 @@ def test_write_task_files_marks_triton_tasks_with_skill_usage(tmp_path: Path):
     assert meta["preferred_output_dialects"] == ["amd_gluon", "plain_triton"]
     assert meta["output_dialect_search_policy"] == "prefer_amd_gluon_if_viable_else_plain_triton"
     assert meta["allowed_skill_tiers"] == ["general"]
+    assert meta["gluon_doc_profile"] == "base_or_shared_gluon"
+    assert "required_gluon_docs" in meta
+    assert "gluon_skill_path" in meta["required_gluon_docs"]
     assert Path(meta["gluon_always_read_path"]).is_absolute()
     assert meta["gluon_always_read_path"].endswith("skills/triton-gluon/docs/00_always_read.md")
     assert meta["gluon_api_reference_path"].endswith("skills/triton-gluon/docs/50_api_reference.md")

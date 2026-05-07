@@ -129,6 +129,35 @@ def test_required_gluon_task_forces_skill_context_even_if_disabled(tmp_path) -> 
     assert task.config["gluon_doc_gate_enabled"] is True
     assert any(path.endswith("skills/triton-gluon/docs/00_always_read.md") for path in task.config["gluon_doc_gate_required_paths"])
     assert any(path.endswith("skills/triton-gluon/docs/50_api_reference.md") for path in task.config["gluon_doc_gate_required_paths"])
+    assert "## REQUIRED BEFORE EDITING OR SAVE_AND_TEST" in task.task
+    assert "GLUON_DOC_GATE_FAILED" in task.task
+
+
+def test_required_gluon_docs_metadata_overrides_heuristic_gate(tmp_path) -> None:
+    task_path = tmp_path / "required_docs.md"
+    write_task_file(
+        task_path,
+        {
+            "label": "ext-custom-docs",
+            "priority": 6,
+            "kernel_type": "triton",
+            "kernel_path": str(tmp_path / "kernel.py"),
+            "repo_root": str(tmp_path),
+            "input_dialect": "plain_triton",
+            "gluon_feature_mode": "auto",
+            "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+            "search_set": "extension",
+            "required_output_dialect": "amd_gluon",
+            "required_gluon_docs": ["gluon_skill_path", "gluon_always_read_path"],
+        },
+        "Extension task using AMD Gluon with many matrix mfma terms.",
+    )
+
+    task = task_file_to_agent_task(task_path)
+    paths = task.config["gluon_doc_gate_required_paths"]
+    assert len(paths) == 2
+    assert any(path.endswith("skills/triton-gluon/SKILL.md") for path in paths)
+    assert any(path.endswith("skills/triton-gluon/docs/00_always_read.md") for path in paths)
 
 
 def test_gluon_doc_gate_not_enabled_for_hip_task(tmp_path) -> None:
@@ -148,6 +177,80 @@ def test_gluon_doc_gate_not_enabled_for_hip_task(tmp_path) -> None:
     task = task_file_to_agent_task(task_path)
 
     assert "gluon_doc_gate_enabled" not in task.config
+
+
+def test_gluon_doc_gate_routes_aot_compile_terms_to_arch_and_api_docs(tmp_path) -> None:
+    task_path = tmp_path / "aot.md"
+    write_task_file(
+        task_path,
+        {
+            "label": "ext-aot",
+            "priority": 6,
+            "kernel_type": "triton",
+            "kernel_path": str(tmp_path / "kernel.py"),
+            "repo_root": str(tmp_path),
+            "input_dialect": "plain_triton",
+            "gluon_feature_mode": "auto",
+            "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+            "search_set": "extension",
+            "required_output_dialect": "amd_gluon",
+        },
+        "Extension task using compile_gluon signature waves_per_eu global_scratch.",
+    )
+
+    task = task_file_to_agent_task(task_path)
+    paths = task.config["gluon_doc_gate_required_paths"]
+    assert any(path.endswith("skills/triton-gluon/docs/30_architecture_notes.md") for path in paths)
+    assert any(path.endswith("skills/triton-gluon/docs/50_api_reference.md") for path in paths)
+
+
+def test_gluon_doc_gate_routes_reduction_api_terms_to_api_doc(tmp_path) -> None:
+    task_path = tmp_path / "reduce.md"
+    write_task_file(
+        task_path,
+        {
+            "label": "shared-softmax-reduce",
+            "priority": 6,
+            "kernel_type": "triton",
+            "kernel_path": str(tmp_path / "kernel.py"),
+            "repo_root": str(tmp_path),
+            "input_dialect": "plain_triton",
+            "gluon_feature_mode": "auto",
+            "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+            "search_set": "shared",
+            "required_output_dialect": "any",
+        },
+        "Shared Set task using gl.sum, gl.max and softmax reduction.",
+    )
+
+    task = task_file_to_agent_task(task_path)
+    paths = task.config["gluon_doc_gate_required_paths"]
+    assert any(path.endswith("skills/triton-gluon/docs/50_api_reference.md") for path in paths)
+
+
+def test_gluon_doc_gate_routes_translator_descriptor_terms_to_arch_and_real_docs(tmp_path) -> None:
+    task_path = tmp_path / "translator.md"
+    write_task_file(
+        task_path,
+        {
+            "label": "ext-translator-tdm",
+            "priority": 6,
+            "kernel_type": "triton",
+            "kernel_path": str(tmp_path / "kernel.py"),
+            "repo_root": str(tmp_path),
+            "input_dialect": "nv_gluon",
+            "gluon_feature_mode": "auto",
+            "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+            "search_set": "extension",
+            "required_output_dialect": "amd_gluon",
+        },
+        "Translate via triton_to_gluon translator current_target TensorDescriptor tdm path.",
+    )
+
+    task = task_file_to_agent_task(task_path)
+    paths = task.config["gluon_doc_gate_required_paths"]
+    assert any(path.endswith("skills/triton-gluon/docs/30_architecture_notes.md") for path in paths)
+    assert any(path.endswith("skills/triton-gluon/docs/60_real_patterns.md") for path in paths)
 
 
 def test_save_and_test_rejects_missing_gluon_doc_views(tmp_path) -> None:

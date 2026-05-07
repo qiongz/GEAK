@@ -266,7 +266,7 @@ def test_compute_best_patch_uses_per_case_total_latency(tmp_path: Path) -> None:
     assert best["per_shape_speedups"]["pa_decode_medium"]["speedup"] == pytest.approx(1.098854, rel=1e-5)
 
 
-def test_compute_best_patch_marks_required_gluon_plain_triton_fallback(tmp_path: Path) -> None:
+def test_compute_best_patch_rejects_required_gluon_plain_triton_fallback(tmp_path: Path) -> None:
     patch_dir = tmp_path / "results" / "round_1" / "ext-l0-gluon"
     patch_dir.mkdir(parents=True)
     root = patch_dir.parent.parent.parent
@@ -291,12 +291,7 @@ def test_compute_best_patch_marks_required_gluon_plain_triton_fallback(tmp_path:
     )
     (patch_dir / "patch_1_test.txt").write_text("case_a: 0.9000 ms\ncase_b: 0.9000 ms\n")
 
-    best = compute_best_patch(patch_dir)
-    assert best is not None
-    assert best["required_output_dialect"] == "amd_gluon"
-    assert best["actual_output_dialect"] == "plain_triton"
-    assert best["dialect_contract_satisfied"] is False
-    assert best["fallback_used"] is True
+    assert compute_best_patch(patch_dir) is None
 
 
 def test_classify_patch_output_dialect_detects_gluon() -> None:
@@ -306,6 +301,87 @@ def test_classify_patch_output_dialect_detects_gluon() -> None:
         )
         == "amd_gluon"
     )
+
+
+def test_classify_patch_output_dialect_detects_mixed() -> None:
+    assert (
+        classify_patch_output_dialect(
+            "from triton.experimental import gluon\n"
+            "from triton.experimental.gluon import language as gl\n"
+            "import triton\nimport triton.language as tl\n"
+            "@gluon.jit\ndef gluon_k():\n    x = gl.load(ptr)\n"
+            "@triton.jit\ndef reduce_k():\n    y = tl.load(ptr)\n"
+        )
+        == "mixed"
+    )
+
+
+def test_compute_best_patch_accepts_mixed_for_required_amd_gluon(tmp_path: Path) -> None:
+    patch_dir = tmp_path / "results" / "round_1" / "ext-mixed-gluon"
+    patch_dir.mkdir(parents=True)
+    root = patch_dir.parent.parent.parent
+    tasks_dir = root / "tasks" / "round_1"
+    tasks_dir.mkdir(parents=True)
+    from minisweagent.run.task_file import write_task_file
+
+    write_task_file(
+        tasks_dir / "06_ext-mixed-gluon.md",
+        {
+            "label": "ext-mixed-gluon",
+            "priority": 6,
+            "kernel_type": "triton",
+            "search_set": "extension",
+            "required_output_dialect": "amd_gluon",
+        },
+        "Extension task",
+    )
+    (root / "benchmark_baseline.txt").write_text("case_a: 1.0000 ms\ncase_b: 1.0000 ms\n")
+    (patch_dir / "patch_1.patch").write_text(
+        "diff --git a/kernel.py b/kernel.py\n"
+        "+from triton.experimental import gluon\n"
+        "+from triton.experimental.gluon import language as gl\n"
+        "+import triton\n+import triton.language as tl\n"
+        "+@gluon.jit\n+def main_k():\n+    x = gl.load(ptr)\n"
+        "+@triton.jit\n+def reduce_k():\n+    y = tl.load(ptr)\n"
+    )
+    (patch_dir / "patch_1_test.txt").write_text("case_a: 0.9000 ms\ncase_b: 0.9000 ms\n")
+
+    best = compute_best_patch(patch_dir)
+    assert best is not None
+    assert best["actual_output_dialect"] == "mixed"
+    assert best["dialect_contract_satisfied"] is True
+    assert best["fallback_used"] is False
+
+
+def test_compute_best_patch_rejects_amd_gluon_for_required_mixed(tmp_path: Path) -> None:
+    patch_dir = tmp_path / "results" / "round_1" / "hybrid-dispatch"
+    patch_dir.mkdir(parents=True)
+    root = patch_dir.parent.parent.parent
+    tasks_dir = root / "tasks" / "round_1"
+    tasks_dir.mkdir(parents=True)
+    from minisweagent.run.task_file import write_task_file
+
+    write_task_file(
+        tasks_dir / "06_hybrid-dispatch.md",
+        {
+            "label": "hybrid-dispatch",
+            "priority": 6,
+            "kernel_type": "triton",
+            "search_set": "extension",
+            "required_output_dialect": "mixed",
+        },
+        "Hybrid dispatch task",
+    )
+    (root / "benchmark_baseline.txt").write_text("case_a: 1.0000 ms\ncase_b: 1.0000 ms\n")
+    (patch_dir / "patch_1.patch").write_text(
+        "diff --git a/kernel.py b/kernel.py\n"
+        "+from triton.experimental import gluon\n"
+        "+from triton.experimental.gluon import language as gl\n"
+        "+@gluon.jit\n+def main_k():\n+    x = gl.load(ptr)\n"
+    )
+    (patch_dir / "patch_1_test.txt").write_text("case_a: 0.9000 ms\ncase_b: 0.9000 ms\n")
+
+    assert compute_best_patch(patch_dir) is None
 
 
 def test_shape_list_bucket_detection_uses_dimension_indices() -> None:

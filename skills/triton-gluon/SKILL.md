@@ -402,6 +402,10 @@ you see any of these:
   doc does not contain the detail needed, read the next routed reference in the
   table; then read `skills/triton-gluon/docs/70_backup_details.md` before using
   `docs/triton_gluon.md` as final backup.
+- Workers must view the planner-provided `required_gluon_docs` paths with
+  `str_replace_editor command="view"` before editing or calling
+  `save_and_test`. The `save_and_test` gate rejects Gluon tasks until those docs
+  have been viewed.
 - If you are planning or reviewing task allocation, read
   `skills/triton-gluon/docs/10_search_policies.md`.
 - If you are implementing a concrete optimization direction, read

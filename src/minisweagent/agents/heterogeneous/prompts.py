@@ -353,6 +353,18 @@ the prompt must instruct the worker to attempt a real Gluon patch using
 valid availability probe. Plain Triton fallback is only allowed after a real
 Gluon patch is saved/tested and fails with a recorded compile/runtime error.
 
+**Gluon documentation gate metadata**: For Triton-family tasks that use Gluon
+guidance, task objects should include optional top-level fields
+`gluon_doc_profile` and `required_gluon_docs`. `gluon_doc_profile` should be one
+of `extension_l0_minimal`, `nv_to_amd_translation`, `matrix_lowering`,
+`shape_bucketed_dispatch`, `jit_aot_sensitive`, `shared_transplant`, or
+`hybrid_dispatch` when one applies. `required_gluon_docs` should list doc path
+metadata keys such as `gluon_skill_path`, `gluon_always_read_path`,
+`gluon_search_policies_path`, `gluon_component_traits_path`,
+`gluon_architecture_notes_path`, `gluon_api_reference_path`, and
+`gluon_real_patterns_path`. The worker's `save_and_test` gate will require
+these files to be viewed before saving or benchmarking.
+
 **Composition tags**: If Evidence-Anchored Composition is present, every
 composition task_prompt MUST include:
 - `Composition type: base_refine | shared_transplant | gluon_variant | hybrid_dispatch`

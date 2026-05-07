@@ -36,6 +36,11 @@ the task to the exact file and heading below before generating or editing a
 Gluon candidate. The heading names intentionally mirror `docs/triton_gluon.md`
 so prompts and worker tasks can jump to the same trait names in split docs.
 
+Worker gate: the planner or dispatch metadata may provide `required_gluon_docs`.
+Before editing or calling `save_and_test`, view every listed absolute path with
+`str_replace_editor command="view"`. `save_and_test` rejects Gluon tasks until
+the required docs have been viewed.
+
 Component traits:
 
 - `semantics_contract` -> this file, `### Trait: semantics_contract`
