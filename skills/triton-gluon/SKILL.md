@@ -65,6 +65,9 @@ torch2hip tasks.
      `gl.where`, etc.);
    - for buffer ops, the loaded element dtype, typed `other` value/layout, and
      `stored_value` dtype before using `buffer_load` / `buffer_store`;
+   - the performance hypothesis before editing: why this Gluon change might help
+     versus the safe Base/plain path, what overhead it may add, and what evidence
+     would make it neutral or slower instead of a win;
    - whether the task is L0, L1, or Hybrid, and the single subpath/component it
      is allowed to change. If the task names a stage/helper, write
      `Target symbol: <symbol>` and do not modify a different stage as the
@@ -111,11 +114,16 @@ implementation plan above, then edit only the scoped path.
 - Extension L0: make one small Gluon subpath compile and preserve correctness
   semantics. For layout-heavy kernels, this is usually one index/mask
   expression, one load/store path, or one matrix-layout skeleton, not the full
-  attention/decode/GEMM body.
+  attention/decode/GEMM body. L0 success is a real executed Gluon anchor; it may
+  be slower than Base. Do not keep tuning `num_warps` / block sizes as if L0 is a
+  performance win unless the hypothesis explains which overhead was removed.
 - Extension L1: refine a correctness-passing Gluon or mixed anchor. If no anchor
   exists, shrink the task to an L0-style layout/memory smoke path.
 - Matrix/MFMA work: do not introduce MFMA until result layout, operand layouts,
-  `convert_layout`, and valid `AMDMFMALayout.instr_shape` are known.
+  `convert_layout`, valid `AMDMFMALayout.instr_shape`, and a plausible
+  performance reason are known. If the plan cannot say why MFMA reduces a real
+  hot path rather than adding layout conversion, extra loops, or dispatch
+  overhead, keep the task at L0 layout/memory viability.
 - Module wiring: define the Gluon helper in the edited module before importing
   or dispatching to it. Do not reference guessed `_..._gluon` symbols.
 - Stage execution: for stage-specific L1 tasks, touching a target symbol means

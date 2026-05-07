@@ -1683,11 +1683,12 @@ def _build_search_space_allocation_guidance(
         "- Shared Set tasks must include `Shared source family: <base_family_id>` when they map a Base strategy into a paired comparison.",
         "- Extension Set tasks must include `Extension layer: L0`, `Extension layer: L1`, or `Extension layer: Hybrid` in task_prompt.",
         "- Stage-specific Extension L1 tasks must include `Target symbol: <function/helper>` in task_prompt and top-level `required_patch_target_symbols`; a patch that only changes a different stage, or only defines `_..._gluon` while dispatch remains on the plain Triton path, is not a valid success.",
+        "- AMD Gluon tasks must include `Performance hypothesis:` before editing: why this scoped Gluon path might beat the safe Base/plain path, what overhead it may add, and when it should be treated as neutral/slower evidence.",
         "- AMD Gluon tasks must reject leftover `tl.*` device APIs in the edited `@gluon.jit` path, including scalar/math calls such as `tl.cdiv`, `tl.minimum`, `tl.maximum`, and `tl.exp`; host launch math outside the Gluon kernel is separate.",
         "- Buffer lowering tasks must state the `buffer_load other` dtype/layout and `buffer_store stored_value` dtype contract before asking the worker to edit.",
         "- Plain Triton fallback is not a valid success for `required_output_dialect=amd_gluon`; fallback is only evidence after a real Gluon attempt using `from triton.experimental import gluon` fails and the failure is recorded.",
         "- If a plain Triton candidate wins, accept it as the best result rather than forcing more Gluon work.",
-        "- If a Triton strategy wins and maps cleanly to Gluon traits, a later round may create an AMD Gluon variant of that winning strategy.",
+        "- If a Triton strategy wins and maps cleanly to Gluon traits, a later round may create an AMD Gluon variant of that winning strategy only with a concrete performance hypothesis.",
         "- If an AMD Gluon candidate wins on only some shapes or sub-operations, a later round may create a `mixed/hybrid` candidate that dispatches between plain Triton and AMD Gluon by host-side shape/feature checks; the mixed path must keep per-shape no-regression and must be compared against a Base or Shared competitor.",
     ]
     lines.extend(_render_base_family_checklist(required_base_families))
@@ -1705,7 +1706,7 @@ def _build_search_space_allocation_guidance(
     if previous_signal == "failed":
         lines.append("- Because prior Gluon work appears to have failed, keep the next Extension Set to layout-only, translation-only, or memory-only work.")
     elif previous_signal == "slower":
-        lines.append("- Because prior Gluon work appears slower, keep one targeted Gluon refinement focused on memory or matrix lowering; do not escalate to scheduler/persistent/async work.")
+        lines.append("- Because prior Gluon work appears slower, keep one targeted Gluon refinement only if it names a concrete memory/matrix performance mechanism; do not escalate to scheduler/persistent/async work or hybrid dispatch.")
     elif previous_signal == "attempted":
         lines.append("- Prior Gluon work produced only weak or inconclusive evidence; keep Gluon at L0/narrow refinement and spend extra width on Base Triton no-regression tasks.")
     elif previous_signal == "won":
@@ -1818,6 +1819,7 @@ def _build_gluon_task_generation_guidance(feature_meta: dict[str, Any]) -> str:
         "  6. persistent scheduling, atomics, or work-stealing last",
         "- Favor early tasks that keep the original algorithm recognizable, make layout decisions explicit, and preserve correctness with the smallest possible semantic delta.",
         "- Treat the first passing AMD Gluon candidate as a platform for later aggressive optimizations, not as a final answer.",
+        "- Treat correctness-passing but slower AMD Gluon as neutral/slower evidence: it can provide layout/source information but should not trigger `gluon_variant` or `hybrid_dispatch` without a shape/sub-operation where Gluon beats the safe anchor.",
         "- Mixed/hybrid optimization is a later-round strategy: combine plain Triton and AMD Gluon only after both sides have benchmark evidence, and keep a Base or Shared competitor alive for no-regression.",
     ]
 

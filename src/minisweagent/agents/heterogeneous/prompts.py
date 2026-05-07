@@ -371,13 +371,18 @@ Required AMD Gluon Extension task_prompt content:
   `tl.arange` -> `gl.arange(..., layout=...)` replacement, tensor-creation
   layouts, broadcast/SliceLayout pairs, matrix path or `none`, and module
   wiring.
+- Include `Performance hypothesis:` before editing. It must state why this
+  scoped Gluon path might beat the safe Base/plain path, what overhead it may
+  add, and when the result should be treated as neutral/slower evidence.
 - For `Extension layer: L0`, scope layout-heavy kernels to one compileable
   index/mask/load/store/matrix-skeleton subpath. Do not ask for a full
-  attention/decode/GEMM rewrite as L0.
+  attention/decode/GEMM rewrite as L0. Treat L0 as an executed correctness
+  anchor, not a promised speedup.
 - For `Extension layer: L1`, require a correctness-passing Gluon/mixed anchor.
   If no anchor exists, tell the worker to shrink to an L0-style layout/memory
   smoke path rather than doing MFMA or buffer lowering from the original plain
-  Triton body.
+  Triton body. Only request MFMA/buffer lowering when the task can name the hot
+  path and plausible performance mechanism.
 - For stage-specific L1 tasks, include `Target symbol: <function/helper>` in
   task_prompt and top-level `required_patch_target_symbols`. The selected patch
   must touch that exact symbol and execute the intended Gluon path; defining a
@@ -391,7 +396,8 @@ Required AMD Gluon Extension task_prompt content:
   worker cannot derive those dtypes from pointer element types.
 - Include `Reject if:` conditions covering leftover plain Triton tensor APIs
   inside the edited `@gluon.jit` path, guessed `_..._gluon` imports, invalid
-  MFMA/instr_shape assumptions, and parent-layout/broadcast mismatch.
+  MFMA/instr_shape assumptions, missing execution proof, missing performance
+  hypothesis, and parent-layout/broadcast mismatch.
 
 **Gluon documentation gate metadata**: For Triton-family tasks that use Gluon
 guidance, task objects should include optional top-level fields
@@ -418,6 +424,9 @@ composition task_prompt MUST include:
 - `Reject if: <conditions that invalidate the patch>`
 Unless the task explicitly says `bundle_allowed=true`, composition tasks must
 change at most one component and must preserve the safe anchor.
+Correctness-passing but slower Gluon evidence may guide layout/source routing,
+but must not create `gluon_variant` or `hybrid_dispatch` unless there is
+per-shape or sub-operation evidence where Gluon beats the safe anchor.
 
 **COMMANDMENT adherence**: Each task_prompt MUST instruct the sub-agent
 to read and follow the COMMANDMENT file. The COMMANDMENT defines the
