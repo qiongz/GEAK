@@ -53,15 +53,21 @@ Search policy and task allocation live in `10_search_policies.md`.
 - Every broadcast expression has a parent-layout invariant: the 1D tensors that
   become `x[:, None]` and `y[None, :]` must be derived from `SliceLayout`
   objects of the same 2D parent layout used by that expression.
+- `SliceLayout` creates 1D tensors. Do not directly add or combine two 1D slice
+  tensors with different lengths to build a 2D offset. First expand them with
+  `[:, None]` and `[None, :]` so both operands broadcast into the same parent
+  layout. A compile error like `Cannot make_shape_compatible: incompatible
+  dimensions ... 16 and 32` usually means a 1D `[H]` index was combined directly
+  with a 1D `[C]` / `[R]` index instead of forming `[H, C]` / `[H, R]`.
 - Do not reuse a slice derived from one parent layout in another logical 2D
-  context, even if the shape names look compatible. For example, a head index
-  derived from an `[H, C]` parent must not be reused in an `[H, R]` expression.
+  context, even if the shape names look compatible. For example, an index
+  derived from an `[X, Y]` parent must not be reused in an `[X, Z]` expression.
 - Do not rely on `convert_layout(x, SliceLayout(...))` to turn an arbitrary 1D
   tensor into a valid slice for a different parent layout. Generate the index
   with the correct `SliceLayout(parent)` for that expression.
 - For kernels with several logical 2D contexts, create separate named index
-  tensors such as `head_hc`, `head_hr`, or `head_hn` instead of one shared
-  `head` tensor.
+  tensors such as `idx_x_xy`, `idx_x_xz`, or `idx_x_xw` instead of one shared
+  `idx_x` tensor.
 - If a broadcast expression cannot name one parent layout shared by both sliced
   axes, the patch scope is too large. Split the task before editing.
 

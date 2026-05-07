@@ -236,22 +236,43 @@ Gluon broadcasting is parent-layout sensitive. Treat `[:, None]` and
 Bad pattern:
 
 ```python
-# H index comes from [H, C], R index comes from [H, R].
+# X and Y are different 1D slice tensors. This is not a 2D [X, Y] expression.
+idx_x = gl.arange(0, X, layout=gl.SliceLayout(1, blocked_xy))
+idx_y = gl.arange(0, Y, layout=gl.SliceLayout(0, blocked_xy))
+offset_xy = base + idx_x * stride_x + idx_y
+```
+
+Bad pattern:
+
+```python
+# X index comes from [X, Y], Z index comes from [X, Z].
 # The expanded tensors do not share one parent layout.
-head_hc = gl.arange(0, H, layout=gl.SliceLayout(1, blocked_hc))
-offs_r = gl.arange(0, R, layout=gl.SliceLayout(0, blocked_hr))
-expr = head_hc[:, None] * stride_h + offs_r[None, :]
+idx_x_xy = gl.arange(0, X, layout=gl.SliceLayout(1, blocked_xy))
+idx_z_xz = gl.arange(0, Z, layout=gl.SliceLayout(0, blocked_xz))
+expr = idx_x_xy[:, None] * stride_x + idx_z_xz[None, :]
 ```
 
 Good pattern:
 
 ```python
-# Both 1D tensors are slices of the same [H, R] parent layout.
-slice_h_hr: gl.constexpr = gl.SliceLayout(1, blocked_hr)
-slice_r_hr: gl.constexpr = gl.SliceLayout(0, blocked_hr)
-head_hr = gl.arange(0, H, layout=slice_h_hr)
-offs_r_hr = gl.arange(0, R, layout=slice_r_hr)
-expr = head_hr[:, None] * stride_h + offs_r_hr[None, :]
+# Both 1D tensors are slices of the same [X, Y] parent layout and are expanded
+# before combining into a 2D offset.
+slice_x_xy: gl.constexpr = gl.SliceLayout(1, blocked_xy)
+slice_y_xy: gl.constexpr = gl.SliceLayout(0, blocked_xy)
+idx_x_xy = gl.arange(0, X, layout=slice_x_xy)
+idx_y_xy = gl.arange(0, Y, layout=slice_y_xy)
+offset_xy = base + idx_x_xy[:, None] * stride_x + idx_y_xy[None, :]
+```
+
+Good pattern:
+
+```python
+# Both 1D tensors are slices of the same [X, Z] parent layout.
+slice_x_xz: gl.constexpr = gl.SliceLayout(1, blocked_xz)
+slice_z_xz: gl.constexpr = gl.SliceLayout(0, blocked_xz)
+idx_x_xz = gl.arange(0, X, layout=slice_x_xz)
+idx_z_xz = gl.arange(0, Z, layout=slice_z_xz)
+expr = idx_x_xz[:, None] * stride_x + idx_z_xz[None, :]
 ```
 
 Rules:
@@ -259,8 +280,11 @@ Rules:
 - Pick the logical parent layout for each 2D expression first.
 - Derive every broadcasted 1D index from `SliceLayout(axis, parent)` of that
   exact parent.
-- Use separate index tensors for separate parent contexts (`head_hc`,
-  `head_hr`, etc.).
+- Never combine two differently sized 1D slice tensors directly. Expand each
+  index to the intended 2D parent expression before adding offsets, masks, or
+  strides.
+- Use separate index tensors for separate parent contexts (`idx_x_xy`,
+  `idx_x_xz`, etc.).
 - Avoid `convert_layout` as a way to re-parent a 1D tensor before
   `[:, None]` / `[None, :]`; regenerate the index from the right parent layout.
 - Mask tensors follow the same rule. Mask layout mismatches are correctness

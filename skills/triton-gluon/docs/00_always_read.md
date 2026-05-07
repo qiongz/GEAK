@@ -235,6 +235,9 @@ Gluon implementation plan:
 - Tensor creation: every accumulator / mask / temporary and its explicit layout.
 - Broadcasts: every `[:, None]` / `[None, :]` pair and the shared parent layout
   used to derive both `SliceLayout` inputs.
+- 2D offset expressions: every pair of 1D slice tensors that will be combined,
+  and the explicit expansion (`x[:, None]`, `y[None, :]`) that makes them shape
+  compatible before addition or masking.
 - Matrix path: result layout, operand layouts, `convert_layout`, and target op,
   or `none` if this patch is not doing matrix lowering.
 - Buffer path: loaded dtype, `other` dtype/layout, stored value dtype, and
@@ -243,6 +246,9 @@ Gluon implementation plan:
   Base/plain path, what extra overhead it may add (layout conversion, launch or
   dispatch branch, scalar loops, memory path cost), and what result should make
   it neutral/slower evidence instead of a win.
+- Patch evolution: what `patch_0` will prove, what single component the next
+  patch may change, and which observation would cause the component to be kept,
+  reverted, or saved only as evidence for later composition.
 - Module wiring: helper functions being defined and how the host dispatch calls
   them.
   If the task names a stage or helper, include `Target symbol: <symbol>` and
@@ -262,6 +268,9 @@ Rules:
   Host-side launch math outside `@gluon.jit` may still use `triton.cdiv`.
 - If the plan cannot name the layout for an index, mask, temporary, or matrix
   operand, reduce the task scope before editing.
+- Do not combine differently sized 1D `SliceLayout` tensors directly. If an
+  offset uses `[X] + [Y]`, `[X] + [Z]`, or similar, first broadcast them into the
+  intended 2D parent expression with `[:, None]` / `[None, :]`.
 - If a stage-specific L1 task cannot name the exact function/helper it must
   touch, reduce or rewrite the task before editing. Changing a different stage
   is not a valid success.
@@ -280,6 +289,12 @@ Rules:
   editing. If the plan cannot identify the hot path being reduced, the layout
   conversions avoided, and the benchmark path that will execute it, do not
   escalate beyond a narrow layout/memory candidate.
+- Patch sequence rule: `patch_0` should establish the smallest real executed
+  Gluon path that can compile and pass correctness. Later patches should make
+  one change at a time (`buffer_load`, `buffer_store`, one MFMA subpath, one
+  layout fix, one launch constant, or one dispatch condition). Before the next
+  patch, record `Changed component`, `Expected effect`, `Observed effect`, and
+  `Keep / revert / compose later`.
 
 ## semantic_contract
 

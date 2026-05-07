@@ -96,6 +96,10 @@ L2 / composition constraints:
 
 - Change at most one component unless the task explicitly says
   `bundle_allowed=true`.
+- Preserve patch lineage for later rounds: composition evidence is strongest
+  when each patch changes one component and records expected versus observed
+  effect. A bundled patch that changes layout, memory, matrix, and launch tuning
+  at once is weak evidence even if it passes correctness.
 - `base_refine` may refine the safe Base anchor, but must not add a Gluon
   rewrite.
 - `shared_transplant` may transplant one portable component into the safe
@@ -197,7 +201,9 @@ Profile guidance:
   `gluon_architecture_notes_path`, `gluon_api_reference_path`, and
   `gluon_real_patterns_path`. This profile must refine a verified Gluon layout
   anchor; do not wrap the original plain Triton body in `@gluon.jit` just to add
-  `buffer_load` / `buffer_store`.
+  `buffer_load` / `buffer_store`. A buffer/load/store task should keep
+  `Matrix path: none` unless it explicitly declares matrix lowering or
+  `bundle_allowed=true`.
 - `matrix_lowering`: add `gluon_component_traits_path`,
   `gluon_architecture_notes_path`, and `gluon_api_reference_path`. The task must
   name the verified layout anchor, result layout, operand layouts, and target
@@ -234,6 +240,9 @@ Round 1:
   rather than a full-kernel Gluon rewrite. The L0 task should explicitly say
   which index/mask/load/matrix skeleton is in scope and reject leftover plain
   Triton tensor APIs in that scoped `@gluon.jit` path;
+- make the first Gluon patch prove the smallest real executed Gluon path. Later
+  patches in the same task should be single-variable experiments so round 2 can
+  attribute which component helped or hurt;
 - include small Shared probes when budget allows.
 
 Round 2:

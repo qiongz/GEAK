@@ -177,6 +177,17 @@ Base path, record the overhead source when visible and avoid repeated launch
 constant tuning unless the next patch has a concrete reason it should remove
 that overhead.
 
+Patch evolution model:
+
+- `patch_0`: smallest real executed Gluon path that can compile and pass
+  correctness.
+- `patch_1+`: one change at a time, such as one layout repair, one memory op,
+  one matrix subpath, one launch constant, or one dispatch condition.
+- Before the next patch, record `Changed component`, `Expected effect`,
+  `Observed effect`, and `Keep / revert / compose later`.
+- If a patch bundles unrelated changes, later rounds cannot tell whether Gluon
+  helped or was masked by another regression.
+
 Defer full attention/decode/GEMM rewrites until after L0 proves the relevant
 layout family compiles. L1 tasks can then add memory lowering, matrix lowering,
 or shared/descriptor features one at a time.
@@ -204,6 +215,10 @@ Rules:
   faster", keep generic `gl.load` / `gl.store`.
 - Change one memory path at a time, such as one KV/cache load, one streaming
   vector load, or one output store.
+- For a task named or scoped as buffer/load/store lowering, keep
+  `Matrix path: none` unless the task explicitly says matrix lowering or
+  `bundle_allowed=true`. Do not introduce MFMA as a side quest in a buffer-load
+  patch.
 - Keep masks and broadcast indices in the same parent-layout context as the
   anchor.
 - If no Gluon anchor has passed correctness, downgrade the L1 memory task to a
