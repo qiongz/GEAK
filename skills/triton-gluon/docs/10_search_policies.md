@@ -9,6 +9,7 @@ Implementation details live in `20_component_traits.md`.
 - `### Search policy: base_shared_extension`
 - `### Search policy: evidence_anchored_composition`
 - `### Search policy: dialect_contract_metadata`
+- `gluon_doc_gate_metadata`
 - `trait_policy_separation`
 - `round_progression`
 - `result_attribution`
@@ -143,6 +144,41 @@ Triton and AMD Gluon candidates. It must keep a visible dispatch condition and
 must compare every selected path against the safe anchor. Do not mark a generic
 Extension L0 viability task as `mixed`; L0 is `required_output_dialect =
 amd_gluon`.
+
+## gluon_doc_gate_metadata
+
+Planner-generated Gluon tasks should write documentation-gate metadata. This is
+the source of truth for worker `save_and_test` gating; heuristic inference is
+only for old or hand-written tasks.
+
+```yaml
+gluon_doc_profile: extension_l0_minimal | nv_to_amd_translation | matrix_lowering | shape_bucketed_dispatch | jit_aot_sensitive | shared_transplant | hybrid_dispatch
+required_gluon_docs:
+  - gluon_skill_path
+  - gluon_always_read_path
+  - gluon_search_policies_path
+```
+
+Profile guidance:
+
+- `extension_l0_minimal`: add `gluon_component_traits_path` and
+  `gluon_api_reference_path`.
+- `nv_to_amd_translation`: add `gluon_component_traits_path`,
+  `gluon_architecture_notes_path`, and `gluon_real_patterns_path`.
+- `matrix_lowering`: add `gluon_component_traits_path`,
+  `gluon_architecture_notes_path`, and `gluon_api_reference_path`.
+- `shape_bucketed_dispatch`: add `gluon_component_traits_path`,
+  `gluon_architecture_notes_path`, and `gluon_real_patterns_path`.
+- `jit_aot_sensitive`: add `gluon_architecture_notes_path` and
+  `gluon_api_reference_path`.
+- `shared_transplant`: add `gluon_component_traits_path` and
+  `gluon_real_patterns_path` when the source component comes from real Gluon or
+  aiter evidence.
+- `hybrid_dispatch`: add `gluon_component_traits_path`,
+  `gluon_architecture_notes_path`, and `gluon_real_patterns_path`.
+
+Do not include `gluon_examples_doc_path` unless the task explicitly needs a
+schematic example. Examples are not common context.
 
 ## round_progression
 

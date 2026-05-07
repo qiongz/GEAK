@@ -412,7 +412,6 @@ Generate optimization tasks for the kernel at {{ kernel_path }}.
 {% endif %}{% if gluon_real_patterns_path %}- **Triton-Gluon real patterns and benchmark rules**: {{ gluon_real_patterns_path }}
 {% endif %}{% if gluon_examples_doc_path %}- **Triton-Gluon schematic examples**: {{ gluon_examples_doc_path }}
 {% endif %}{% if gluon_backup_details_path %}- **Triton-Gluon residual backup routing**: {{ gluon_backup_details_path }}
-{% endif %}{% if gluon_guide_path %}- **Gluon guide** (backup long-form workflow doc): {{ gluon_guide_path }}
 {% endif %}{% if gluon_kb_path %}- **Gluon knowledge base** (structured AMD Gluon knowledge): {{ gluon_kb_path }}
 {% endif %}{% if gluon_examples_path %}- **Gluon examples** (repo examples and harness expectations): {{ gluon_examples_path }}
 {% endif %}{% if deep_search_path %}- **Deep search findings**: {{ deep_search_path }}

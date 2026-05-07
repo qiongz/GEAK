@@ -42,6 +42,7 @@ from minisweagent.run.preprocess.benchmark_parsing import (
     parse_performance_report_json,
     parse_shape_latencies_ms,
     parse_test_case_count,
+    rewrite_best_results,
 )
 from minisweagent.run.preprocess.discovery_types import (
     SHAPE_COVERAGE_BUCKETED,
@@ -382,6 +383,95 @@ def test_compute_best_patch_rejects_amd_gluon_for_required_mixed(tmp_path: Path)
     (patch_dir / "patch_1_test.txt").write_text("case_a: 0.9000 ms\ncase_b: 0.9000 ms\n")
 
     assert compute_best_patch(patch_dir) is None
+
+
+def test_rewrite_best_results_invalidates_empty_existing_best(tmp_path: Path) -> None:
+    patch_dir = tmp_path / "results" / "round_1" / "ext-empty"
+    patch_dir.mkdir(parents=True)
+    root = patch_dir.parent.parent.parent
+    tasks_dir = root / "tasks" / "round_1"
+    tasks_dir.mkdir(parents=True)
+    from minisweagent.run.task_file import write_task_file
+
+    write_task_file(
+        tasks_dir / "06_ext-empty.md",
+        {
+            "label": "ext-empty",
+            "priority": 6,
+            "kernel_type": "triton",
+            "search_set": "extension",
+            "required_output_dialect": "amd_gluon",
+        },
+        "Extension task",
+    )
+    patch_file = patch_dir / "patch_5.patch"
+    patch_file.write_text("")
+    test_file = patch_dir / "patch_5_test.txt"
+    test_file.write_text("case_a: 0.9000 ms\n")
+    (patch_dir / "best_results.json").write_text(
+        json.dumps(
+            {
+                "best_patch_id": "patch_5",
+                "best_patch_speedup": 1.0,
+                "best_patch_file": str(patch_file),
+                "best_patch_test_output": str(test_file),
+                "llm_selection_analysis": "LLM picked empty patch",
+            }
+        )
+    )
+
+    rewritten = rewrite_best_results(patch_dir)
+    assert rewritten is not None
+    assert rewritten["best_patch_id"] is None
+    assert rewritten["best_patch_file"] is None
+    assert rewritten["best_patch_speedup"] == 0.0
+    assert rewritten["invalidated"] is True
+    assert rewritten["actual_output_dialect"] == "empty"
+
+
+def test_rewrite_best_results_invalidates_plain_existing_best_for_required_gluon(tmp_path: Path) -> None:
+    patch_dir = tmp_path / "results" / "round_1" / "ext-plain"
+    patch_dir.mkdir(parents=True)
+    root = patch_dir.parent.parent.parent
+    tasks_dir = root / "tasks" / "round_1"
+    tasks_dir.mkdir(parents=True)
+    from minisweagent.run.task_file import write_task_file
+
+    write_task_file(
+        tasks_dir / "06_ext-plain.md",
+        {
+            "label": "ext-plain",
+            "priority": 6,
+            "kernel_type": "triton",
+            "search_set": "extension",
+            "required_output_dialect": "amd_gluon",
+        },
+        "Extension task",
+    )
+    patch_file = patch_dir / "patch_1.patch"
+    patch_file.write_text("diff --git a/kernel.py b/kernel.py\n+import triton.language as tl\n+tl.load(x)\n")
+    test_file = patch_dir / "patch_1_test.txt"
+    test_file.write_text("case_a: 0.9000 ms\n")
+    (patch_dir / "best_results.json").write_text(
+        json.dumps(
+            {
+                "best_patch_id": "patch_1",
+                "best_patch_speedup": 1.1,
+                "best_patch_file": str(patch_file),
+                "best_patch_test_output": str(test_file),
+                "llm_selection_analysis": "LLM picked fallback",
+            }
+        )
+    )
+
+    rewritten = rewrite_best_results(patch_dir)
+    assert rewritten is not None
+    assert rewritten["best_patch_id"] is None
+    assert rewritten["best_patch_file"] is None
+    assert rewritten["best_patch_speedup"] == 0.0
+    assert rewritten["invalidated"] is True
+    assert rewritten["required_output_dialect"] == "amd_gluon"
+    assert rewritten["actual_output_dialect"] == "plain_triton"
 
 
 def test_shape_list_bucket_detection_uses_dimension_indices() -> None:

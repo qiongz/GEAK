@@ -4,6 +4,23 @@ Read this file when docs or examples are not enough: architecture families,
 real aiter patterns, benchmark rules, repo-local defaults, and source-first
 triggers live here.
 
+Do not read this whole file by default. Use the routed section(s) below.
+
+## Read Only These Sections
+
+| If the task needs... | Read |
+| --- | --- |
+| product/runtime context beyond `00_always_read.md` | `product_and_runtime_context` |
+| plain Triton -> Gluon rewrite order and implicit layout recovery | `writing_model` |
+| layout/sync/descriptor concepts without exact API snippets | `layout_sync_descriptor_mental_model` |
+| AMD/NVIDIA family comparison or namespace-vs-arch nuance | `nvidia_amd_family_differences` |
+| translator/current_target-based AMD lowering | `translator_derived_amd_dispatch` |
+| aiter attention/GEMM/MQA examples and operator-local support | `real_patterns_from_aiter`, `operator_local_support_matrix` |
+| elementwise/attention/GEMM/preshuffled/gfx1250 strategy order | `optimization_paths_by_kernel_family` |
+| source-first triggers | `source_first_triggers` |
+| repo-local defaults or benchmark interpretation | `repo_local_notes`, `benchmark_aware_rules` |
+| final sanity check for risky patterns | `anti_patterns` |
+
 ## Internal Index
 
 - `product_and_runtime_context`

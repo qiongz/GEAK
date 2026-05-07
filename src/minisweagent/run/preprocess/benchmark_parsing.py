@@ -744,6 +744,29 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
     }
 
 
+def _invalidate_existing_best_result(
+    existing: dict[str, Any],
+    *,
+    reason: str,
+    required_output_dialect: str = "any",
+    actual_output_dialect: str = "unknown",
+) -> dict[str, Any]:
+    existing["best_patch_id"] = None
+    existing["best_patch_file"] = None
+    existing["best_patch_test_output"] = existing.get("best_patch_test_output")
+    existing["best_patch_speedup"] = 0.0
+    existing["required_output_dialect"] = required_output_dialect
+    existing["actual_output_dialect"] = actual_output_dialect
+    existing["dialect_contract_satisfied"] = False
+    existing["fallback_used"] = required_output_dialect == "amd_gluon"
+    existing["invalidated"] = True
+    existing["invalid_reason"] = reason
+    existing["llm_selection_analysis"] = (
+        existing.get("llm_selection_analysis") or ""
+    ) + f" [Invalidated: {reason}]"
+    return existing
+
+
 def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
     """Overwrite ``best_results.json`` with deterministic selection if possible.
 
@@ -769,14 +792,51 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
         try:
             existing = json.loads(existing_path.read_text())
             pf = existing.get("best_patch_file")
+            task_meta = _find_task_metadata_for_patch_dir(patch_dir)
+            required_output_dialect = str(task_meta.get("required_output_dialect") or "any").strip().lower() or "any"
 
-            if pf and Path(pf).exists() and Path(pf).stat().st_size == 0:
-                existing["best_patch_speedup"] = 1.0
-                existing["llm_selection_analysis"] = (
-                    existing.get("llm_selection_analysis") or ""
-                ) + " [Overridden: patch is empty (0 bytes), speedup clamped to 1.0]"
-                existing_path.write_text(json.dumps(existing, indent=2))
-                return existing
+            if not pf:
+                invalid = _invalidate_existing_best_result(
+                    existing,
+                    reason="best_results has no patch file",
+                    required_output_dialect=required_output_dialect,
+                )
+                existing_path.write_text(json.dumps(invalid, indent=2))
+                return invalid
+
+            patch_path = Path(pf)
+            if not patch_path.exists():
+                invalid = _invalidate_existing_best_result(
+                    existing,
+                    reason=f"best patch file does not exist: {pf}",
+                    required_output_dialect=required_output_dialect,
+                )
+                existing_path.write_text(json.dumps(invalid, indent=2))
+                return invalid
+
+            if patch_path.stat().st_size == 0:
+                invalid = _invalidate_existing_best_result(
+                    existing,
+                    reason="best patch is empty (0 bytes)",
+                    required_output_dialect=required_output_dialect,
+                    actual_output_dialect="empty",
+                )
+                existing_path.write_text(json.dumps(invalid, indent=2))
+                return invalid
+
+            actual_output_dialect = classify_patch_output_dialect(patch_path.read_text(errors="replace"))
+            if not _dialect_contract_satisfied(required_output_dialect, actual_output_dialect):
+                invalid = _invalidate_existing_best_result(
+                    existing,
+                    reason=(
+                        f"required_output_dialect={required_output_dialect} "
+                        f"but patch classified as {actual_output_dialect}"
+                    ),
+                    required_output_dialect=required_output_dialect,
+                    actual_output_dialect=actual_output_dialect,
+                )
+                existing_path.write_text(json.dumps(invalid, indent=2))
+                return invalid
 
             if original_bl is not None:
                 existing["best_patch_speedup"] = 1.0

@@ -912,7 +912,6 @@ def _build_gluon_reference_block(
     *,
     knowledge_base_path: str | None = None,
     gluon_skill_path: str | None = None,
-    gluon_guide_path: str | None = None,
     gluon_kb_path: str | None = None,
     gluon_examples_path: str | None = None,
     gluon_always_read_path: str | None = None,
@@ -937,8 +936,6 @@ def _build_gluon_reference_block(
         ("Residual backup routing", gluon_backup_details_path),
     ]
     refs.extend((label, path) for label, path in split_refs if path)
-    if gluon_guide_path:
-        refs.append(("Backup long-form Gluon guide", gluon_guide_path))
     if gluon_kb_path:
         refs.append(("Structured Gluon knowledge base", gluon_kb_path))
     if gluon_examples_path:
@@ -966,7 +963,7 @@ def _build_gluon_reference_block(
             "then use its `Task routing` table to choose exact split-doc files and headings."
         )
     lines.append(
-        "- Do not implement from memory or guess Gluon API names. If the routed primary split docs do not contain the required detail, read `70_backup_details.md`; only then use the legacy `docs/triton_gluon.md` long guide as final backup."
+        "- Do not implement from memory or guess Gluon API names. If the routed primary split docs do not contain the required detail, read `70_backup_details.md`; if it still lacks detail, report the missing split-doc route so the docs can be updated."
     )
     lines.append(
         "- These reference files are read-only guidance. They may live outside REPO ROOT; you may `view` them, but do not modify them."
@@ -982,7 +979,7 @@ def _build_gluon_working_set(feature_metadata: dict[str, Any] | None) -> list[st
     lines = [
         "## Gluon Working Set",
         "- Use targeted reading: start with `skills/triton-gluon/docs/00_always_read.md`, use its `stable_split_doc_index` and `Task routing` table, then jump to the exact split-doc headings relevant to this task.",
-        "- Do not implement from memory or guess Gluon API names. Read the routed split-doc entry before writing a Gluon patch; use `70_backup_details.md` when primary split docs lack detail, and `docs/triton_gluon.md` only as final backup.",
+        "- Do not implement from memory or guess Gluon API names. Read the routed split-doc entry before writing a Gluon patch; use `70_backup_details.md` when primary split docs lack detail, then report the missing route instead of relying on long-form backup.",
         "- `save_and_test` enforces this for Gluon tasks: use `str_replace_editor` with `command=\"view\"` on the required absolute split-doc paths before saving or benchmarking a patch.",
         "- Preserve launcher shape, indexing, masks, correctness behavior, and benchmark intent before changing algorithms.",
         "- Recover the implicit layout before changing APIs. In Gluon, `gl.arange(..., layout=...)` is not optional.",
@@ -1163,7 +1160,6 @@ def inject_pipeline_context(
     feature_metadata: dict[str, Any] | None = None,
     knowledge_base_path: str | None = None,
     gluon_skill_path: str | None = None,
-    gluon_guide_path: str | None = None,
     gluon_kb_path: str | None = None,
     gluon_examples_path: str | None = None,
     gluon_always_read_path: str | None = None,
@@ -1213,7 +1209,6 @@ def inject_pipeline_context(
                 _build_gluon_reference_block(
                     knowledge_base_path=knowledge_base_path,
                     gluon_skill_path=gluon_skill_path,
-                    gluon_guide_path=gluon_guide_path,
                     gluon_kb_path=gluon_kb_path,
                     gluon_examples_path=gluon_examples_path,
                     gluon_always_read_path=gluon_always_read_path,

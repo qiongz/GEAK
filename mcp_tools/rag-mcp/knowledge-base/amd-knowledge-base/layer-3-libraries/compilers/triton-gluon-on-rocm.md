@@ -13,11 +13,45 @@ estimated_time: "60min"
 
 # Triton Gluon on AMD GPUs
 
-Guide to using Triton Gluon on AMD GPUs through ROCm, with emphasis on layout-driven kernel design, AMD matrix paths, and version-sensitive behavior.
+Background reference for Triton Gluon on AMD GPUs through ROCm, with emphasis
+on layout-driven kernel design, AMD matrix paths, and version-sensitive
+behavior.
 
 **This documentation targets ROCm 7.0+ only.**
 
 **Important scope note**: in practice, Gluon feature availability depends more directly on the installed Triton build than on ROCm alone. Treat the Triton version and source tree as part of the compatibility contract.
+
+## GEAK Agent Boundary
+
+This page is **background/RAG reference**, not the GEAK agent workflow source of
+truth.
+
+For GEAK agent runs:
+
+1. Start from `skills/triton-gluon/docs/00_always_read.md`.
+2. Follow the task metadata contract:
+   - `search_set`
+   - `required_output_dialect`
+   - `gluon_doc_profile`
+   - `required_gluon_docs`
+3. Let `save_and_test` enforce the required-doc gate and patch dialect contract.
+4. Use this KB only to enrich background understanding of AMD Gluon APIs,
+   architecture families, upstream references, and real-world patterns.
+
+Do not use this KB to override `skills/triton-gluon/docs/` or task metadata.
+The split docs define GEAK's current planner/worker contract.
+
+## Background Index
+
+- Product and launcher model: see [Overview](#overview) and
+  [Core Mental Model](#core-mental-model).
+- AMD target families and capability hints: see
+  [AMD Target Families](#amd-target-families).
+- API background: see [API Decision Table](#api-decision-table).
+- Planning concepts for context only: see
+  [GEAK Planning Concepts (Background)](#geak-planning-concepts-background).
+- Source-first and common mistakes: see [When to Read Source First](#when-to-read-source-first)
+  and [Common Mistakes](#common-mistakes).
 
 **Primary public references**:
 
@@ -147,11 +181,18 @@ This is the most useful mental table for `plain_triton -> amd_gluon` rewrites.
 | Implicit shared-memory staging | `allocate_shared_memory` after the first correct candidate | Only after the blocked-layout or matrix path is already correct. |
 | Descriptor helper usage | Target-specific descriptor family | Only when the target family really supports or benefits from it. |
 
-## Planner Traits and Candidate Slots
+## GEAK Planning Concepts (Background)
 
-GEAK should treat Gluon as a candidate strategy inside the Triton route, not as
-a separate kernel type. Planning should be trait-based rather than one recipe
-per kernel family.
+This section explains why GEAK's Triton-Gluon planner uses traits and layered
+search. It is **not** the authoritative planner contract. For current agent
+runs, use:
+
+- `skills/triton-gluon/docs/00_always_read.md`
+- `skills/triton-gluon/docs/10_search_policies.md`
+- task metadata fields such as `gluon_doc_profile` and `required_gluon_docs`
+
+Gluon is a candidate strategy inside the Triton route, not a separate kernel
+type. Planning is trait-based rather than one recipe per kernel family.
 
 ### Core planning traits
 
@@ -198,7 +239,7 @@ artifacts exist.
 
 ### Candidate slot policy
 
-Early task generation should prefer:
+Historical/background guidance: early task generation should prefer:
 
 1. a semantics-preserving AMD Gluon viability candidate;
 2. a trait-specific AMD Gluon candidate that names the traits it addresses;
@@ -211,8 +252,9 @@ result rather than a failed Gluon run.
 
 ### Base / Shared / Extension search space
 
-For GEAK planning, AMD Gluon should be an additive extension to the existing
-Triton search.
+For GEAK planning background, AMD Gluon should be an additive extension to the
+existing Triton search. The current source of truth for exact task metadata,
+doc gate requirements, and dialect attribution is `10_search_policies.md`.
 
 - **Base Set**: preserve plain Triton candidates from the main planner, such as
   algorithmic rewrites, fusion, shape-specialized variants, memory/layout
@@ -418,13 +460,25 @@ Read operator-local source before rewriting the kernel if you see:
 ### GEAK-specific workflow docs
 
 - [GEAK Triton-Gluon split-doc entrypoint](../../../../skills/triton-gluon/docs/00_always_read.md)
-- [GEAK Triton-Gluon workflow guide](../../../../docs/triton_gluon.md)
 
 For GEAK agent runs, prefer the split-doc entrypoint:
 `skills/triton-gluon/docs/00_always_read.md`. Use its `Task routing` table to
-jump to exact split-doc files and headings. Use `docs/triton_gluon.md` only as
-the backup long-form guide when routed split docs do not contain the needed
-detail.
+jump to exact split-doc files and headings. If routed split docs do not contain
+the needed detail, report the missing route so the primary docs can be updated.
+
+This knowledge-base page is background reference. The skill-local split docs and
+task metadata (`gluon_doc_profile`, `required_gluon_docs`) are the workflow
+source of truth for GEAK agents.
+
+Practical division of responsibility:
+
+- **KB**: background facts, ROCm/Triton links, architecture overview, and
+  searchable context.
+- **Skill-local docs**: planner/worker contract, required docs, routing, and
+  output dialect rules.
+- **Task metadata**: task-specific required docs and dialect contract.
+- **Gates/classifiers**: execution-time verification that the worker followed
+  the contract.
 
 ### External resources
 
