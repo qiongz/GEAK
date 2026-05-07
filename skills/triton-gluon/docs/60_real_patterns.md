@@ -170,6 +170,13 @@ plain Triton island such as `tl.arange(0, BLOCK_R)` in a RoPE or mask branch
 inside `@gluon.jit`; if a branch is too hard to convert, it is outside the L0
 scope and should remain outside the patch.
 
+Treat L0 as an execution and layout anchor, not a performance promise. A useful
+L0 patch proves that the selected Gluon path really runs, preserves correctness,
+and exposes layout/memory evidence for later tasks. If L0 is slower than the
+Base path, record the overhead source when visible and avoid repeated launch
+constant tuning unless the next patch has a concrete reason it should remove
+that overhead.
+
 Defer full attention/decode/GEMM rewrites until after L0 proves the relevant
 layout family compiles. L1 tasks can then add memory lowering, matrix lowering,
 or shared/descriptor features one at a time.
@@ -191,6 +198,10 @@ Rules:
 
 - Preserve the verified anchor's layout plan. Do not regenerate indices with
   plain `tl.arange` inside `@gluon.jit`.
+- Before editing, write why the memory change should improve performance:
+  fewer global transactions, better coalescing, less masking overhead, or a
+  known memory-bound hot path. If the reason is only "AMD buffer ops might be
+  faster", keep generic `gl.load` / `gl.store`.
 - Change one memory path at a time, such as one KV/cache load, one streaming
   vector load, or one output store.
 - Keep masks and broadcast indices in the same parent-layout context as the
@@ -203,6 +214,16 @@ Extension L1 matrix/MFMA lowering follows the same anchor rule. Do not use MFMA
 as the first real Gluon attempt for a layout-heavy kernel. The task must name the
 anchor layout, result layout, operand layouts, and exact single matrix subpath
 being lowered; otherwise keep it as an L0 layout skeleton.
+
+MFMA performance viability checklist before editing:
+
+- the selected dot/matrix subpath is on the benchmark hot path;
+- result and operand layouts avoid repeated `convert_layout` inside a loop;
+- the patch does not add a second launch or host dispatch branch that dominates
+  the measured case;
+- accumulator dtype and store dtype are planned before the epilogue;
+- expected speedup comes from replacing real matrix work, not from merely making
+  a small MFMA skeleton compile.
 
 ## layout_sync_descriptor_mental_model
 

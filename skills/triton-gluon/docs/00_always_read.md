@@ -239,6 +239,10 @@ Gluon implementation plan:
   or `none` if this patch is not doing matrix lowering.
 - Buffer path: loaded dtype, `other` dtype/layout, stored value dtype, and
   whether generic `gl.load` / `gl.store` is safer for this patch.
+- Performance hypothesis: why this scoped Gluon path might improve the safe
+  Base/plain path, what extra overhead it may add (layout conversion, launch or
+  dispatch branch, scalar loops, memory path cost), and what result should make
+  it neutral/slower evidence instead of a win.
 - Module wiring: helper functions being defined and how the host dispatch calls
   them.
   If the task names a stage or helper, include `Target symbol: <symbol>` and
@@ -268,6 +272,14 @@ Rules:
 - If L1 has no correctness-passing Gluon/mixed anchor, do not attempt MFMA or
   buffer lowering over the full original kernel; shrink to an L0-style smoke
   path and record that no anchor exists.
+- L0 compile/correctness success is an executed Gluon anchor, not a promised
+  speedup. If it is slower than Base, record it as anchor or negative performance
+  evidence and do not keep tuning launch constants without a concrete overhead
+  hypothesis.
+- L1 memory/MFMA work must state why the change is performance-plausible before
+  editing. If the plan cannot identify the hot path being reduced, the layout
+  conversions avoided, and the benchmark path that will execute it, do not
+  escalate beyond a narrow layout/memory candidate.
 
 ## semantic_contract
 

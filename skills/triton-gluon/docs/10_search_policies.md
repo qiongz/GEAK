@@ -107,6 +107,10 @@ L2 / composition constraints:
 - `hybrid_dispatch` / `hybrid_dispatch_from_evidence` must add visible
   host-side shape/feature dispatch around verified Base and Gluon candidates.
   It must keep the Base path for shapes or sub-operations where Base wins.
+- Correctness-passing but slower Gluon evidence is neutral/slower evidence. It
+  can inform layouts or source routing, but it must not trigger
+  `gluon_variant` or `hybrid_dispatch` unless a later result proves a shape or
+  sub-operation where Gluon beats the safe anchor.
 - Reject a composition if it changes multiple mutually exclusive components,
   changes launcher/constexpr contract without saying so, drops the safe anchor,
   or regresses any benchmark shape.
@@ -185,6 +189,8 @@ Profile guidance:
 - `extension_l0_minimal`: add `gluon_component_traits_path` and
   `gluon_api_reference_path`. The task must ask the worker for a pre-edit
   layout/API mapping and must scope layout-heavy kernels to one Gluon subpath.
+  Treat L0 as an executed correctness anchor; do not describe it as a
+  performance win unless benchmark evidence beats the safe Base/plain path.
 - `nv_to_amd_translation`: add `gluon_component_traits_path`,
   `gluon_architecture_notes_path`, and `gluon_real_patterns_path`.
 - `memory_lowering`: add `gluon_component_traits_path`,
@@ -195,7 +201,9 @@ Profile guidance:
 - `matrix_lowering`: add `gluon_component_traits_path`,
   `gluon_architecture_notes_path`, and `gluon_api_reference_path`. The task must
   name the verified layout anchor, result layout, operand layouts, and target
-  matrix op; otherwise it should be downgraded to L0 layout viability.
+  matrix op; otherwise it should be downgraded to L0 layout viability. It must
+  also name the expected performance mechanism, such as replacing a real hot dot
+  path without adding dominant layout-conversion or dispatch overhead.
 - `shape_bucketed_dispatch`: add `gluon_component_traits_path`,
   `gluon_architecture_notes_path`, and `gluon_real_patterns_path`.
 - `jit_aot_sensitive`: add `gluon_architecture_notes_path` and
@@ -239,12 +247,16 @@ Round 2:
 - make Extension L1 matrix/MFMA lowering refine a verified Gluon layout anchor.
   If the planner cannot name the anchor and operand/result layouts, do not emit
   an MFMA task yet.
+- treat correctness-passing but slower Gluon as neutral/slower evidence. Keep
+  Base/Shared width and emit only one targeted Gluon refinement with a concrete
+  performance hypothesis.
 
 Round 3:
 
 - converge around the safe anchor;
 - keep only useful Gluon/Shared evidence;
-- add hybrid dispatch only when per-shape evidence supports different winners.
+- add hybrid dispatch only when per-shape or sub-operation evidence supports
+  different winners; slower Gluon correctness anchors alone are not enough.
 
 ## result_attribution
 
