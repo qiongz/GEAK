@@ -278,9 +278,9 @@ priority after the required kernel-body Base tasks.
     Required AMD Gluon Extension task_prompts must also include a
     `Knowledge lookup contract:` line requiring a pre-edit lookup plan, an
     `Implementation contract:` line requiring a pre-edit Gluon implementation
-    plan, plus `Reject if:` lines for leftover `tl.*` tensor APIs in the edited
-    `@gluon.jit` path, guessed `_..._gluon` module wiring, invalid MFMA layout,
-    and parent-layout/broadcast mismatch.
+    plan, `Performance hypothesis:`, `Patch evolution:`, and `Reject if:` lines
+    for non-executed Gluon, target mismatch, and other routed split-doc
+    contract violations.
     For Triton-family task objects, include lightweight metadata when relevant:
     `search_set` (`base`, `shared`, or `extension`) and
     `required_output_dialect` (`plain_triton`, `amd_gluon`, `mixed`, or `any`).
@@ -362,42 +362,32 @@ Gluon patch is saved/tested and fails with a recorded compile/runtime error.
 Required AMD Gluon Extension task_prompt content:
 - Include `Knowledge lookup contract: write a Gluon knowledge lookup plan before
   editing`.
-- The lookup plan must map task/source signals to exact split-doc files and
-  headings, mark `viewed=yes/no`, list operator-local source sections viewed,
-  and record missing details before any code edit.
 - Include `Implementation contract: write a Gluon implementation plan before
   editing`.
-- The plan must name the scoped subpath/component, parent layouts, every
-  `tl.arange` -> `gl.arange(..., layout=...)` replacement, tensor-creation
-  layouts, broadcast/SliceLayout pairs, matrix path or `none`, and module
-  wiring.
+- Point workers to `skills/triton-gluon/docs/00_always_read.md` for the full
+  required plan fields and doc-routing contract before any code edit.
 - Include `Performance hypothesis:` before editing. It must state why this
-  scoped Gluon path might beat the safe Base/plain path, what overhead it may
-  add, and when the result should be treated as neutral/slower evidence.
+  scoped Gluon path might beat the safe Base/plain path; detailed viability
+  checks live in `docs/10_search_policies.md` and `docs/60_real_patterns.md`.
+- Include `Patch evolution:` and require single-variable patch evolution unless
+  `bundle_allowed=true`; detailed fields live in `docs/00_always_read.md` and
+  `docs/60_real_patterns.md`.
 - For `Extension layer: L0`, scope layout-heavy kernels to one compileable
   index/mask/load/store/matrix-skeleton subpath. Do not ask for a full
   attention/decode/GEMM rewrite as L0. Treat L0 as an executed correctness
   anchor, not a promised speedup.
-- For `Extension layer: L1`, require a correctness-passing Gluon/mixed anchor.
-  If no anchor exists, tell the worker to shrink to an L0-style layout/memory
-  smoke path rather than doing MFMA or buffer lowering from the original plain
-  Triton body. Only request MFMA/buffer lowering when the task can name the hot
-  path and plausible performance mechanism.
+- For `Extension layer: L1`, require a correctness-passing Gluon/mixed anchor
+  or an explicit shrink-to-anchor fallback. Keep MFMA/buffer details in
+  `docs/20_component_traits.md`, `docs/50_api_reference.md`, and
+  `docs/60_real_patterns.md`.
 - For stage-specific L1 tasks, include `Target symbol: <function/helper>` in
   task_prompt and top-level `required_patch_target_symbols`. The selected patch
-  must touch that exact symbol and execute the intended Gluon path; defining a
-  `_..._gluon` helper while dispatch still uses the plain Triton path is target
-  mismatch.
-- Require Gluon device scalar/math (`gl.cdiv`, `gl.minimum`, `gl.maximum`,
-  `gl.exp`, `gl.where`, etc.) in the edited `@gluon.jit` path instead of
-  leftover `tl.*` device math. Host launch math may remain outside the kernel.
-- For AMD buffer ops, require the implementation plan to name `other`
-  dtype/layout and `stored_value` dtype. Do not ask for buffer lowering if the
-  worker cannot derive those dtypes from pointer element types.
-- Include `Reject if:` conditions covering leftover plain Triton tensor APIs
-  inside the edited `@gluon.jit` path, guessed `_..._gluon` imports, invalid
-  MFMA/instr_shape assumptions, missing execution proof, missing performance
-  hypothesis, and parent-layout/broadcast mismatch.
+  must touch that exact symbol and execute the intended Gluon path.
+- Include `Reject if:` conditions for non-executed Gluon, missing required plan
+  blocks, target-symbol mismatch, leftover plain Triton device APIs inside the
+  edited `@gluon.jit` path, and bundled unrelated changes without
+  `bundle_allowed=true`. Put the detailed API/layout/buffer/MFMA rejection rules
+  in the routed split docs rather than duplicating them in the prompt.
 
 **Gluon documentation gate metadata**: For Triton-family tasks that use Gluon
 guidance, task objects should include optional top-level fields

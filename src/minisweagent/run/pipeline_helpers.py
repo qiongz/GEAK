@@ -984,17 +984,9 @@ def _build_gluon_working_set(feature_metadata: dict[str, Any] | None) -> list[st
         "- Before editing, write a `Gluon knowledge lookup plan` in your strategy notes: task signals, exact split-doc files/headings, viewed=yes/no for each, source sections viewed, and missing details.",
         "- Do not start implementation while a required lookup row is still `viewed=no`; either view that section or record the exact missing-doc route.",
         "- Preserve launcher shape, indexing, masks, correctness behavior, and benchmark intent before changing algorithms.",
-        "- Before editing a Gluon path, write a `Gluon implementation plan` in your strategy notes. Include: task scope, target symbol if the task names a stage/helper, the call/dispatch line that executes any new `_..._gluon` helper, parent layouts, every `tl.arange` replacement, tensor-creation layouts, broadcast/SliceLayout pairs, device scalar/math `tl.*` -> `gl.*` mapping, buffer `other`/`stored_value` dtype contract, matrix path (or none), module wiring, and a performance hypothesis explaining why this scoped change might beat the safe Base/plain path.",
-        "- Do not start by wrapping the original plain Triton kernel in `@gluon.jit`. Pick the planned subpath first, then convert that subpath completely.",
-        "- For layout-heavy Gluon paths, name logical parent layouts, the `SliceLayout` used for each `[:, None]` / `[None, :]` tensor, and which indices must not be reused across parent layouts.",
-        "- For Extension L0 on layout-heavy kernels, target one compileable executed subpath first; treat it as a correctness/layout anchor, not a performance win unless it beats the safe Base/plain path.",
-        "- For Extension L1 memory/buffer or matrix lowering, start from the best correctness-passing Gluon/mixed anchor and preserve its layout plan. If no Gluon anchor passed, shrink to a layout/memory smoke path instead of wrapping the original plain Triton body. If no clear performance mechanism exists, do not escalate to MFMA/buffer ops.",
-        "- For L2 composition, preserve the safe anchor and change at most one component unless the task explicitly says `bundle_allowed=true`. The task must state `Allowed change` and `Reject if` conditions.",
-        "- For hybrid/mixed tasks, keep a visible host-side dispatch and preserve the Base path for shapes or sub-operations where Base wins. Correctness-passing but slower Gluon is neutral/slower evidence, not hybrid evidence.",
-        "- Recover the implicit layout before changing APIs. In Gluon, `gl.arange(..., layout=...)` is not optional.",
-        "- If layout depends on launch config, construct it on the host and pass it as a `constexpr`.",
-        "- Prefer `gl.load` / `gl.store` first; move to AMD `buffer_load` / `buffer_store` when the target family or existing kernel structure actually requires it.",
-        "- `tl.dot` is not a direct rename target. The real path is result layout -> operand layouts -> `convert_layout` -> target-specific matrix op.",
+        "- Before editing a Gluon path, write a `Gluon implementation plan`, `Performance hypothesis`, and `Patch evolution` plan. Use `00_always_read.md` for required fields, `20_component_traits.md` for layout/memory/matrix traits, `50_api_reference.md` for exact API patterns, `60_real_patterns.md` for L0/L1 evolution, and `10_search_policies.md` for round composition rules.",
+        "- Required AMD Gluon patches must be real executed Gluon paths, not import-only, helper-only, empty, or plain Triton fallbacks.",
+        "- Keep task scope narrow: one subpath/component unless `bundle_allowed=true`; use the docs for detailed rejection conditions and fix order.",
     ]
 
     if input_dialect == NV_GLUON_DIALECT:
@@ -1020,16 +1012,9 @@ def _build_gluon_working_set(feature_metadata: dict[str, Any] | None) -> list[st
     lines.extend(
         [
             "- High-frequency failure modes:",
-            "  - `zeros` / `full` need an explicit `layout` in Gluon paths.",
-            "  - A required AMD Gluon patch must not leave `tl.arange`, `tl.zeros`, `tl.full`, `tl.load`, `tl.store`, `tl.where`, `tl.dot`, or device scalar/math calls like `tl.cdiv`, `tl.minimum`, `tl.maximum`, `tl.exp` in the edited `@gluon.jit` subpath.",
-            "  - AMD buffer ops need typed values: `buffer_load other` should be a Gluon tensor with pointer element dtype/layout, and `buffer_store stored_value` must match the destination pointer element dtype.",
-            "  - Stage-specific L1 tasks must touch the named target symbol and execute the intended Gluon path; a definition-only `_..._gluon` helper while dispatch stays plain Triton is target mismatch even if it benchmarks.",
-            "  - `expand_dims` / `[:, None]` expects a `SliceLayout` input, not an arbitrary `BlockedLayout`.",
-            "  - `dot_fma` requires a `BlockedLayout` accumulator plus matching `DotOperandLayout` operands.",
-            "  - `AMDMFMALayout.instr_shape` must match the installed Triton/Gluon verifier and supported intrinsic shapes; do not derive it blindly from local block constants.",
-            "  - `threads_per_warp` in layouts must agree with the module warp size contract (wave64 on current AMD runs).",
-            "  - Define Gluon helpers before wiring host dispatch; do not import guessed `_..._gluon` symbols.",
-            "  - Be very cautious when converting between layouts that do not share the same parent distributed layout.",
+            "  - layout/tensor creation and broadcast mistakes: read `20_component_traits.md` and `50_api_reference.md`.",
+            "  - buffer dtype, MFMA layout, and target-specific API mistakes: read `20_component_traits.md`, `50_api_reference.md`, and `60_real_patterns.md`.",
+            "  - helper wiring, execution-path, and bundled-patch attribution mistakes: read `00_always_read.md` and `60_real_patterns.md`.",
             "- When you see `DistributedLinearLayout`, `PartitionedSharedLayout`, host `TensorDescriptor`, `reshape` / `permute` / `trans` tile unshuffle, nested 3D/5D `SliceLayout`, or JIT/AOT packaging gates, stop generic rewriting and read the operator-local source.",
         ]
     )
@@ -1088,24 +1073,8 @@ def _build_forced_triton_gluon_skill_context() -> list[str]:
         "Do NOT probe `from triton import gluon`; that is not the supported import path.",
         "Plain Triton fallback is only valid after a real Gluon patch using `triton.experimental.gluon`, `@gluon.jit`, or `gl.*` has been saved/tested and failed with a recorded compile/runtime error.",
         "",
-        "Before the first edit, write this in strategy notes:",
-        "```text",
-        "Gluon knowledge lookup plan:",
-        "- Task signals: APIs/layouts/errors seen in task and source.",
-        "- Required docs/headings: signal -> split doc path :: heading :: viewed=yes/no.",
-        "- Source sections viewed: operator-local files/functions used for layout or wiring.",
-        "- Missing details: none, or exact missing split-doc route.",
-        "",
-        "Gluon implementation plan:",
-        "- Scope: Extension L0 | Extension L1 | Hybrid, and one allowed subpath/component.",
-        "- Parent layouts: one line per logical expression.",
-        "- Index tensors: each `tl.arange(...)` and its `gl.arange(..., layout=...)` replacement.",
-        "- Tensor creation: accumulators, masks, and temporaries with explicit layout.",
-        "- Broadcasts: each `[:, None]` / `[None, :]` pair and shared parent layout.",
-        "- Matrix path: result layout, operand layouts, `convert_layout`, target op, or none.",
-        "- Module wiring: helper definitions and host dispatch call path.",
-        "```",
-        "If lookup rows are still viewed=no, view those sections before editing. If the implementation plan cannot name a layout for the scoped path, reduce scope before editing.",
+        "Before the first edit, write the `Gluon knowledge lookup plan`, `Gluon implementation plan`, `Performance hypothesis`, and `Patch evolution` blocks defined in `SKILL.md` and `00_always_read.md`.",
+        "If lookup rows are still viewed=no, view those sections before editing. If the implementation plan cannot satisfy the scoped path fields from the docs, reduce scope before editing.",
     ]
     if skill_path.is_file():
         try:

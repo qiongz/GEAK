@@ -68,6 +68,10 @@ torch2hip tasks.
    - the performance hypothesis before editing: why this Gluon change might help
      versus the safe Base/plain path, what overhead it may add, and what evidence
      would make it neutral or slower instead of a win;
+   - the patch evolution plan: `patch_0` should be the smallest real executed
+     Gluon path that can pass correctness; each later patch should change one
+     component or one dispatch decision and record the expected and observed
+     effect before moving on;
    - whether the task is L0, L1, or Hybrid, and the single subpath/component it
      is allowed to change. If the task names a stage/helper, write
      `Target symbol: <symbol>` and do not modify a different stage as the
@@ -133,6 +137,11 @@ implementation plan above, then edit only the scoped path.
   `buffer_load`, create `other` as a typed Gluon tensor compatible with
   `ptr.dtype.element_ty`; when using `buffer_store`, cast `stored_value` to the
   destination pointer element dtype if needed.
+- Patch evolution: keep patch history useful for later rounds. Do not bundle
+  buffer ops, MFMA, layout rewrites, scheduler changes, and launch tuning in one
+  patch unless the task explicitly says `bundle_allowed=true`. After each
+  `save_and_test`, record whether the changed component should be kept, reverted,
+  or composed later.
 
 ## Planner Metadata Contract
 
