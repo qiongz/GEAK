@@ -7,20 +7,37 @@ patch by comparing benchmark numbers -- no LLM involved.
 Measurement methodology:
 - Uses ``benchmark_baseline.txt`` (the canonical unmodified baseline benchmark)
 - Prioritizes ``GEAK_RESULT_LATENCY_MS=<number>`` marker (standardized)
-- Falls back to legacy parsers and universal latency keyword scanner
-- Only reports speedups > 1.0 (genuine improvements over true baseline)
-- Clamps LLM-inflated results to 1.0 when no real improvement exists
+- Falls back to per-case total latency for ``case_id: <ms> ms`` benchmark output
+- Reports actual speedup against the true baseline, including regressions (< 1.0)
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+_AMD_GLUON_PATCH_MARKERS = (
+    "triton.experimental.gluon",
+    "from triton.experimental import gluon",
+    "@gluon.jit",
+    "AMDMFMALayout",
+    "AMDWMMALayout",
+    "DotOperandLayout",
+    "buffer_load",
+    "buffer_store",
+)
+_PLAIN_TRITON_PATCH_MARKERS = (
+    "@triton.jit",
+    "triton.language",
+    "tl.load",
+    "tl.store",
+    "tl.dot",
+)
 
 
 def parse_median_latency_ms(output: str) -> float | None:
@@ -70,13 +87,38 @@ def parse_shape_count(output: str) -> int | None:
 def parse_shape_latencies_ms(output: str) -> dict[str, float]:
     """Extract per-shape latencies from harness benchmark output.
 
-    Expected format:
+    Expected formats:
         ``(32,4096): 0.0503 ms``
+        ``mla_decode_small: 0.0580 ms``
     """
     shape_latencies: dict[str, float] = {}
     for m in re.finditer(r"^\s*(\([^)]*\)):\s*([\d.]+(?:e[+-]?\d+)?)\s*ms\s*$", output, re.MULTILINE):
         shape_latencies[m.group(1)] = float(m.group(2))
+    for m in re.finditer(
+        r"^\s*([A-Za-z][A-Za-z0-9_.\-/]*)\s*:\s*([\d.]+(?:e[+-]?\d+)?)\s*ms\s*$",
+        output,
+        re.MULTILINE,
+    ):
+        case_id = m.group(1)
+        if case_id.lower() in {"median", "geomean", "mean", "total", "latency"}:
+            continue
+        shape_latencies[case_id] = float(m.group(2))
     return shape_latencies
+
+
+def _parse_shape_total_latency_ms(output: str) -> float | None:
+    shape_latencies = parse_shape_latencies_ms(output)
+    if not shape_latencies:
+        return None
+    total = sum(shape_latencies.values())
+    return total if total > 0 else None
+
+
+def _geomean_ms(shape_latencies: dict[str, float]) -> float | None:
+    values = [value for value in shape_latencies.values() if value > 0]
+    if not values:
+        return None
+    return math.exp(sum(math.log(value) for value in values) / len(values))
 
 
 def extract_benchmark_config_lines(output: str) -> list[str]:
@@ -166,6 +208,9 @@ def extract_latency_ms(text: str) -> float | None:
     val = parse_google_benchmark_ms(text)
     if val is not None:
         return val
+    val = _parse_shape_total_latency_ms(text)
+    if val is not None:
+        return val
 
     return _universal_latency_fallback(text)
 
@@ -210,6 +255,14 @@ def compute_shape_speedups(
     return results
 
 
+def _has_significant_shape_regression(
+    shape_speedups: dict[str, dict[str, float]],
+    *,
+    floor: float = 0.95,
+) -> bool:
+    return any((info.get("speedup") or 0.0) < floor for info in shape_speedups.values())
+
+
 def _find_original_baseline_ms(patch_dir: Path) -> float | None:
     """Walk up from patch_dir to find benchmark_baseline.txt (the canonical baseline).
 
@@ -232,37 +285,97 @@ def _find_original_baseline_ms(patch_dir: Path) -> float | None:
     return None
 
 
+def _find_original_baseline_text(patch_dir: Path) -> str | None:
+    d = patch_dir
+    for _ in range(8):
+        bl = d / "benchmark_baseline.txt"
+        if bl.is_file():
+            try:
+                return bl.read_text()
+            except OSError:
+                return None
+        parent = d.parent
+        if parent == d:
+            break
+        d = parent
+    return None
+
+
+def _find_task_metadata_for_patch_dir(patch_dir: Path) -> dict[str, Any]:
+    label = patch_dir.name
+    round_dir = patch_dir.parent.name
+    output_root = patch_dir.parent.parent.parent if len(patch_dir.parents) >= 3 else None
+    if output_root is None:
+        return {}
+    tasks_dir = output_root / "tasks" / round_dir
+    if not tasks_dir.is_dir():
+        return {}
+    candidates = list(tasks_dir.glob(f"*_{label}.md")) + list(tasks_dir.glob(f"{label}.md"))
+    if not candidates:
+        candidates = [p for p in tasks_dir.glob("*.md") if p.stem.endswith(label)]
+    if not candidates:
+        return {}
+    try:
+        from minisweagent.run.task_file import read_task_file
+
+        meta, _body = read_task_file(candidates[0])
+        return meta
+    except Exception as exc:
+        logger.debug("Could not read task metadata for %s: %s", patch_dir, exc)
+        return {}
+
+
+def _metadata_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def classify_patch_output_dialect(patch_text: str) -> str:
+    has_gluon = any(marker in patch_text for marker in _AMD_GLUON_PATCH_MARKERS) or bool(
+        re.search(r"\bgl\.(?:load|store|program_id|arange|zeros|full|cdiv|maximum|minimum|exp)\b", patch_text)
+    )
+    has_plain_triton = any(marker in patch_text for marker in _PLAIN_TRITON_PATCH_MARKERS)
+    if has_gluon and has_plain_triton:
+        return "mixed"
+    if has_gluon:
+        return "amd_gluon"
+    if has_plain_triton:
+        return "plain_triton"
+    return "unknown"
+
+
+def _dialect_contract_satisfied(required: str, actual: str) -> bool:
+    required = str(required or "any").strip().lower()
+    actual = str(actual or "unknown").strip().lower()
+    if required in {"", "any"}:
+        return True
+    if required == "mixed":
+        return actual == "mixed"
+    if required == "amd_gluon":
+        return actual in {"amd_gluon", "mixed"}
+    return actual == required
+
+
 def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
     """Deterministically select the best non-empty patch from a task directory.
 
     Uses ``benchmark_baseline.txt`` as the canonical (unmodified) baseline rather
-    than ``patch_0_test.txt`` which is the agent's first attempt.  Only
-    returns a result if a patch genuinely beats the true baseline (>1.0x).
+    than ``patch_0_test.txt`` which is the agent's first attempt.
     """
     original_bl = _find_original_baseline_ms(patch_dir)
 
-    baseline_file = patch_dir / "patch_0_test.txt"
-    baseline_text = ""
+    baseline_text = _find_original_baseline_text(patch_dir) or ""
     baseline_shape_latencies: dict[str, float] = {}
-    if original_bl is not None:
-        baseline_ms = original_bl
-        baseline_source = "benchmark_baseline.txt"
-        logger.debug("compute_best_patch(%s): using benchmark_baseline.txt (%.4f ms).", patch_dir.name, original_bl)
-        baseline_file_path = next(
-            (p for p in [patch_dir, *patch_dir.parents] if (p / "benchmark_baseline.txt").is_file()), None
-        )
-        if baseline_file_path is not None:
-            baseline_text = (baseline_file_path / "benchmark_baseline.txt").read_text()
-            baseline_shape_latencies = parse_shape_latencies_ms(baseline_text)
-    elif baseline_file.exists():
-        baseline_text = baseline_file.read_text()
-        baseline_ms = extract_latency_ms(baseline_text)
-        baseline_source = "patch_0_test.txt (FALLBACK)"
-        logger.debug("compute_best_patch(%s): fallback to patch_0_test.txt baseline.", patch_dir.name)
-        baseline_shape_latencies = parse_shape_latencies_ms(baseline_text)
-    else:
-        logger.debug("compute_best_patch(%s): no baseline found; returning None.", patch_dir.name)
+    if original_bl is None or not baseline_text:
+        logger.debug("compute_best_patch(%s): no canonical benchmark_baseline.txt found; returning None.", patch_dir.name)
         return None
+    baseline_ms = original_bl
+    baseline_source = "benchmark_baseline.txt"
+    logger.debug("compute_best_patch(%s): using benchmark_baseline.txt (%.4f ms).", patch_dir.name, original_bl)
+    baseline_shape_latencies = parse_shape_latencies_ms(baseline_text)
 
     if baseline_ms is None or baseline_ms <= 0:
         logger.debug("compute_best_patch(%s): invalid baseline_ms=%s; returning None.", patch_dir.name, baseline_ms)
@@ -276,6 +389,13 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
     best_patch_size: int = 0
     best_shape_speedups: dict[str, dict[str, float]] = {}
     best_candidate_shape_latencies: dict[str, float] = {}
+    best_candidate_shape_geomean: float | None = None
+    best_has_shape_regression = False
+    best_actual_output_dialect = "unknown"
+    baseline_shape_geomean = _geomean_ms(baseline_shape_latencies)
+    task_meta = _find_task_metadata_for_patch_dir(patch_dir)
+    required_patch_target_symbols = _metadata_list(task_meta.get("required_patch_target_symbols"))
+    required_output_dialect = str(task_meta.get("required_output_dialect") or "any").strip().lower() or "any"
 
     for test_file in sorted(patch_dir.glob("patch_*_test.txt")):
         name = test_file.stem.replace("_test", "")
@@ -286,12 +406,30 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         psz = patch_file.stat().st_size
         if psz == 0:
             continue
+        patch_text = patch_file.read_text(errors="replace")
+        if required_patch_target_symbols and not any(symbol in patch_text for symbol in required_patch_target_symbols):
+            logger.info(
+                "Skipping %s because it does not touch required target symbols: %s",
+                name,
+                required_patch_target_symbols,
+            )
+            continue
+        actual_output_dialect = classify_patch_output_dialect(patch_text)
+        if not _dialect_contract_satisfied(required_output_dialect, actual_output_dialect):
+            logger.info(
+                "Skipping %s because required_output_dialect=%s but patch classified as %s",
+                name,
+                required_output_dialect,
+                actual_output_dialect,
+            )
+            continue
 
         candidate_text = test_file.read_text()
         candidate_ms = extract_latency_ms(candidate_text)
         if candidate_ms is None or candidate_ms <= 0:
             continue
         candidate_shape_latencies = parse_shape_latencies_ms(candidate_text)
+        shape_speedups = compute_shape_speedups(baseline_shape_latencies, candidate_shape_latencies)
 
         speedup = baseline_ms / candidate_ms
         if speedup > best_speedup:
@@ -302,13 +440,15 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
             best_test_file = str(test_file)
             best_patch_size = psz
             best_candidate_shape_latencies = candidate_shape_latencies
-            best_shape_speedups = compute_shape_speedups(baseline_shape_latencies, candidate_shape_latencies)
+            best_candidate_shape_geomean = _geomean_ms(candidate_shape_latencies)
+            best_shape_speedups = shape_speedups
+            best_has_shape_regression = _has_significant_shape_regression(shape_speedups) if shape_speedups else False
+            best_actual_output_dialect = actual_output_dialect
 
-    if best_patch_id is None or best_speedup <= 1.0:
+    if best_patch_id is None:
         logger.debug(
-            "compute_best_patch(%s): no patch beat baseline (best_speedup=%.4f).",
+            "compute_best_patch(%s): no eligible patch found.",
             patch_dir.name,
-            best_speedup,
         )
         return None
 
@@ -323,7 +463,18 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         "baseline_source": baseline_source,
         "baseline_shape_latency_ms": baseline_shape_latencies,
         "candidate_shape_latency_ms": best_candidate_shape_latencies,
+        "baseline_shape_geomean_ms": round(baseline_shape_geomean, 6) if baseline_shape_geomean else None,
+        "candidate_shape_geomean_ms": (
+            round(best_candidate_shape_geomean, 6) if best_candidate_shape_geomean else None
+        ),
         "per_shape_speedups": best_shape_speedups,
+        "objective": "total_shape_latency_ms" if best_shape_speedups else "latency_ms",
+        "improves_true_baseline": best_speedup > 1.0,
+        "has_significant_shape_regression": best_has_shape_regression,
+        "required_output_dialect": required_output_dialect,
+        "actual_output_dialect": best_actual_output_dialect,
+        "dialect_contract_satisfied": _dialect_contract_satisfied(required_output_dialect, best_actual_output_dialect),
+        "required_patch_target_symbols": required_patch_target_symbols,
         "llm_selection_analysis": (
             f"Deterministic: baseline={baseline_ms:.4f}ms ({baseline_source}), "
             f"candidate={best_candidate_ms:.4f}ms from {best_patch_id}. "
@@ -335,13 +486,15 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
 def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
     """Overwrite ``best_results.json`` with deterministic selection if possible.
 
-    Uses the canonical baseline from benchmark_baseline.txt.  If no patch
-    genuinely improves on the true baseline, clamps any LLM-reported
-    speedup to 1.0x to prevent false positives.
+    Uses the canonical baseline from benchmark_baseline.txt.  Empty patches or
+    patches that miss explicit target-symbol metadata are invalidated.
     """
     det = compute_best_patch(patch_dir)
     existing_path = patch_dir / "best_results.json"
     original_bl = _find_original_baseline_ms(patch_dir)
+    task_meta = _find_task_metadata_for_patch_dir(patch_dir)
+    required_patch_target_symbols = _metadata_list(task_meta.get("required_patch_target_symbols"))
+    required_output_dialect = str(task_meta.get("required_output_dialect") or "any").strip().lower() or "any"
 
     if det is not None:
         existing_path.write_text(json.dumps(det, indent=2))
@@ -358,27 +511,70 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
             existing = json.loads(existing_path.read_text())
             pf = existing.get("best_patch_file")
 
+            if pf and Path(pf).exists() and required_patch_target_symbols:
+                patch_text = Path(pf).read_text(errors="replace")
+                if not any(symbol in patch_text for symbol in required_patch_target_symbols):
+                    logger.warning(
+                        "rewrite_best_results(%s): selected patch misses required target symbols %s.",
+                        patch_dir.name,
+                        required_patch_target_symbols,
+                    )
+                    existing["best_patch_id"] = None
+                    existing["best_patch_file"] = None
+                    existing["best_patch_speedup"] = 0.0
+                    existing["required_patch_target_symbols"] = required_patch_target_symbols
+                    existing["llm_selection_analysis"] = (
+                        existing.get("llm_selection_analysis") or ""
+                    ) + " [Invalidated: selected patch did not touch required target symbols]"
+                    existing_path.write_text(json.dumps(existing, indent=2))
+                    return existing
+
+            if pf and Path(pf).exists():
+                actual_output_dialect = classify_patch_output_dialect(Path(pf).read_text(errors="replace"))
+                if not _dialect_contract_satisfied(required_output_dialect, actual_output_dialect):
+                    logger.warning(
+                        "rewrite_best_results(%s): selected patch violates required_output_dialect=%s (actual=%s).",
+                        patch_dir.name,
+                        required_output_dialect,
+                        actual_output_dialect,
+                    )
+                    existing["best_patch_id"] = None
+                    existing["best_patch_file"] = None
+                    existing["best_patch_speedup"] = 0.0
+                    existing["required_output_dialect"] = required_output_dialect
+                    existing["actual_output_dialect"] = actual_output_dialect
+                    existing["dialect_contract_satisfied"] = False
+                    existing["llm_selection_analysis"] = (
+                        existing.get("llm_selection_analysis") or ""
+                    ) + " [Invalidated: selected patch violated required output dialect]"
+                    existing_path.write_text(json.dumps(existing, indent=2))
+                    return existing
+
             if pf and Path(pf).exists() and Path(pf).stat().st_size == 0:
-                logger.warning("rewrite_best_results(%s): empty patch; clamping speedup to 1.0.", patch_dir.name)
-                existing["best_patch_speedup"] = 1.0
+                logger.warning("rewrite_best_results(%s): empty patch; invalidating selection.", patch_dir.name)
+                existing["best_patch_id"] = None
+                existing["best_patch_file"] = None
+                existing["best_patch_speedup"] = 0.0
                 existing["llm_selection_analysis"] = (
                     existing.get("llm_selection_analysis") or ""
-                ) + " [Overridden: patch is empty (0 bytes), speedup clamped to 1.0]"
+                ) + " [Invalidated: patch is empty (0 bytes)]"
                 existing_path.write_text(json.dumps(existing, indent=2))
                 return existing
 
             if original_bl is not None:
                 logger.info(
-                    "rewrite_best_results(%s): no patch beat true baseline %.4f ms; clamping to 1.0.",
+                    "rewrite_best_results(%s): no eligible patch found against true baseline %.4f ms.",
                     patch_dir.name,
                     original_bl,
                 )
-                existing["best_patch_speedup"] = 1.0
+                existing["best_patch_speedup"] = 0.0
+                existing["best_patch_id"] = None
+                existing["best_patch_file"] = None
                 existing["baseline_latency_ms"] = original_bl
                 existing["baseline_source"] = "benchmark_baseline.txt"
                 existing["llm_selection_analysis"] = (
                     existing.get("llm_selection_analysis") or ""
-                ) + f" [Clamped: no patch beat true baseline {original_bl:.4f}ms]"
+                ) + f" [Invalidated: no eligible patch against true baseline {original_bl:.4f}ms]"
                 existing_path.write_text(json.dumps(existing, indent=2))
                 return existing
 

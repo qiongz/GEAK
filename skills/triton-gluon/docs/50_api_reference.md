@@ -94,8 +94,9 @@ def kernel(x_ptr, y_ptr, xnumel, XBLOCK: gl.constexpr, layout: gl.constexpr):
     pid = gl.program_id(0)
     offsets = pid * XBLOCK + gl.arange(0, XBLOCK, layout=layout)
     mask = offsets < xnumel
-    x = gl.amd.cdna3.buffer_load(ptr=x_ptr, offsets=offsets, mask=mask, other=0.0)
-    gl.amd.cdna3.buffer_store(ptr=y_ptr, offsets=offsets, stored_value=x, mask=mask)
+    other = gl.full([XBLOCK], 0.0, x_ptr.dtype.element_ty, layout=layout)
+    x = gl.amd.cdna3.buffer_load(ptr=x_ptr, offsets=offsets, mask=mask, other=other)
+    gl.amd.cdna3.buffer_store(ptr=y_ptr, offsets=offsets, stored_value=x.to(y_ptr.dtype.element_ty), mask=mask)
 
 def launch(x, y, XBLOCK=256, num_warps=4, num_ctas=1):
     layout = make_cdna_1d_layout(XBLOCK, num_warps)
@@ -184,6 +185,13 @@ Common memory and indexing APIs:
 - generic atomics such as `atomic_add`, `atomic_and`, `atomic_cas`,
   `atomic_max`, `atomic_min`, `atomic_or`, `atomic_xchg`, `atomic_xor`.
 
+Common scalar/math APIs used inside `@gluon.jit` paths:
+
+- use `gl.cdiv`, `gl.minimum`, `gl.maximum`, `gl.exp`, `gl.exp2`, `gl.where`,
+  `gl.floor`, `gl.ceil`, `gl.sqrt`, `gl.rsqrt`, and `gl.abs`;
+- host-side Python/Triton launch math may still use `triton.cdiv`, but device
+  scalar/math in the edited Gluon subpath should stay in the `gl.*` namespace.
+
 Common reductions and scans:
 
 - `sum`, `max`, `min`, `reduce`, `reduce_or`, `xor_sum`;
@@ -207,6 +215,7 @@ Planning implications:
 | `tl.load` / `tl.store` | `gl.load` / `gl.store` | Switch to AMD `buffer_load` / `buffer_store` when target family or existing AMD path requires it |
 | `tl.zeros((M, N), dtype=...)` | `gl.zeros((M, N), dtype=..., layout=layout)` | Always; accumulators need explicit layout |
 | `tl.full(...)` | `gl.full(..., layout=layout)` when supported by local Triton | Always for distributed tensors |
+| `tl.cdiv` / `tl.minimum` / `tl.maximum` / `tl.exp` inside device code | `gl.cdiv` / `gl.minimum` / `gl.maximum` / `gl.exp` | Keep host launch math outside `@gluon.jit`; do not leave device scalar/math in `tl.*` |
 | `tl.max` / `tl.sum` reductions | `gl.max` / `gl.sum` with matching layout assumptions | Softmax/reduction paths need API reference and correctness audit |
 | `reshape` / `permute` / `split` / `join` | Gluon shape APIs with layout-aware tensors | Preserve transformation semantics; source-first for unshuffle paths |
 | `tl.atomic_*` | generic `gl.atomic_*` or target-specific buffer atomics | Late-stage only; arch and dtype support must be checked |
@@ -366,6 +375,19 @@ For MFMA, the plan must name result layout, operand layouts, `convert_layout`,
 target op, and epilogue/store layout. If no correctness-passing Gluon anchor
 exists, keep the task at L0 layout/memory viability instead of trying MFMA over
 the whole original kernel.
+
+Buffer op dtype preconditions:
+
+- `buffer_load(..., other=...)` should use a typed Gluon tensor with the same
+  element dtype/layout as the loaded value, for example
+  `gl.full(shape, 0.0, ptr.dtype.element_ty, layout=layout)`. Do not rely on a
+  bare Python float literal when the verifier expects `other.dtype`.
+- `buffer_store(..., stored_value=...)` must store a value whose element dtype
+  matches the destination pointer element type. Cast before store when the
+  compute value is an accumulator dtype.
+- Generic `gl.load` / `gl.store` is the first candidate path; move to
+  `buffer_load` / `buffer_store` only after these dtype and layout preconditions
+  are named in the implementation plan.
 
 ### CDNA3 MFMA pattern
 
@@ -529,6 +551,8 @@ AMD-side:
 | `Did you forget to add @triton.jit` | helper called from the wrong JIT/language boundary | use `@gluon.jit` for Gluon device helpers and keep host helpers outside the kernel |
 | import error for `_..._gluon` helper | module wiring and definitions in the patch | define the helper before host dispatch imports or calls it |
 | `BlockedLayout size_per_thread` verifier failure | tile size, `threads_per_warp`, `warps_per_cta`, and power-of-two values | recompute layout from launch contract instead of patching arbitrary integers |
+| `buffer_load other dtype` or `other has no dtype` | `other` argument and loaded pointer element type | create `other` with `gl.full(shape, value, ptr.dtype.element_ty, layout=...)` |
+| `buffer_store stored_value` dtype mismatch | stored value dtype and destination pointer element type | cast the computed value to `out_ptr.dtype.element_ty` before `buffer_store` |
 | kernel compiles but target path is wrong | backend, arch, operator-local guards, namespace vs layout version | re-check the operator support matrix |
 | JIT Gluon import is missing | whether downstream expects JIT, AOT, or both | preserve or add fallback path instead of deleting it |
 | AOT compilation fails with scratch-related error | `global_scratch_size` or `profile_scratch_size` | keep JIT for that path or redesign the kernel |

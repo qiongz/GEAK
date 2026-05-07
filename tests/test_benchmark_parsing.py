@@ -1,6 +1,12 @@
 from pathlib import Path
 
-from minisweagent.run.postprocess.benchmark_parsing import compute_best_patch, parse_shape_latencies_ms
+import pytest
+
+from minisweagent.run.postprocess.benchmark_parsing import (
+    compute_best_patch,
+    extract_latency_ms,
+    parse_shape_latencies_ms,
+)
 
 
 def test_parse_shape_latencies_ms_extracts_each_shape() -> None:
@@ -20,6 +26,16 @@ def test_parse_shape_latencies_ms_extracts_each_shape() -> None:
         "(64,4096)": 0.0525,
         "(256,8192)": 0.0626,
     }
+
+
+def test_named_case_latencies_are_totaled_for_baseline_objective() -> None:
+    output = "case_small: 0.0566 ms\ncase_medium: 0.0558 ms\n"
+
+    assert parse_shape_latencies_ms(output) == {
+        "case_small": 0.0566,
+        "case_medium": 0.0558,
+    }
+    assert extract_latency_ms(output) == pytest.approx(0.1124)
 
 
 def test_compute_best_patch_includes_per_shape_speedups(tmp_path: Path) -> None:
@@ -76,3 +92,97 @@ def test_compute_best_patch_includes_per_shape_speedups(tmp_path: Path) -> None:
             "speedup": 1.0,
         },
     }
+
+
+def test_compute_best_patch_reports_regression_against_true_baseline(tmp_path: Path) -> None:
+    kernel_dir = tmp_path / "generic_kernel"
+    patch_dir = kernel_dir / "results" / "round_1" / "extension-l0-gluon-minimal-viability"
+    patch_dir.mkdir(parents=True)
+    (kernel_dir / "benchmark_baseline.txt").write_text(
+        "case_small: 0.0566 ms\ncase_medium: 0.0558 ms\n"
+    )
+    (patch_dir / "patch_0.patch").write_text("diff --git a/kernel.py b/kernel.py\n+@gluon.jit\n")
+    (patch_dir / "patch_0_test.txt").write_text(
+        "case_small: 0.0642 ms\ncase_medium: 0.0634 ms\n"
+    )
+    (patch_dir / "patch_1.patch").write_text("diff --git a/kernel.py b/kernel.py\n+@gluon.jit\n")
+    (patch_dir / "patch_1_test.txt").write_text(
+        "case_small: 0.0633 ms\ncase_medium: 0.0628 ms\n"
+    )
+
+    result = compute_best_patch(patch_dir)
+
+    assert result is not None
+    assert result["best_patch_id"] == "patch_1"
+    assert result["baseline_source"] == "benchmark_baseline.txt"
+    assert result["baseline_latency_ms"] == pytest.approx(0.1124)
+    assert result["candidate_latency_ms"] == pytest.approx(0.1261)
+    assert result["best_patch_speedup"] == pytest.approx(0.891356)
+    assert result["improves_true_baseline"] is False
+    assert result["objective"] == "total_shape_latency_ms"
+
+
+def test_compute_best_patch_enforces_required_target_symbol(tmp_path: Path) -> None:
+    root = tmp_path / "generic_kernel"
+    patch_dir = root / "results" / "round_1" / "extension-l1-targeted-memory"
+    patch_dir.mkdir(parents=True)
+    tasks_dir = root / "tasks" / "round_1"
+    tasks_dir.mkdir(parents=True)
+
+    from minisweagent.run.task_file import write_task_file
+
+    write_task_file(
+        tasks_dir / "06_extension-l1-targeted-memory.md",
+        {
+            "label": "extension-l1-targeted-memory",
+            "required_patch_target_symbols": ["target_stage_kernel"],
+        },
+        "Extension L1\nTarget symbol: target_stage_kernel\n",
+    )
+    (root / "benchmark_baseline.txt").write_text("case_a: 1.0 ms\ncase_b: 1.0 ms\n")
+    (patch_dir / "patch_1.patch").write_text("diff --git a/kernel.py b/kernel.py\n+def other_stage_kernel(): pass\n")
+    (patch_dir / "patch_1_test.txt").write_text("case_a: 0.4 ms\ncase_b: 0.4 ms\n")
+    (patch_dir / "patch_2.patch").write_text(
+        "diff --git a/kernel.py b/kernel.py\n+def target_stage_kernel(): pass\n"
+    )
+    (patch_dir / "patch_2_test.txt").write_text("case_a: 0.9 ms\ncase_b: 0.9 ms\n")
+
+    result = compute_best_patch(patch_dir)
+
+    assert result is not None
+    assert result["best_patch_id"] == "patch_2"
+    assert result["required_patch_target_symbols"] == ["target_stage_kernel"]
+
+
+def test_compute_best_patch_rejects_plain_fallback_for_required_gluon(tmp_path: Path) -> None:
+    root = tmp_path / "generic_kernel"
+    patch_dir = root / "results" / "round_1" / "extension-l0-gluon-minimal-viability"
+    patch_dir.mkdir(parents=True)
+    tasks_dir = root / "tasks" / "round_1"
+    tasks_dir.mkdir(parents=True)
+
+    from minisweagent.run.task_file import write_task_file
+
+    write_task_file(
+        tasks_dir / "06_extension-l0-gluon-minimal-viability.md",
+        {
+            "label": "extension-l0-gluon-minimal-viability",
+            "required_output_dialect": "amd_gluon",
+        },
+        "Extension L0\n",
+    )
+    (root / "benchmark_baseline.txt").write_text("case_a: 1.0 ms\ncase_b: 1.0 ms\n")
+    (patch_dir / "patch_1.patch").write_text("diff --git a/kernel.py b/kernel.py\n+tl.load(x)\n")
+    (patch_dir / "patch_1_test.txt").write_text("case_a: 0.2 ms\ncase_b: 0.2 ms\n")
+    (patch_dir / "patch_2.patch").write_text(
+        "diff --git a/kernel.py b/kernel.py\n+from triton.experimental import gluon\n+@gluon.jit\n"
+    )
+    (patch_dir / "patch_2_test.txt").write_text("case_a: 0.8 ms\ncase_b: 0.8 ms\n")
+
+    result = compute_best_patch(patch_dir)
+
+    assert result is not None
+    assert result["best_patch_id"] == "patch_2"
+    assert result["required_output_dialect"] == "amd_gluon"
+    assert result["actual_output_dialect"] == "amd_gluon"
+    assert result["dialect_contract_satisfied"] is True
