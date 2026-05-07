@@ -333,6 +333,73 @@ def _metadata_list(value: Any) -> list[str]:
     return []
 
 
+def _identifier_pattern(symbol: str) -> re.Pattern[str]:
+    return re.compile(rf"(?<![A-Za-z0-9_]){re.escape(symbol)}(?![A-Za-z0-9_])")
+
+
+def _contains_identifier(text: str, symbol: str) -> bool:
+    return bool(_identifier_pattern(symbol).search(text))
+
+
+def _patch_touches_any_target_symbol(patch_text: str, required_symbols: list[str]) -> bool:
+    return any(_contains_identifier(patch_text, symbol) for symbol in required_symbols)
+
+
+def _added_lines(patch_text: str) -> list[str]:
+    return [line[1:].strip() for line in patch_text.splitlines() if line.startswith("+") and not line.startswith("+++")]
+
+
+def _extract_added_gluon_jit_defs(patch_text: str) -> list[str]:
+    defs: list[str] = []
+    pending_gluon_jit = False
+    for line in _added_lines(patch_text):
+        if line.startswith("@gluon.jit"):
+            pending_gluon_jit = True
+            continue
+        match = re.match(r"def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", line)
+        if match:
+            if pending_gluon_jit:
+                defs.append(match.group(1))
+            pending_gluon_jit = False
+            continue
+        if line and not line.startswith("@"):
+            pending_gluon_jit = False
+    return defs
+
+
+def _added_line_calls_symbol(patch_text: str, symbol: str) -> bool:
+    call_pattern = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(symbol)}(?![A-Za-z0-9_])\s*(?:\[|\()")
+    for line in _added_lines(patch_text):
+        if not line or line.startswith(("#", "@", "def ", "class ", "import ", "from ")):
+            continue
+        if call_pattern.search(line):
+            return True
+    return False
+
+
+def _gluon_execution_contract_satisfied(
+    patch_text: str,
+    *,
+    required_symbols: list[str],
+    required_output_dialect: str,
+) -> bool:
+    """Reject helper-only Gluon patches for stage-specific required targets.
+
+    A patch that only defines ``target_gluon`` while the host still dispatches the
+    plain target path should not satisfy a stage-specific AMD Gluon task.
+    """
+    if required_output_dialect != "amd_gluon" or not required_symbols:
+        return True
+    gluon_defs = _extract_added_gluon_jit_defs(patch_text)
+    if not gluon_defs:
+        return True
+    exact_targets = {symbol for symbol in required_symbols}
+    for helper in gluon_defs:
+        if helper in exact_targets or _added_line_calls_symbol(patch_text, helper):
+            return True
+    return False
+
+
 def classify_patch_output_dialect(patch_text: str) -> str:
     has_gluon = any(marker in patch_text for marker in _AMD_GLUON_PATCH_MARKERS) or bool(
         re.search(r"\bgl\.(?:load|store|program_id|arange|zeros|full|cdiv|maximum|minimum|exp)\b", patch_text)
@@ -407,7 +474,10 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         if psz == 0:
             continue
         patch_text = patch_file.read_text(errors="replace")
-        if required_patch_target_symbols and not any(symbol in patch_text for symbol in required_patch_target_symbols):
+        if required_patch_target_symbols and not _patch_touches_any_target_symbol(
+            patch_text,
+            required_patch_target_symbols,
+        ):
             logger.info(
                 "Skipping %s because it does not touch required target symbols: %s",
                 name,
@@ -421,6 +491,17 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
                 name,
                 required_output_dialect,
                 actual_output_dialect,
+            )
+            continue
+        if not _gluon_execution_contract_satisfied(
+            patch_text,
+            required_symbols=required_patch_target_symbols,
+            required_output_dialect=required_output_dialect,
+        ):
+            logger.info(
+                "Skipping %s because it defines a Gluon helper without executing it for target symbols: %s",
+                name,
+                required_patch_target_symbols,
             )
             continue
 
@@ -474,6 +555,7 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         "required_output_dialect": required_output_dialect,
         "actual_output_dialect": best_actual_output_dialect,
         "dialect_contract_satisfied": _dialect_contract_satisfied(required_output_dialect, best_actual_output_dialect),
+        "gluon_execution_contract_satisfied": True,
         "required_patch_target_symbols": required_patch_target_symbols,
         "llm_selection_analysis": (
             f"Deterministic: baseline={baseline_ms:.4f}ms ({baseline_source}), "
@@ -513,7 +595,7 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
 
             if pf and Path(pf).exists() and required_patch_target_symbols:
                 patch_text = Path(pf).read_text(errors="replace")
-                if not any(symbol in patch_text for symbol in required_patch_target_symbols):
+                if not _patch_touches_any_target_symbol(patch_text, required_patch_target_symbols):
                     logger.warning(
                         "rewrite_best_results(%s): selected patch misses required target symbols %s.",
                         patch_dir.name,
@@ -530,7 +612,8 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
                     return existing
 
             if pf and Path(pf).exists():
-                actual_output_dialect = classify_patch_output_dialect(Path(pf).read_text(errors="replace"))
+                patch_text = Path(pf).read_text(errors="replace")
+                actual_output_dialect = classify_patch_output_dialect(patch_text)
                 if not _dialect_contract_satisfied(required_output_dialect, actual_output_dialect):
                     logger.warning(
                         "rewrite_best_results(%s): selected patch violates required_output_dialect=%s (actual=%s).",
@@ -547,6 +630,25 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
                     existing["llm_selection_analysis"] = (
                         existing.get("llm_selection_analysis") or ""
                     ) + " [Invalidated: selected patch violated required output dialect]"
+                    existing_path.write_text(json.dumps(existing, indent=2))
+                    return existing
+                if not _gluon_execution_contract_satisfied(
+                    patch_text,
+                    required_symbols=required_patch_target_symbols,
+                    required_output_dialect=required_output_dialect,
+                ):
+                    logger.warning(
+                        "rewrite_best_results(%s): selected patch defines Gluon helper without executing it.",
+                        patch_dir.name,
+                    )
+                    existing["best_patch_id"] = None
+                    existing["best_patch_file"] = None
+                    existing["best_patch_speedup"] = 0.0
+                    existing["required_patch_target_symbols"] = required_patch_target_symbols
+                    existing["gluon_execution_contract_satisfied"] = False
+                    existing["llm_selection_analysis"] = (
+                        existing.get("llm_selection_analysis") or ""
+                    ) + " [Invalidated: Gluon helper was defined but not executed for required target]"
                     existing_path.write_text(json.dumps(existing, indent=2))
                     return existing
 

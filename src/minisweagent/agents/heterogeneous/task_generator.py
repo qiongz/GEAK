@@ -1670,7 +1670,7 @@ def _build_search_space_allocation_guidance(
         "- Round 1 with only one Extension slot should produce exactly one L0 minimal viability task, not multiple Gluon tasks.",
         "- Shared Set tasks must include `Shared source family: <base_family_id>` when they map a Base strategy into a paired comparison.",
         "- Extension Set tasks must include `Extension layer: L0`, `Extension layer: L1`, or `Extension layer: Hybrid` in task_prompt.",
-        "- Stage-specific Extension L1 tasks must include `Target symbol: <function/helper>` in task_prompt and top-level `required_patch_target_symbols`; a patch that only changes a different stage is not a valid success.",
+        "- Stage-specific Extension L1 tasks must include `Target symbol: <function/helper>` in task_prompt and top-level `required_patch_target_symbols`; a patch that only changes a different stage, or only defines `_..._gluon` while dispatch remains on the plain Triton path, is not a valid success.",
         "- AMD Gluon tasks must reject leftover `tl.*` device APIs in the edited `@gluon.jit` path, including scalar/math calls such as `tl.cdiv`, `tl.minimum`, `tl.maximum`, and `tl.exp`; host launch math outside the Gluon kernel is separate.",
         "- Buffer lowering tasks must state the `buffer_load other` dtype/layout and `buffer_store stored_value` dtype contract before asking the worker to edit.",
         "- Plain Triton fallback is not a valid success for `required_output_dialect=amd_gluon`; fallback is only evidence after a real Gluon attempt using `from triton.experimental import gluon` fails and the failure is recorded.",
