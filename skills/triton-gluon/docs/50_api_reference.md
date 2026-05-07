@@ -63,6 +63,17 @@ Gluon keeps Triton's host launcher model: `@gluon.jit`, `kernel[grid](...)`,
 `triton.cdiv`, `program_id`, and `constexpr`. The difference is that layouts
 may now be host-created and passed as `constexpr`.
 
+Wiring rules before coding:
+
+- Define the Gluon kernel/helper in the edited module before the host dispatch
+  imports or calls it. Do not add an import for a guessed `_..._gluon` helper
+  that is not present in the patch.
+- A Gluon device helper must be `@gluon.jit` and must use Gluon language APIs.
+  A plain `@triton.jit` helper is a separate kernel-language boundary, not a
+  callable Gluon device helper.
+- Keep host-only layout construction, arch checks, and Python dispatch outside
+  `@gluon.jit`; pass layouts and constants as `constexpr`.
+
 ```python
 import triton
 from triton.experimental import gluon
@@ -202,6 +213,11 @@ Planning implications:
 | `tl.dot` / `tl.dot_scaled` | result layout + operand layouts + `convert_layout` + target-specific matrix op | Always; not a direct rename target |
 | tensor descriptor helpers | target-specific descriptor family | Only when the target family actually supports descriptors or tensor memory |
 | implicit shared-memory staging | `allocate_shared_memory` after the first correct candidate | Only after blocked-layout or matrix path is correct |
+
+The table is per planned subpath, not per token. If L0 chooses one RoPE, mask,
+load, or matrix subpath, every tensor in that subpath must be layout-aware
+Gluon. Leaving one `tl.arange(0, BLOCK_R)` in a RoPE branch while the rest of the
+kernel is `@gluon.jit` is still an invalid rewrite.
 
 ## slice_broadcast_recipe
 
@@ -344,6 +360,12 @@ These are not 1:1 renames. Treat descriptor setup as a correctness contract,
 not as a late cosmetic optimization.
 
 ## amd_quick_patterns
+
+Use AMD-specific memory or matrix patterns only after the layout plan is known.
+For MFMA, the plan must name result layout, operand layouts, `convert_layout`,
+target op, and epilogue/store layout. If no correctness-passing Gluon anchor
+exists, keep the task at L0 layout/memory viability instead of trying MFMA over
+the whole original kernel.
 
 ### CDNA3 MFMA pattern
 
@@ -502,7 +524,11 @@ AMD-side:
 | Symptom | Inspect first | Typical fix |
 | --- | --- | --- |
 | layout or IR verification fails | `BlockedLayout`, `threads_per_warp`, `warps_per_cta`, `order`, `num_warps`, target arch | make layout consistent with launch contract |
-| `AMDMFMALayout` or `instr_shape` construction fails | Triton version, 2D vs 3D `instr_shape`, layout version | add a real version guard and match expected layout form |
+| `AMDMFMALayout` or `instr_shape` construction fails | Triton version, 2D vs 3D `instr_shape`, supported intrinsic shape, layout version | add a real version guard and match expected layout form |
+| `GluonSemantic.arange() missing required positional argument: 'layout'` | edited `@gluon.jit` path for leftover `tl.arange` or layout-less arange | replace the whole planned index subpath with `gl.arange(..., layout=...)` |
+| `Did you forget to add @triton.jit` | helper called from the wrong JIT/language boundary | use `@gluon.jit` for Gluon device helpers and keep host helpers outside the kernel |
+| import error for `_..._gluon` helper | module wiring and definitions in the patch | define the helper before host dispatch imports or calls it |
+| `BlockedLayout size_per_thread` verifier failure | tile size, `threads_per_warp`, `warps_per_cta`, and power-of-two values | recompute layout from launch contract instead of patching arbitrary integers |
 | kernel compiles but target path is wrong | backend, arch, operator-local guards, namespace vs layout version | re-check the operator support matrix |
 | JIT Gluon import is missing | whether downstream expects JIT, AOT, or both | preserve or add fallback path instead of deleting it |
 | AOT compilation fails with scratch-related error | `global_scratch_size` or `profile_scratch_size` | keep JIT for that path or redesign the kernel |

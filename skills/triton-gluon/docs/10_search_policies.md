@@ -183,7 +183,8 @@ required_gluon_docs:
 Profile guidance:
 
 - `extension_l0_minimal`: add `gluon_component_traits_path` and
-  `gluon_api_reference_path`.
+  `gluon_api_reference_path`. The task must ask the worker for a pre-edit
+  layout/API mapping and must scope layout-heavy kernels to one Gluon subpath.
 - `nv_to_amd_translation`: add `gluon_component_traits_path`,
   `gluon_architecture_notes_path`, and `gluon_real_patterns_path`.
 - `memory_lowering`: add `gluon_component_traits_path`,
@@ -192,7 +193,9 @@ Profile guidance:
   anchor; do not wrap the original plain Triton body in `@gluon.jit` just to add
   `buffer_load` / `buffer_store`.
 - `matrix_lowering`: add `gluon_component_traits_path`,
-  `gluon_architecture_notes_path`, and `gluon_api_reference_path`.
+  `gluon_architecture_notes_path`, and `gluon_api_reference_path`. The task must
+  name the verified layout anchor, result layout, operand layouts, and target
+  matrix op; otherwise it should be downgraded to L0 layout viability.
 - `shape_bucketed_dispatch`: add `gluon_component_traits_path`,
   `gluon_architecture_notes_path`, and `gluon_real_patterns_path`.
 - `jit_aot_sensitive`: add `gluon_architecture_notes_path` and
@@ -220,7 +223,9 @@ Round 1:
 - fill mandatory Base families;
 - include one Extension L0 if AMD Gluon is allowed;
 - for layout-heavy kernels, make Extension L0 a narrow compileable subpath
-  rather than a full-kernel Gluon rewrite;
+  rather than a full-kernel Gluon rewrite. The L0 task should explicitly say
+  which index/mask/load/matrix skeleton is in scope and reject leftover plain
+  Triton tensor APIs in that scoped `@gluon.jit` path;
 - include small Shared probes when budget allows.
 
 Round 2:
@@ -231,6 +236,9 @@ Round 2:
 - make Extension L1 memory/buffer lowering refine the best correctness-passing
   Gluon L0 anchor. If no Gluon anchor passed, shrink the task to a layout or
   memory smoke path instead of restarting from plain Triton.
+- make Extension L1 matrix/MFMA lowering refine a verified Gluon layout anchor.
+  If the planner cannot name the anchor and operand/result layouts, do not emit
+  an MFMA task yet.
 
 Round 3:
 

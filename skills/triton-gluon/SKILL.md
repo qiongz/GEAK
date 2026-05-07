@@ -44,6 +44,24 @@ torch2hip tasks.
    lack detail, read `skills/triton-gluon/docs/70_backup_details.md`; if the
    detail is still missing, report the missing split-doc route so it can be
    added.
+5. Before the first edit, write a short Gluon knowledge lookup plan in your
+   strategy notes. It must list:
+   - task signals found in the kernel or task prompt, such as `tl.arange`,
+     `tl.dot`, MFMA, buffer ops, `[:, None]`, `BlockedLayout`, AOT/JIT, or
+     module wiring;
+   - the exact split-doc file and heading for each signal;
+   - whether that heading has been viewed;
+   - any missing detail that must be resolved before editing.
+6. After the lookup plan is complete, write a short Gluon implementation plan in your
+   strategy notes. It must name:
+   - the parent layout for each logical 1D/2D expression;
+   - every `tl.arange` / tensor creation that will become
+     `gl.arange(..., layout=...)`, `gl.zeros(..., layout=...)`, or
+     `gl.full(..., layout=...)`;
+   - every broadcast or `[:, None]` / `[None, :]` expression and its matching
+     `SliceLayout(axis, parent)`;
+   - whether the task is L0, L1, or Hybrid, and the single subpath/component it
+     is allowed to change.
 
 `save_and_test` enforces the required-doc gate for Gluon tasks.
 
@@ -74,6 +92,23 @@ torch2hip tasks.
    - Shared transplant
    - Hybrid/mixed dispatch when evidence justifies it
 5. Verify correctness and benchmark. Reject per-shape regressions.
+
+## Required AMD Gluon Implementation Contract
+
+For `required_output_dialect=amd_gluon`, do not start by wrapping the original
+plain Triton kernel in `@gluon.jit`. First produce the lookup plan and
+implementation plan above, then edit only the scoped path.
+
+- Extension L0: make one small Gluon subpath compile and preserve correctness
+  semantics. For layout-heavy kernels, this is usually one index/mask
+  expression, one load/store path, or one matrix-layout skeleton, not the full
+  attention/decode/GEMM body.
+- Extension L1: refine a correctness-passing Gluon or mixed anchor. If no anchor
+  exists, shrink the task to an L0-style layout/memory smoke path.
+- Matrix/MFMA work: do not introduce MFMA until result layout, operand layouts,
+  `convert_layout`, and valid `AMDMFMALayout.instr_shape` are known.
+- Module wiring: define the Gluon helper in the edited module before importing
+  or dispatching to it. Do not reference guessed `_..._gluon` symbols.
 
 ## Planner Metadata Contract
 
@@ -112,8 +147,14 @@ requires them. `save_and_test` gates on these paths.
 ## Self-Check Before Reporting Success
 
 - Did every required doc path get viewed with `str_replace_editor view`?
+- Did the pre-edit knowledge lookup plan list task signals, routed docs/headings,
+  viewed status, and missing details?
+- Did the pre-edit Gluon implementation plan list all parent layouts, aranges,
+  broadcasts, tensor creations, and the single allowed subpath/component?
 - Does a required `amd_gluon` result contain real Gluon markers or a valid
   `mixed` path?
+- Does every `@gluon.jit` tensor creation use `gl.*` with explicit layouts, not
+  leftover `tl.arange`, `tl.zeros`, `tl.full`, `tl.load`, `tl.dot`, or `tl.where`?
 - Does a required `mixed` result contain both Base/dispatch and Gluon paths?
 - Did correctness pass for every benchmark shape?
 - Did the patch avoid modifying harness, environment, or benchmark contract?

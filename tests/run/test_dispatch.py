@@ -126,6 +126,10 @@ def test_required_gluon_task_forces_skill_context_even_if_disabled(tmp_path) -> 
     assert "from triton.experimental import gluon" in task.task
     assert "from triton import gluon" in task.task
     assert "not the supported import path" in task.task
+    assert "Gluon knowledge lookup plan" in task.task
+    assert "Gluon implementation plan" in task.task
+    assert "viewed=no" in task.task
+    assert "If the implementation plan cannot name a layout" in task.task
     assert task.config["gluon_doc_gate_enabled"] is True
     assert any(path.endswith("skills/triton-gluon/docs/00_always_read.md") for path in task.config["gluon_doc_gate_required_paths"])
     assert any(path.endswith("skills/triton-gluon/docs/50_api_reference.md") for path in task.config["gluon_doc_gate_required_paths"])

@@ -10,6 +10,7 @@ the stable contract shared by Base, Shared, Extension, and Hybrid tasks.
 - `self_check`
 - `product_contract`
 - `stable_split_doc_index`
+- `pre_edit_gluon_patch_contract`
 - `semantic_contract`
 - `dialect_contract`
 - `imports_and_runtime`
@@ -41,12 +42,22 @@ the stable contract shared by Base, Shared, Extension, and Hybrid tasks.
 - Do not guess Gluon API names from memory.
 - If routed docs lack a required detail, read `70_backup_details.md`; use
   the missing-doc report path there if the detail is still absent.
+- Before editing, write a Gluon knowledge lookup plan in strategy notes. It must
+  map task signals to exact split-doc files/headings and record what has been
+  viewed.
+- Before editing, write a Gluon implementation plan in strategy notes. Do not
+  edit first and repair layout errors later.
 
 ## self_check
 
 Before reporting success:
 
 - Required docs were viewed through `str_replace_editor view`.
+- The Gluon knowledge lookup plan exists and maps each relevant signal to a
+  viewed split-doc file/heading or a reported missing-doc route.
+- The Gluon implementation plan exists and names every layout parent,
+  `gl.arange(..., layout=...)`, tensor creation layout, broadcast/SliceLayout
+  context, and allowed subpath/component.
 - Source semantics, wrapper ABI, masks, dtype behavior, and benchmark intent are
   preserved.
 - Required `amd_gluon` output is `amd_gluon` or valid `mixed`, not pure Triton.
@@ -169,6 +180,76 @@ again plus the closest trait/policy file. If the routed primary docs lack the
 required detail, read `70_backup_details.md` and report the missing split-doc
 route if still unresolved.
 
+## pre_edit_knowledge_lookup_contract
+
+Before editing any AMD Gluon candidate, write this lookup plan in strategy
+notes:
+
+```text
+Gluon knowledge lookup plan:
+- Task signals: <keywords/API/layout/error risks seen in task and source>.
+- Required docs/headings:
+  - <signal> -> <split doc path> :: <heading> :: viewed=yes/no
+- Source sections viewed: <operator-local files/functions read for layout or
+  module wiring>.
+- Missing details: <none, or the exact route/detail still unresolved>.
+```
+
+Signal routing examples:
+
+- `tl.arange`, masks, broadcasts, `[:, None]` -> `20_component_traits.md` /
+  `layout_basic` and `layout_slice_broadcast`, plus `50_api_reference.md` /
+  `common_rewrite_table` or `slice_broadcast_recipe`.
+- MFMA, `tl.dot`, `instr_shape` -> `20_component_traits.md` / `matrix_dot`,
+  `30_architecture_notes.md` / version or target section, and
+  `50_api_reference.md` / `amd_quick_patterns`.
+- `buffer_load` / `buffer_store` -> `20_component_traits.md` /
+  `memory_amd_buffer` and `60_real_patterns.md` /
+  `extension_l1_memory_lowering_anchor`.
+- `_..._gluon` helper wiring, JIT/AOT, prebuilt modules ->
+  `50_api_reference.md` / `jit_entry_and_host_launcher` and
+  `30_architecture_notes.md` / `execution_jit_aot_sensitive`.
+- `BlockedLayout` verifier, `size_per_thread`, parent-layout mismatch ->
+  `20_component_traits.md` / `layout_basic` and `layout_slice_broadcast`.
+
+Do not write code while any required row is still `viewed=no`, unless the route
+is genuinely missing and has been recorded as a missing-doc detail.
+
+## pre_edit_gluon_patch_contract
+
+For any task that will edit a real AMD Gluon candidate, write the following plan
+before changing code:
+
+```text
+Gluon implementation plan:
+- Scope: Extension L0 | Extension L1 | Hybrid, and the single subpath/component
+  allowed by this task.
+- Parent layouts: one line per logical expression, e.g. [H,C], [H,R], [H,N],
+  [Q,K], [P,V].
+- Index tensors: every original `tl.arange(...)` and its replacement
+  `gl.arange(..., layout=<layout>)`.
+- Tensor creation: every accumulator / mask / temporary and its explicit layout.
+- Broadcasts: every `[:, None]` / `[None, :]` pair and the shared parent layout
+  used to derive both `SliceLayout` inputs.
+- Matrix path: result layout, operand layouts, `convert_layout`, and target op,
+  or `none` if this patch is not doing matrix lowering.
+- Module wiring: helper functions being defined and how the host dispatch calls
+  them.
+```
+
+Rules:
+
+- A required AMD Gluon task must not begin as a plain Triton body wrapped in
+  `@gluon.jit`.
+- Inside a `@gluon.jit` body, do not leave plain Triton tensor APIs such as
+  `tl.arange`, `tl.load`, `tl.store`, `tl.dot`, `tl.where`, `tl.zeros`, or
+  `tl.full` in the edited Gluon path.
+- If the plan cannot name the layout for an index, mask, temporary, or matrix
+  operand, reduce the task scope before editing.
+- If L1 has no correctness-passing Gluon/mixed anchor, do not attempt MFMA or
+  buffer lowering over the full original kernel; shrink to an L0-style smoke
+  path and record that no anchor exists.
+
 ## semantic_contract
 
 ### Trait: semantics_contract
@@ -193,6 +274,9 @@ compared against the same benchmark contract.
   and benchmark intent.
 - Recover the implicit `tl.arange` / tile / `num_warps` layout before changing
   APIs.
+- Convert the planned subset completely. A partial Gluon patch that leaves
+  `tl.arange` or layout-less tensor creation in the edited `@gluon.jit` path is
+  not a valid L0 result.
 - Generate an early minimal `amd_gluon` viability task only after the Base Set
   quota is preserved.
 - Keep plain Triton as a benchmarked competitor unless AMD Gluon is required.
@@ -291,6 +375,12 @@ Read only the file needed for the current task:
 - Producing optimized `nv_gluon`.
 - Renaming NVIDIA APIs into guessed AMD names.
 - Replacing `tl.dot` with MFMA / WMMA without result and operand layouts.
+- Wrapping a plain Triton body in `@gluon.jit` without first replacing tensor
+  creation, indexing, loads/stores, masks, reductions, and matrix ops with
+  layout-aware Gluon equivalents for the edited path.
+- Reusing one `SliceLayout`-derived index across different parent layouts.
+- Importing or dispatching to guessed `_..._gluon` helper names that are not
+  defined in the patch/module.
 - Adding MFMA when the source has no matrix trait.
 - Starting with descriptor, async, persistent, scheduler, atomics, or work
   stealing before a simpler AMD Gluon candidate passes correctness.

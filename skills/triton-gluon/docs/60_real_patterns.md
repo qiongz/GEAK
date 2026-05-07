@@ -165,6 +165,11 @@ Prefer one of these L0 scopes:
 - one small matrix-layout skeleton without full epilogue;
 - one source-first extraction of layout contracts and host launcher alignment.
 
+For the chosen L0 scope, fully convert that subpath to Gluon. Do not leave a
+plain Triton island such as `tl.arange(0, BLOCK_R)` in a RoPE or mask branch
+inside `@gluon.jit`; if a branch is too hard to convert, it is outside the L0
+scope and should remain outside the patch.
+
 Defer full attention/decode/GEMM rewrites until after L0 proves the relevant
 layout family compiles. L1 tasks can then add memory lowering, matrix lowering,
 or shared/descriptor features one at a time.
@@ -193,6 +198,11 @@ Rules:
 - If no Gluon anchor has passed correctness, downgrade the L1 memory task to a
   narrower layout/memory smoke path and report that no anchor exists.
 - Compare against the verified Gluon anchor as well as the original baseline.
+
+Extension L1 matrix/MFMA lowering follows the same anchor rule. Do not use MFMA
+as the first real Gluon attempt for a layout-heavy kernel. The task must name the
+anchor layout, result layout, operand layouts, and exact single matrix subpath
+being lowered; otherwise keep it as an L0 layout skeleton.
 
 ## layout_sync_descriptor_mental_model
 
@@ -516,6 +526,10 @@ or optimization logs into reusable syntax guidance.
 - Mixing AMD and NVIDIA layout families in one kernel path.
 - Textually replacing `tl.dot` with AMD matrix ops without result and operand
   layouts.
+- Wrapping the original plain Triton body in `@gluon.jit` and then fixing
+  compiler errors one by one instead of starting from a scoped layout plan.
+- Treating L1 MFMA/buffer work as a fresh rewrite from the original plain
+  Triton kernel when no correctness-passing Gluon anchor exists.
 - Adding MFMA / WMMA when the source has no matrix trait.
 - Assuming every AMD target should use the same CDNA3/4 recipe.
 - Assuming descriptor, tensor-memory, or cluster APIs are portable by name.
