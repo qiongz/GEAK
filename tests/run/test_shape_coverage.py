@@ -35,6 +35,7 @@ from minisweagent.run.pipeline_helpers import (
     inject_pipeline_context,
 )
 from minisweagent.run.preprocess.benchmark_parsing import (
+    classify_patch_output_dialect,
     compute_best_patch,
     discover_performance_report,
     extract_latency_ms,
@@ -265,6 +266,48 @@ def test_compute_best_patch_uses_per_case_total_latency(tmp_path: Path) -> None:
     assert best["per_shape_speedups"]["pa_decode_medium"]["speedup"] == pytest.approx(1.098854, rel=1e-5)
 
 
+def test_compute_best_patch_marks_required_gluon_plain_triton_fallback(tmp_path: Path) -> None:
+    patch_dir = tmp_path / "results" / "round_1" / "ext-l0-gluon"
+    patch_dir.mkdir(parents=True)
+    root = patch_dir.parent.parent.parent
+    tasks_dir = root / "tasks" / "round_1"
+    tasks_dir.mkdir(parents=True)
+    from minisweagent.run.task_file import write_task_file
+
+    write_task_file(
+        tasks_dir / "06_ext-l0-gluon.md",
+        {
+            "label": "ext-l0-gluon",
+            "priority": 6,
+            "kernel_type": "triton",
+            "search_set": "extension",
+            "required_output_dialect": "amd_gluon",
+        },
+        "Extension task",
+    )
+    (root / "benchmark_baseline.txt").write_text("case_a: 1.0000 ms\ncase_b: 1.0000 ms\n")
+    (patch_dir / "patch_1.patch").write_text(
+        "diff --git a/kernel.py b/kernel.py\n+import triton\n+import triton.language as tl\n+tl.load(x)\n"
+    )
+    (patch_dir / "patch_1_test.txt").write_text("case_a: 0.9000 ms\ncase_b: 0.9000 ms\n")
+
+    best = compute_best_patch(patch_dir)
+    assert best is not None
+    assert best["required_output_dialect"] == "amd_gluon"
+    assert best["actual_output_dialect"] == "plain_triton"
+    assert best["dialect_contract_satisfied"] is False
+    assert best["fallback_used"] is True
+
+
+def test_classify_patch_output_dialect_detects_gluon() -> None:
+    assert (
+        classify_patch_output_dialect(
+            "from triton.experimental import gluon\nfrom triton.experimental.gluon import language as gl\n@gluon.jit\ndef k():\n    x = gl.load(ptr)\n"
+        )
+        == "amd_gluon"
+    )
+
+
 def test_shape_list_bucket_detection_uses_dimension_indices() -> None:
     same_shape_cases = [
         {"params": {"shape": [1, 16, 16, 128, 2048]}}
@@ -458,6 +501,8 @@ def test_shape_coverage_guidance_block_lists_cases_and_buckets() -> None:
     assert "Observed cases" in guidance
     assert "perf1" in guidance
     assert "instr_shape" in guidance
+    assert "explicit host-side dispatch" in guidance
+    assert "@triton.heuristics" in guidance
 
 
 def test_shape_coverage_guidance_returns_empty_for_single_or_unknown() -> None:
@@ -524,6 +569,8 @@ def test_pipeline_helpers_shape_working_set_built_for_multi() -> None:
     text = "\n".join(lines)
     assert "## Shape Coverage Working Set" in text
     assert "Bucketed coverage" in text
+    assert "explicit host-side dispatch" in text
+    assert "@triton.heuristics" in text
     assert "perf1" in text
 
 
@@ -1183,3 +1230,31 @@ def test_inject_pipeline_context_includes_shape_coverage_block() -> None:
     )
     assert "## Shape Coverage Working Set" in body
     assert "TASK BODY" in body
+
+
+def test_inject_pipeline_context_prints_absolute_gluon_split_doc_paths() -> None:
+    feature_metadata = {
+        "kernel_type": "triton",
+        "input_dialect": "plain_triton",
+        "gluon_feature_mode": "auto",
+        "gluon_baseline_profile": "raw",
+        "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+        "preferred_output_dialects": ["amd_gluon", "plain_triton"],
+        "output_dialect_search_policy": "prefer_amd_gluon_if_viable_else_plain_triton",
+        "target_backend": "hip/gfx942",
+        "shape_coverage_profile": SHAPE_COVERAGE_UNKNOWN,
+    }
+    body, _cfg = inject_pipeline_context(
+        "TASK BODY",
+        {},
+        feature_metadata=feature_metadata,
+        gluon_always_read_path="/abs/geak/skills/triton-gluon/docs/00_always_read.md",
+        gluon_api_reference_path="/abs/geak/skills/triton-gluon/docs/50_api_reference.md",
+        gluon_real_patterns_path="/abs/geak/skills/triton-gluon/docs/60_real_patterns.md",
+    )
+
+    assert "Split-doc entrypoint: /abs/geak/skills/triton-gluon/docs/00_always_read.md" in body
+    assert "API syntax, launch skeletons" in body
+    assert "/abs/geak/skills/triton-gluon/docs/50_api_reference.md" in body
+    assert "Real aiter patterns" in body
+    assert "/abs/geak/skills/triton-gluon/docs/60_real_patterns.md" in body

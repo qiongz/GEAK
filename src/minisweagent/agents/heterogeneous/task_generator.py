@@ -85,9 +85,20 @@ logger = logging.getLogger(__name__)
 _GEAK_REPO_ROOT = get_repo_root()
 
 _KNOWLEDGE_BASE_REL = "knowledge_base/optimization_strategies.py"
+_GLUON_SKILL_REL = "skills/triton-gluon/SKILL.md"
 _GLUON_GUIDE_REL = "docs/triton_gluon.md"
 _GLUON_KB_REL = "knowledge-base/amd-knowledge-base/layer-3-libraries/compilers/triton-gluon-on-rocm.md"
 _GLUON_EXAMPLES_REL = "examples/triton_gluon_inputs/README.md"
+_GLUON_SPLIT_DOC_RELS = {
+    "gluon_always_read_path": "skills/triton-gluon/docs/00_always_read.md",
+    "gluon_search_policies_path": "skills/triton-gluon/docs/10_search_policies.md",
+    "gluon_component_traits_path": "skills/triton-gluon/docs/20_component_traits.md",
+    "gluon_architecture_notes_path": "skills/triton-gluon/docs/30_architecture_notes.md",
+    "gluon_examples_doc_path": "skills/triton-gluon/docs/40_examples.md",
+    "gluon_api_reference_path": "skills/triton-gluon/docs/50_api_reference.md",
+    "gluon_real_patterns_path": "skills/triton-gluon/docs/60_real_patterns.md",
+    "gluon_backup_details_path": "skills/triton-gluon/docs/70_backup_details.md",
+}
 _TRITON_FAMILY_MARKERS = (
     "@triton",
     "tl.",
@@ -130,6 +141,9 @@ _BASE_FAMILY_LABEL_MARKERS: dict[str, tuple[str, ...]] = {
     _BASE_FAMILY_GENERIC_FUSION: ("fusion", "fuse"),
     _BASE_FAMILY_GENERIC_MEMORY: ("memory", "coalesc", "layout"),
 }
+
+_VALID_SEARCH_SETS = {"base", "shared", "extension"}
+_VALID_REQUIRED_OUTPUT_DIALECTS = {"plain_triton", "amd_gluon", "mixed", "any"}
 
 
 # ============================================================================
@@ -723,6 +737,11 @@ def write_task_files(
             "allowed_skill_tiers": list(allowed_skill_tiers),
             **task_knowledge_paths,
         }
+        if str(kernel_type or "").strip().lower() == "triton":
+            if t.config.get("search_set"):
+                metadata["search_set"] = t.config["search_set"]
+            if t.config.get("required_output_dialect"):
+                metadata["required_output_dialect"] = t.config["required_output_dialect"]
         body = f"# {t.label}\n\n{t.task}\n"
         write_task_file(task_path, metadata, body)
         paths.append(task_path)
@@ -774,26 +793,41 @@ def _resolve_task_knowledge_paths(
         allowed_output_dialects=feature_meta.get("allowed_output_dialects"),
     )
 
+    gluon_skill_path = (_GEAK_REPO_ROOT / _GLUON_SKILL_REL).resolve() if uses_gluon_guidance else None
     gluon_guide_path = (_GEAK_REPO_ROOT / _GLUON_GUIDE_REL).resolve() if uses_gluon_guidance else None
     gluon_kb_path = (_GEAK_REPO_ROOT / _GLUON_KB_REL).resolve() if uses_gluon_guidance else None
     gluon_examples_path = (_GEAK_REPO_ROOT / _GLUON_EXAMPLES_REL).resolve() if uses_gluon_guidance else None
+    split_doc_paths = {
+        key: (_GEAK_REPO_ROOT / rel).resolve()
+        for key, rel in _GLUON_SPLIT_DOC_RELS.items()
+    } if uses_gluon_guidance else {}
+    if gluon_skill_path and not gluon_skill_path.exists():
+        gluon_skill_path = None
     if gluon_guide_path and not gluon_guide_path.exists():
         gluon_guide_path = None
     if gluon_kb_path and not gluon_kb_path.exists():
         gluon_kb_path = None
     if gluon_examples_path and not gluon_examples_path.exists():
         gluon_examples_path = None
+    split_doc_paths = {
+        key: path
+        for key, path in split_doc_paths.items()
+        if path.exists()
+    }
 
     primary_knowledge_path = knowledge_base_path
     if primary_knowledge_path is None and uses_gluon_guidance:
         primary_knowledge_path = gluon_kb_path or gluon_guide_path
 
-    return {
+    resolved = {
         "knowledge_base_path": str(primary_knowledge_path) if primary_knowledge_path else "",
+        "gluon_skill_path": str(gluon_skill_path) if gluon_skill_path else "",
         "gluon_guide_path": str(gluon_guide_path) if gluon_guide_path else "",
         "gluon_kb_path": str(gluon_kb_path) if gluon_kb_path else "",
         "gluon_examples_path": str(gluon_examples_path) if gluon_examples_path else "",
     }
+    resolved.update({key: str(path) for key, path in split_doc_paths.items()})
+    return resolved
 
 
 def _read_kernel_signal_text(
@@ -1051,6 +1085,47 @@ def _build_evidence_anchored_composition_guidance(has_prior_evidence: bool) -> s
             "- No prior-round evidence yet: do not force composition in round 1; generate Base anchors and Gluon/Shared evidence so later rounds can compose safely."
         )
     return "\n".join(lines)
+
+
+def _parse_tagged_value(text: str, tag: str) -> str | None:
+    match = re.search(rf"{re.escape(tag)}\s*:\s*`?([A-Za-z0-9_/-]+)`?", text, re.IGNORECASE)
+    return match.group(1).strip().lower() if match else None
+
+
+def _infer_search_set_and_required_output(label: str, task_prompt: str, item: dict[str, Any] | None = None) -> tuple[str, str]:
+    """Infer lightweight Triton-family search metadata for task frontmatter."""
+    item = item or {}
+    text = f"{label}\n{task_prompt}".lower()
+    hybrid_like = "extension layer: hybrid" in text or "hybrid_dispatch" in text or "hybrid dispatch" in text
+    search_set = str(item.get("search_set") or "").strip().lower()
+    required_output = str(item.get("required_output_dialect") or "").strip().lower()
+
+    tagged_search = _parse_tagged_value(task_prompt, "Search set")
+    tagged_output = _parse_tagged_value(task_prompt, "Required output dialect")
+    if tagged_search:
+        search_set = tagged_search
+    if tagged_output:
+        required_output = tagged_output
+
+    if search_set not in _VALID_SEARCH_SETS:
+        if "shared set" in text or label.lower().startswith(("shared-", "compose-", "composition-")):
+            search_set = "shared"
+        elif "extension set" in text or label.lower().startswith(("ext-", "extension-")):
+            search_set = "extension"
+        else:
+            search_set = "base"
+
+    if required_output not in _VALID_REQUIRED_OUTPUT_DIALECTS:
+        if hybrid_like:
+            required_output = "mixed"
+        elif search_set == "base":
+            required_output = "plain_triton"
+        elif search_set == "extension":
+            required_output = "amd_gluon"
+        else:
+            required_output = "any"
+
+    return search_set, required_output
 
 
 def _gluon_trait_headings(traits: list[str]) -> list[str]:
@@ -1467,12 +1542,14 @@ def _build_search_space_allocation_guidance(
         f"- Shared Set (Triton/Gluon common strategies): {shared_slots} task(s) when budget allows. Shared tasks are paired strategy mappings from a Base idea into `plain_triton variant`, `amd_gluon variant`, or a paired comparison; they are not generic Gluon rewrites. Label these tasks as `Shared Set` in task_prompt.",
         extension_allocation,
         "Rules:",
+        "- Task metadata contract for Triton-family tasks: Base tasks use `search_set=base` and `required_output_dialect=plain_triton`; Shared tasks use `search_set=shared` and `required_output_dialect=any`; true Gluon Extension L0/L1 tasks use `search_set=extension` and `required_output_dialect=amd_gluon`; Hybrid dispatch tasks use `required_output_dialect=mixed` and may be `search_set=shared` or `search_set=extension` depending on which evidence they refine.",
         "- Do not replace or reduce Base Set tasks with Gluon tasks; Extension and Shared slots are additive.",
         "- Keep the same correctness and benchmark contract for all sets.",
         "- Layering order: Base Set -> Extension L0 viability -> Shared paired mapping -> Extension L1 trait-specific lowering -> later-round Hybrid/Mixed dispatch.",
         "- Round 1 with only one Extension slot should produce exactly one L0 minimal viability task, not multiple Gluon tasks.",
         "- Shared Set tasks must include `Shared source family: <base_family_id>` when they map a Base strategy into a paired comparison.",
         "- Extension Set tasks must include `Extension layer: L0`, `Extension layer: L1`, or `Extension layer: Hybrid` in task_prompt.",
+        "- Plain Triton fallback is not a valid success for `required_output_dialect=amd_gluon`; fallback is only evidence after a real Gluon attempt using `from triton.experimental import gluon` fails and the failure is recorded.",
         "- If a plain Triton candidate wins, accept it as the best result rather than forcing more Gluon work.",
         "- If a Triton strategy wins and maps cleanly to Gluon traits, a later round may create an AMD Gluon variant of that winning strategy.",
         "- If an AMD Gluon candidate wins on only some shapes or sub-operations, a later round may create a `mixed/hybrid` candidate that dispatches between plain Triton and AMD Gluon by host-side shape/feature checks; the mixed path must keep per-shape no-regression and must be compared against a Base or Shared competitor.",
@@ -1526,7 +1603,7 @@ def _build_gluon_planning_traits_guidance(
         "## Gluon Planning Traits",
         f"- Detected traits: {', '.join(f'`{trait}`' for trait in traits)}",
         "- Use these traits to allocate candidate task slots. They are planning constraints, not implementation templates.",
-        "- Read guidance: do not read the whole Gluon guide first. In `docs/triton_gluon.md`, search for `## Quick section map for agents`, then search for these stable headings and view only those snippets:",
+        "- Read guidance: do not read the whole long guide first. Start with `skills/triton-gluon/docs/00_always_read.md`, use its `stable_split_doc_index`, then view only the split-doc files and stable headings relevant to this task:",
         *[f"  - `{heading}`" for heading in _gluon_trait_headings(traits)],
         "",
         "Prefer First:",
@@ -1781,8 +1858,8 @@ def _build_shape_coverage_guidance(
     if profile == SHAPE_COVERAGE_BUCKETED:
         lines.append(
             "- Because shapes span multiple buckets (small / medium / large), plan for "
-            "shape-bucketed dispatch backed by autotune or shape-specialized kernels gated "
-            "by host-side selection."
+            "explicit host-side dispatch that selects shape-specialized kernels or launch "
+            "parameters. Do not hide the bucket decision inside `@triton.heuristics`."
         )
     if "shape_layout_constexpr_risk" in trait_set:
         lines.append(
@@ -2253,8 +2330,15 @@ def _task_matches_base_family(task: AgentTask, family: str) -> bool:
 
 
 def _is_gluon_extension_task(task: AgentTask) -> bool:
+    search_set = str(task.config.get("search_set") or "").strip().lower()
+    if search_set:
+        return search_set == "extension"
     text = f"{task.label}\n{task.task}".lower()
-    return "gluon" in text or "extension set" in text or "extension layer:" in text
+    return (
+        "extension set" in text
+        or "extension layer:" in text
+        or task.label.lower().startswith(("ext-", "extension-"))
+    )
 
 
 def _has_l0_extension_tag(task: AgentTask) -> bool:
@@ -2359,7 +2443,11 @@ def _parse_llm_response(
         if agent_type not in type_to_class:
             logger.debug("_parse_llm_response: unknown agent_type %r for '%s'; using default class.", agent_type, label)
 
-        cfg: dict[str, Any] = {}
+        search_set, required_output_dialect = _infer_search_set_and_required_output(label, task_prompt, item)
+        cfg: dict[str, Any] = {
+            "search_set": search_set,
+            "required_output_dialect": required_output_dialect,
+        }
 
         tasks.append(
             AgentTask(

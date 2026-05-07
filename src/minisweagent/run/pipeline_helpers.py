@@ -775,13 +775,34 @@ def _gpu_arch_context(profiling_path: str) -> list[str]:
 def _build_gluon_reference_block(
     *,
     knowledge_base_path: str | None = None,
+    gluon_skill_path: str | None = None,
     gluon_guide_path: str | None = None,
     gluon_kb_path: str | None = None,
     gluon_examples_path: str | None = None,
+    gluon_always_read_path: str | None = None,
+    gluon_search_policies_path: str | None = None,
+    gluon_component_traits_path: str | None = None,
+    gluon_architecture_notes_path: str | None = None,
+    gluon_examples_doc_path: str | None = None,
+    gluon_api_reference_path: str | None = None,
+    gluon_real_patterns_path: str | None = None,
+    gluon_backup_details_path: str | None = None,
 ) -> list[str]:
     refs: list[tuple[str, str]] = []
+    split_refs: list[tuple[str, str | None]] = [
+        ("Triton-Gluon skill", gluon_skill_path),
+        ("Split-doc entrypoint", gluon_always_read_path),
+        ("Planner/task allocation", gluon_search_policies_path),
+        ("Implementation traits", gluon_component_traits_path),
+        ("Architecture, target, JIT/AOT, version sensitivity", gluon_architecture_notes_path),
+        ("API syntax, launch skeletons, compatibility checks, failure-fix order", gluon_api_reference_path),
+        ("Real aiter patterns, family differences, source-first triggers, benchmark rules", gluon_real_patterns_path),
+        ("Schematic examples", gluon_examples_doc_path),
+        ("Residual backup routing", gluon_backup_details_path),
+    ]
+    refs.extend((label, path) for label, path in split_refs if path)
     if gluon_guide_path:
-        refs.append(("GEAK Gluon guide", gluon_guide_path))
+        refs.append(("Backup long-form Gluon guide", gluon_guide_path))
     if gluon_kb_path:
         refs.append(("Structured Gluon knowledge base", gluon_kb_path))
     if gluon_examples_path:
@@ -798,8 +819,18 @@ def _build_gluon_reference_block(
     lines.append(
         "- Read the short working-set rules below first. Use these paths with `view` only when you need deeper detail."
     )
+    if gluon_always_read_path:
+        lines.append(
+            f"- Mandatory split-doc routing: first read the absolute entrypoint `{gluon_always_read_path}`, "
+            "then use its `Task routing` table to choose exact split-doc files and headings."
+        )
+    else:
+        lines.append(
+            "- Mandatory split-doc routing: first read the absolute `00_always_read.md` path listed above, "
+            "then use its `Task routing` table to choose exact split-doc files and headings."
+        )
     lines.append(
-        "- For the GEAK Gluon guide, search for `## Quick section map for agents`, then search for `### Trait: ...` headings that match the task. Do not read the whole guide first."
+        "- Do not implement from memory or guess Gluon API names. If the routed primary split docs do not contain the required detail, read `70_backup_details.md`; only then use the legacy `docs/triton_gluon.md` long guide as final backup."
     )
     lines.append(
         "- These reference files are read-only guidance. They may live outside REPO ROOT; you may `view` them, but do not modify them."
@@ -814,7 +845,9 @@ def _build_gluon_working_set(feature_metadata: dict[str, Any] | None) -> list[st
 
     lines = [
         "## Gluon Working Set",
-        "- Use targeted reading: search the Gluon guide for `## Quick section map for agents`, then jump to the `### Trait: ...` headings relevant to this task.",
+        "- Use targeted reading: start with `skills/triton-gluon/docs/00_always_read.md`, use its `stable_split_doc_index` and `Task routing` table, then jump to the exact split-doc headings relevant to this task.",
+        "- Do not implement from memory or guess Gluon API names. Read the routed split-doc entry before writing a Gluon patch; use `70_backup_details.md` when primary split docs lack detail, and `docs/triton_gluon.md` only as final backup.",
+        "- `save_and_test` enforces this for Gluon tasks: use `str_replace_editor` with `command=\"view\"` on the required absolute split-doc paths before saving or benchmarking a patch.",
         "- Preserve launcher shape, indexing, masks, correctness behavior, and benchmark intent before changing algorithms.",
         "- Recover the implicit layout before changing APIs. In Gluon, `gl.arange(..., layout=...)` is not optional.",
         "- If layout depends on launch config, construct it on the host and pass it as a `constexpr`.",
@@ -867,6 +900,55 @@ def _build_gluon_working_set(feature_metadata: dict[str, Any] | None) -> list[st
     return lines
 
 
+def _task_requires_amd_gluon_output(feature_metadata: dict[str, Any] | None) -> bool:
+    """Return whether the task contract requires a real AMD Gluon patch."""
+    if not feature_metadata:
+        return False
+    return (
+        str(feature_metadata.get("kernel_type") or "").strip().lower() == "triton"
+        and str(feature_metadata.get("required_output_dialect") or "").strip().lower() == "amd_gluon"
+    )
+
+
+def _build_forced_triton_gluon_skill_context() -> list[str]:
+    """Inline triton-gluon skill guidance for required AMD Gluon tasks."""
+    skill_path = get_repo_root() / "skills" / "triton-gluon" / "SKILL.md"
+    always_read_path = get_repo_root() / "skills" / "triton-gluon" / "docs" / "00_always_read.md"
+    lines = [
+        "## Forced Triton-Gluon Skill Context",
+        "This task requires a real AMD Gluon output. The triton-gluon skill is mandatory for this task.",
+        f"Skill path: `{skill_path}`",
+        f"Split-doc entrypoint: `{always_read_path}`",
+        "Use only the supported Gluon imports:",
+        "```python",
+        "from triton.experimental import gluon",
+        "from triton.experimental.gluon import language as gl",
+        "```",
+        "Do NOT probe `from triton import gluon`; that is not the supported import path.",
+        "Plain Triton fallback is only valid after a real Gluon patch using `triton.experimental.gluon`, `@gluon.jit`, or `gl.*` has been saved/tested and failed with a recorded compile/runtime error.",
+    ]
+    if skill_path.is_file():
+        try:
+            lines.extend(["", "### triton-gluon/SKILL.md", "```markdown", skill_path.read_text(), "```"])
+        except OSError:
+            logger.debug("Could not read forced triton-gluon skill at %s", skill_path)
+    if always_read_path.is_file():
+        try:
+            lines.extend(
+                [
+                    "",
+                    "### triton-gluon/docs/00_always_read.md",
+                    "```markdown",
+                    always_read_path.read_text(),
+                    "```",
+                ]
+            )
+        except OSError:
+            logger.debug("Could not read forced triton-gluon entrypoint at %s", always_read_path)
+    lines.append("")
+    return lines
+
+
 def _build_shape_coverage_working_set(feature_metadata: dict[str, Any] | None) -> list[str]:
     """Return generic multi-shape working-set rules for the worker prompt.
 
@@ -897,8 +979,9 @@ def _build_shape_coverage_working_set(feature_metadata: dict[str, Any] | None) -
     ]
     if profile == SHAPE_COVERAGE_BUCKETED:
         lines.append(
-            "- Bucketed coverage: prefer autotune configs or shape-specialized kernels chosen by host-side "
-            "selection (small / medium / large). Do not let a single tile size dominate every bucket."
+            "- Bucketed coverage: prefer explicit host-side dispatch that chooses shape-specialized kernels "
+            "or launch parameters (small / medium / large). Do not hide bucket selection inside "
+            "`@triton.heuristics`, and do not let a single tile size dominate every bucket."
         )
     if cases:
         lines.append("- Observed cases:")
@@ -929,9 +1012,18 @@ def inject_pipeline_context(
     benchmark_baseline: str | None = None,
     feature_metadata: dict[str, Any] | None = None,
     knowledge_base_path: str | None = None,
+    gluon_skill_path: str | None = None,
     gluon_guide_path: str | None = None,
     gluon_kb_path: str | None = None,
     gluon_examples_path: str | None = None,
+    gluon_always_read_path: str | None = None,
+    gluon_search_policies_path: str | None = None,
+    gluon_component_traits_path: str | None = None,
+    gluon_architecture_notes_path: str | None = None,
+    gluon_examples_doc_path: str | None = None,
+    gluon_api_reference_path: str | None = None,
+    gluon_real_patterns_path: str | None = None,
+    gluon_backup_details_path: str | None = None,
 ) -> tuple[str, dict]:
     """Prepend pipeline context to *task_body* and augment *config*.
 
@@ -969,12 +1061,23 @@ def inject_pipeline_context(
             ctx.extend(
                 _build_gluon_reference_block(
                     knowledge_base_path=knowledge_base_path,
+                    gluon_skill_path=gluon_skill_path,
                     gluon_guide_path=gluon_guide_path,
                     gluon_kb_path=gluon_kb_path,
                     gluon_examples_path=gluon_examples_path,
+                    gluon_always_read_path=gluon_always_read_path,
+                    gluon_search_policies_path=gluon_search_policies_path,
+                    gluon_component_traits_path=gluon_component_traits_path,
+                    gluon_architecture_notes_path=gluon_architecture_notes_path,
+                    gluon_examples_doc_path=gluon_examples_doc_path,
+                    gluon_api_reference_path=gluon_api_reference_path,
+                    gluon_real_patterns_path=gluon_real_patterns_path,
+                    gluon_backup_details_path=gluon_backup_details_path,
                 )
             )
             ctx.extend(_build_gluon_working_set(feature_metadata))
+        if _task_requires_amd_gluon_output(feature_metadata):
+            ctx.extend(_build_forced_triton_gluon_skill_context())
         # Apply shape-coverage rules to ALL kernel types, not only Gluon paths.
         ctx.extend(_build_shape_coverage_working_set(feature_metadata))
 

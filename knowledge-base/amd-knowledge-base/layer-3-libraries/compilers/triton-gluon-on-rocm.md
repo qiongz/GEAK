@@ -417,13 +417,14 @@ Read operator-local source before rewriting the kernel if you see:
 
 ### GEAK-specific workflow docs
 
+- [GEAK Triton-Gluon split-doc entrypoint](../../../../skills/triton-gluon/docs/00_always_read.md)
 - [GEAK Triton-Gluon workflow guide](../../../../docs/triton_gluon.md)
 
-For GEAK agents, use the workflow guide as a single indexed reference. Search
-for `## Quick section map for agents`, then jump to stable headings such as
-`### Trait: matrix_dot`, `### Trait: memory_amd_buffer`, or
-`### Trait: execution_jit_aot_sensitive`. Do not read the whole guide before
-checking the relevant trait sections.
+For GEAK agent runs, prefer the split-doc entrypoint:
+`skills/triton-gluon/docs/00_always_read.md`. Use its `Task routing` table to
+jump to exact split-doc files and headings. Use `docs/triton_gluon.md` only as
+the backup long-form guide when routed split docs do not contain the needed
+detail.
 
 ### External resources
 

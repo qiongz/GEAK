@@ -90,6 +90,8 @@ class ToolRuntime:
     ):
         _ensure_mcp_collected()
         self._tool_profile = tool_profile
+        self.viewed_file_paths: set[str] = set()
+        self._cwd: str | None = None
 
         # Each ToolRuntime gets its OWN set of MCP bridge instances so that
         # parallel agents do not share asyncio event loops or stdio pipes.
@@ -201,6 +203,7 @@ class ToolRuntime:
 
     def set_cwd(self, cwd: str | None) -> None:
         """Propagate working directory to the bash tool so commands run in the correct worktree."""
+        self._cwd = cwd
         bash = self._tool_table.get("bash")
         if bash is not None:
             bash._cwd = cwd
@@ -243,4 +246,18 @@ class ToolRuntime:
         if name == "bash" and "command" not in args:
             args = {**args, "command": ""}
 
-        return self._tool_table[name](**args)
+        result = self._tool_table[name](**args)
+        if (
+            name == "str_replace_editor"
+            and str(args.get("command") or "").strip().lower() == "view"
+            and result.get("returncode") == 0
+            and args.get("path")
+        ):
+            path = Path(str(args["path"]))
+            if not path.is_absolute():
+                path = Path(self._cwd or Path.cwd()) / path
+            try:
+                self.viewed_file_paths.add(str(path.expanduser().resolve()))
+            except (OSError, RuntimeError):
+                self.viewed_file_paths.add(str(path))
+        return result

@@ -23,6 +23,23 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 _PER_SHAPE_REGRESSION_SPEEDUP_FLOOR = 0.95
+_AMD_GLUON_PATCH_MARKERS = (
+    "triton.experimental.gluon",
+    "from triton.experimental import gluon",
+    "@gluon.jit",
+    "AMDMFMALayout",
+    "AMDWMMALayout",
+    "DotOperandLayout",
+    "buffer_load",
+    "buffer_store",
+)
+_PLAIN_TRITON_PATCH_MARKERS = (
+    "@triton.jit",
+    "triton.language",
+    "tl.load",
+    "tl.store",
+    "tl.dot",
+)
 
 
 def parse_median_latency_ms(output: str) -> float | None:
@@ -521,6 +538,53 @@ def _has_significant_shape_regression(
     return any((info.get("speedup") or 0.0) < floor for info in shape_speedups.values())
 
 
+def classify_patch_output_dialect(patch_text: str) -> str:
+    """Classify whether a patch appears to implement plain Triton or AMD Gluon."""
+    has_gluon = any(marker in patch_text for marker in _AMD_GLUON_PATCH_MARKERS) or bool(
+        re.search(r"\bgl\.(?:load|store|program_id|arange|zeros|full)\b", patch_text)
+    )
+    if has_gluon:
+        return "amd_gluon"
+    if any(marker in patch_text for marker in _PLAIN_TRITON_PATCH_MARKERS):
+        return "plain_triton"
+    return "unknown"
+
+
+def _find_task_metadata_for_patch_dir(patch_dir: Path) -> dict[str, Any]:
+    """Best-effort lookup of the task frontmatter associated with a result dir."""
+    label = patch_dir.name
+    round_dir = patch_dir.parent.name
+    output_root = patch_dir.parent.parent.parent if len(patch_dir.parents) >= 3 else None
+    if output_root is None:
+        return {}
+    tasks_dir = output_root / "tasks" / round_dir
+    if not tasks_dir.is_dir():
+        return {}
+    candidates = list(tasks_dir.glob(f"*_{label}.md")) + list(tasks_dir.glob(f"{label}.md"))
+    if not candidates:
+        candidates = [p for p in tasks_dir.glob("*.md") if p.stem.endswith(label)]
+    if not candidates:
+        return {}
+    try:
+        from minisweagent.run.task_file import read_task_file
+
+        meta, _body = read_task_file(candidates[0])
+        return meta
+    except Exception as exc:
+        logger.debug("Could not read task metadata for %s: %s", patch_dir, exc)
+        return {}
+
+
+def _dialect_contract_satisfied(required: str, actual: str) -> bool:
+    required = str(required or "any").strip().lower()
+    actual = str(actual or "unknown").strip().lower()
+    if required in {"", "any"}:
+        return True
+    if required == "mixed":
+        return actual == "mixed"
+    return actual == required
+
+
 def _find_original_baseline_ms(patch_dir: Path) -> float | None:
     """Walk up from patch_dir to find benchmark_baseline.txt (the canonical baseline).
 
@@ -581,10 +645,13 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
     best_patch_file: str | None = None
     best_test_file: str | None = None
     best_patch_size: int = 0
+    best_actual_output_dialect = "unknown"
     best_shape_speedups: dict[str, dict[str, float]] = {}
     best_candidate_shape_latencies: dict[str, float] = {}
     best_candidate_shape_geomean: float | None = None
     baseline_shape_geomean = _geomean_ms(baseline_shape_latencies)
+    task_meta = _find_task_metadata_for_patch_dir(patch_dir)
+    required_output_dialect = str(task_meta.get("required_output_dialect") or "any").strip().lower() or "any"
 
     for test_file in sorted(patch_dir.glob("patch_*_test.txt")):
         name = test_file.stem.replace("_test", "")
@@ -595,6 +662,7 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         psz = patch_file.stat().st_size
         if psz == 0:
             continue
+        patch_text = patch_file.read_text(errors="replace")
 
         candidate_text = test_file.read_text()
         candidate_ms = _extract_latency(candidate_text)
@@ -619,6 +687,7 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
             best_patch_file = str(patch_file)
             best_test_file = str(test_file)
             best_patch_size = psz
+            best_actual_output_dialect = classify_patch_output_dialect(patch_text)
             best_candidate_shape_latencies = candidate_shape_latencies
             best_candidate_shape_geomean = _geomean_ms(candidate_shape_latencies)
             best_shape_speedups = shape_speedups
@@ -643,6 +712,16 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         ),
         "per_shape_speedups": best_shape_speedups,
         "objective": "total_shape_latency_ms" if best_shape_speedups else "latency_ms",
+        "required_output_dialect": required_output_dialect,
+        "actual_output_dialect": best_actual_output_dialect,
+        "dialect_contract_satisfied": _dialect_contract_satisfied(
+            required_output_dialect,
+            best_actual_output_dialect,
+        ),
+        "fallback_used": (
+            required_output_dialect == "amd_gluon"
+            and best_actual_output_dialect not in {"amd_gluon", "mixed"}
+        ),
         "llm_selection_analysis": (
             f"Deterministic: baseline={baseline_ms:.4f}ms ({baseline_source}), "
             f"candidate={best_candidate_ms:.4f}ms from {best_patch_id}. "

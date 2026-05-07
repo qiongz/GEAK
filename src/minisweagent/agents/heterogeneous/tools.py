@@ -204,6 +204,14 @@ def _dispatch_stage_name(priority: int) -> str:
     return "low"
 
 
+def _is_required_gluon_extension(meta: dict) -> bool:
+    """Return whether this task is a required AMD Gluon Extension attempt."""
+    return (
+        str(meta.get("search_set") or "").strip().lower() == "extension"
+        and str(meta.get("required_output_dialect") or "").strip().lower() == "amd_gluon"
+    )
+
+
 def _group_task_files_by_dispatch_stage(task_files: list[Path]) -> list[tuple[str, list[Path]]]:
     """Group tasks by priority tier for staged dispatch."""
     from minisweagent.run.task_file import read_task_file
@@ -212,7 +220,7 @@ def _group_task_files_by_dispatch_stage(task_files: list[Path]) -> list[tuple[st
     for tf in task_files:
         meta, _ = read_task_file(tf)
         pri = int(meta.get("priority", 10))
-        stage = _dispatch_stage_name(pri)
+        stage = "high" if _is_required_gluon_extension(meta) else _dispatch_stage_name(pri)
         buckets.setdefault(stage, []).append(tf)
     order = ["high", "medium", "low"]
     return [(s, buckets[s]) for s in order if s in buckets]
@@ -233,6 +241,23 @@ def _stage_found_improvement(results_dir: Path, task_files: list[Path]) -> bool:
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             pass
     return False
+
+
+def _required_gluon_tasks_completed(results_dir: Path, task_files: list[Path]) -> bool:
+    """Return True once every required AMD Gluon Extension task has run."""
+    from minisweagent.run.task_file import read_task_file
+
+    for task_file in task_files:
+        meta, _ = read_task_file(task_file)
+        if not _is_required_gluon_extension(meta):
+            continue
+        label = str(meta.get("label") or task_file.stem)
+        task_result_dir = results_dir / label
+        if not task_result_dir.is_dir():
+            return False
+        if not any(task_result_dir.glob("patch_*.patch")) and not (task_result_dir / "best_results.json").is_file():
+            return False
+    return True
 
 
 def tool_dispatch_tasks(
@@ -290,7 +315,7 @@ def tool_dispatch_tasks(
                 "result": stage_result if isinstance(stage_result, dict) else str(stage_result),
             }
         )
-        if _stage_found_improvement(results_base, stage_tasks):
+        if _stage_found_improvement(results_base, stage_tasks) and _required_gluon_tasks_completed(results_base, task_paths):
             logger.info(
                 "tool_dispatch_tasks: improvement found in stage '%s'; skipping lower-priority stages.", stage_name
             )
@@ -300,6 +325,11 @@ def tool_dispatch_tasks(
                 if _dispatch_stage_name(0) == remaining_stage:
                     continue
             break
+        if _stage_found_improvement(results_base, stage_tasks):
+            logger.info(
+                "tool_dispatch_tasks: improvement found in stage '%s', but required AMD Gluon Extension tasks are not complete; continuing lower-priority stages.",
+                stage_name,
+            )
 
     _dispatch_elapsed = time.monotonic() - _dispatch_t0
     logger.info(

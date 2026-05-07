@@ -18,11 +18,24 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+from minisweagent import get_repo_root
 from minisweagent.debug_runtime import emit_debug_log
 from minisweagent.run.preprocess.discovery_types import (
     allowed_skill_tiers_for_feature,
     build_gluon_feature_metadata,
+    feature_uses_gluon_guidance_from_meta,
 )
+
+_GEAK_REPO_ROOT = get_repo_root()
+_GLUON_GATE_FALLBACK_RELS = {
+    "gluon_skill_path": "skills/triton-gluon/SKILL.md",
+    "gluon_always_read_path": "skills/triton-gluon/docs/00_always_read.md",
+    "gluon_search_policies_path": "skills/triton-gluon/docs/10_search_policies.md",
+    "gluon_component_traits_path": "skills/triton-gluon/docs/20_component_traits.md",
+    "gluon_architecture_notes_path": "skills/triton-gluon/docs/30_architecture_notes.md",
+    "gluon_api_reference_path": "skills/triton-gluon/docs/50_api_reference.md",
+    "gluon_real_patterns_path": "skills/triton-gluon/docs/60_real_patterns.md",
+}
 
 # ── model ensemble support ───────────────────────────────────────────
 
@@ -164,6 +177,8 @@ def _commandment_test_command(commandment_path: str) -> str | None:
 
 def _task_uses_skills(meta: dict[str, Any]) -> bool:
     """Return whether a task should enable the skill runtime."""
+    if _task_requires_amd_gluon(meta):
+        return True
     if "use_skills" in meta:
         raw = meta.get("use_skills")
         if isinstance(raw, str):
@@ -172,10 +187,18 @@ def _task_uses_skills(meta: dict[str, Any]) -> bool:
     return str(meta.get("kernel_type", "")).strip().lower() == "triton"
 
 
+def _task_requires_amd_gluon(meta: dict[str, Any]) -> bool:
+    """Return whether task metadata requires an actual AMD Gluon output."""
+    return (
+        str(meta.get("kernel_type") or "").strip().lower() == "triton"
+        and str(meta.get("required_output_dialect") or "").strip().lower() == "amd_gluon"
+    )
+
+
 def _task_feature_metadata(meta: dict[str, Any]) -> dict[str, Any]:
     """Rebuild the normalized Gluon feature metadata from task frontmatter."""
     kernel_path = Path(str(meta.get("kernel_path") or "unknown.py"))
-    return build_gluon_feature_metadata(
+    feature_meta = build_gluon_feature_metadata(
         kernel_path,
         str(meta.get("kernel_type") or "unknown"),
         input_dialect=meta.get("input_dialect"),
@@ -189,6 +212,11 @@ def _task_feature_metadata(meta: dict[str, Any]) -> dict[str, Any]:
         benchmark_test_cases=meta.get("benchmark_test_cases"),
         shape_coverage_profile=meta.get("shape_coverage_profile"),
     )
+    if meta.get("search_set"):
+        feature_meta["search_set"] = str(meta.get("search_set"))
+    if meta.get("required_output_dialect"):
+        feature_meta["required_output_dialect"] = str(meta.get("required_output_dialect"))
+    return feature_meta
 
 
 def _task_allowed_skill_tiers(meta: dict[str, Any]) -> list[str]:
@@ -204,6 +232,109 @@ def _task_allowed_skill_tiers(meta: dict[str, Any]) -> list[str]:
         gluon_feature_mode=feature_meta["gluon_feature_mode"],
         gluon_baseline_profile=feature_meta["gluon_baseline_profile"],
     )
+
+
+def _normalize_gate_path(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return str(Path(text).expanduser().resolve())
+    except (OSError, RuntimeError):
+        return text
+
+
+def _add_gate_path(paths: list[str], meta: dict[str, Any], key: str) -> None:
+    value = meta.get(key)
+    if not value and key in _GLUON_GATE_FALLBACK_RELS:
+        candidate = _GEAK_REPO_ROOT / _GLUON_GATE_FALLBACK_RELS[key]
+        if candidate.exists():
+            value = str(candidate)
+    path = _normalize_gate_path(value)
+    if path and path not in paths:
+        paths.append(path)
+
+
+def _gluon_doc_gate_required_paths(meta: dict[str, Any], task_body: str) -> list[str]:
+    """Return split-doc paths that a Gluon worker must view before save_and_test."""
+    feature_meta = _task_feature_metadata(meta)
+    if not feature_uses_gluon_guidance_from_meta(feature_meta):
+        return []
+
+    required: list[str] = []
+    _add_gate_path(required, meta, "gluon_skill_path")
+    _add_gate_path(required, meta, "gluon_always_read_path")
+    _add_gate_path(required, meta, "gluon_search_policies_path")
+
+    text = "\n".join(
+        str(part or "")
+        for part in (
+            task_body,
+            meta.get("label"),
+            meta.get("search_set"),
+            meta.get("required_output_dialect"),
+            meta.get("input_dialect"),
+        )
+    ).lower()
+
+    # Gluon implementation workers need the trait file for the planner-emitted
+    # route, even when the prompt does not name a specific trait explicitly.
+    if any(marker in text for marker in ("gluon", "amd_gluon", "nv_gluon", "extension", "shared set")):
+        _add_gate_path(required, meta, "gluon_component_traits_path")
+
+    if any(
+        marker in text
+        for marker in (
+            "gfx",
+            "cdna",
+            "rdna",
+            "mfma",
+            "wmma",
+            "jit",
+            "aot",
+            "prebuilt",
+            "instr_shape",
+            "descriptor",
+            "tdm",
+            "target_backend",
+        )
+    ):
+        _add_gate_path(required, meta, "gluon_architecture_notes_path")
+
+    if str(meta.get("required_output_dialect") or "").strip().lower() == "amd_gluon" or any(
+        marker in text
+        for marker in (
+            "api",
+            "syntax",
+            "gl.",
+            "ttgl",
+            "@gluon.jit",
+            "buffer_load",
+            "buffer_store",
+            "convert_layout",
+            "dotoperandlayout",
+        )
+    ):
+        _add_gate_path(required, meta, "gluon_api_reference_path")
+
+    if any(
+        marker in text
+        for marker in (
+            "aiter",
+            "attention",
+            "decode",
+            "gemm",
+            "fp8",
+            "preshuffle",
+            "benchmark",
+            "source-first",
+        )
+    ):
+        _add_gate_path(required, meta, "gluon_real_patterns_path")
+
+    return required
+
+
 def task_file_to_agent_task(task_file: Path):
     """Read a task markdown file and convert it to an AgentTask.
 
@@ -241,6 +372,10 @@ def task_file_to_agent_task(task_file: Path):
         "use_strategy_manager": True,
         "use_skills": _task_uses_skills(meta),
     }
+    gluon_doc_gate_paths = _gluon_doc_gate_required_paths(meta, body)
+    if gluon_doc_gate_paths:
+        cfg["gluon_doc_gate_enabled"] = True
+        cfg["gluon_doc_gate_required_paths"] = gluon_doc_gate_paths
 
     # COMMANDMENT is the single source of truth for test commands.
     # Its SETUP + CORRECTNESS + BENCHMARK sections are executed verbatim.
@@ -301,9 +436,18 @@ def task_file_to_agent_task(task_file: Path):
         benchmark_baseline=benchmark_baseline_text,
         feature_metadata=feature_meta,
         knowledge_base_path=meta.get("knowledge_base_path"),
+        gluon_skill_path=meta.get("gluon_skill_path"),
         gluon_guide_path=meta.get("gluon_guide_path"),
         gluon_kb_path=meta.get("gluon_kb_path"),
         gluon_examples_path=meta.get("gluon_examples_path"),
+        gluon_always_read_path=meta.get("gluon_always_read_path"),
+        gluon_search_policies_path=meta.get("gluon_search_policies_path"),
+        gluon_component_traits_path=meta.get("gluon_component_traits_path"),
+        gluon_architecture_notes_path=meta.get("gluon_architecture_notes_path"),
+        gluon_examples_doc_path=meta.get("gluon_examples_doc_path"),
+        gluon_api_reference_path=meta.get("gluon_api_reference_path"),
+        gluon_real_patterns_path=meta.get("gluon_real_patterns_path"),
+        gluon_backup_details_path=meta.get("gluon_backup_details_path"),
     )
 
     if meta.get("starting_patch"):
