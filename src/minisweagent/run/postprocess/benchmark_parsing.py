@@ -22,8 +22,6 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 _AMD_GLUON_PATCH_MARKERS = (
-    "triton.experimental.gluon",
-    "from triton.experimental import gluon",
     "@gluon.jit",
     "AMDMFMALayout",
     "AMDWMMALayout",
@@ -426,6 +424,25 @@ def _dialect_contract_satisfied(required: str, actual: str) -> bool:
     return actual == required
 
 
+def _required_output_dialect(task_meta: dict[str, Any], *, label: str) -> str:
+    required = str(task_meta.get("required_output_dialect") or "").strip().lower()
+    if required:
+        return required
+
+    search_set = str(task_meta.get("search_set") or "").strip().lower()
+    label_text = label.lower()
+    if "hybrid" in label_text or "mixed" in label_text:
+        return "mixed"
+    if (
+        search_set == "extension"
+        or label_text.startswith(("ext-", "extension-"))
+        or "extension-l" in label_text
+        or "ext_l" in label_text
+    ) and ("gluon" in label_text or "amd-gluon" in label_text or "amd_gluon" in label_text):
+        return "amd_gluon"
+    return "any"
+
+
 def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
     """Deterministically select the best non-empty patch from a task directory.
 
@@ -462,7 +479,7 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
     baseline_shape_geomean = _geomean_ms(baseline_shape_latencies)
     task_meta = _find_task_metadata_for_patch_dir(patch_dir)
     required_patch_target_symbols = _metadata_list(task_meta.get("required_patch_target_symbols"))
-    required_output_dialect = str(task_meta.get("required_output_dialect") or "any").strip().lower() or "any"
+    required_output_dialect = _required_output_dialect(task_meta, label=patch_dir.name)
 
     for test_file in sorted(patch_dir.glob("patch_*_test.txt")):
         name = test_file.stem.replace("_test", "")
@@ -576,7 +593,7 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
     original_bl = _find_original_baseline_ms(patch_dir)
     task_meta = _find_task_metadata_for_patch_dir(patch_dir)
     required_patch_target_symbols = _metadata_list(task_meta.get("required_patch_target_symbols"))
-    required_output_dialect = str(task_meta.get("required_output_dialect") or "any").strip().lower() or "any"
+    required_output_dialect = _required_output_dialect(task_meta, label=patch_dir.name)
 
     if det is not None:
         existing_path.write_text(json.dumps(det, indent=2))
