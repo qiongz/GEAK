@@ -267,6 +267,12 @@ priority after the required kernel-body Base tasks.
     family checklist. Shared tasks that map a Base strategy must include
     `Shared source family: <family_id>`. Extension tasks must include
     `Extension layer: L0`, `Extension layer: L1`, or `Extension layer: Hybrid`.
+    Required AMD Gluon Extension task_prompts must also include a
+    `Knowledge lookup contract:` line requiring a pre-edit lookup plan, an
+    `Implementation contract:` line requiring a pre-edit Gluon implementation
+    plan, plus `Reject if:` lines for leftover `tl.*` tensor APIs in the edited
+    `@gluon.jit` path, guessed `_..._gluon` module wiring, invalid MFMA layout,
+    and parent-layout/broadcast mismatch.
     For Triton-family task objects, include lightweight metadata when relevant:
     `search_set` (`base`, `shared`, or `extension`) and
     `required_output_dialect` (`plain_triton`, `amd_gluon`, `mixed`, or `any`).
@@ -344,6 +350,29 @@ the prompt must instruct the worker to attempt a real Gluon patch using
 `from triton.experimental import gluon`; `from triton import gluon` is not a
 valid availability probe. Plain Triton fallback is only allowed after a real
 Gluon patch is saved/tested and fails with a recorded compile/runtime error.
+
+Required AMD Gluon Extension task_prompt content:
+- Include `Knowledge lookup contract: write a Gluon knowledge lookup plan before
+  editing`.
+- The lookup plan must map task/source signals to exact split-doc files and
+  headings, mark `viewed=yes/no`, list operator-local source sections viewed,
+  and record missing details before any code edit.
+- Include `Implementation contract: write a Gluon implementation plan before
+  editing`.
+- The plan must name the scoped subpath/component, parent layouts, every
+  `tl.arange` -> `gl.arange(..., layout=...)` replacement, tensor-creation
+  layouts, broadcast/SliceLayout pairs, matrix path or `none`, and module
+  wiring.
+- For `Extension layer: L0`, scope layout-heavy kernels to one compileable
+  index/mask/load/store/matrix-skeleton subpath. Do not ask for a full
+  attention/decode/GEMM rewrite as L0.
+- For `Extension layer: L1`, require a correctness-passing Gluon/mixed anchor.
+  If no anchor exists, tell the worker to shrink to an L0-style layout/memory
+  smoke path rather than doing MFMA or buffer lowering from the original plain
+  Triton body.
+- Include `Reject if:` conditions covering leftover plain Triton tensor APIs
+  inside the edited `@gluon.jit` path, guessed `_..._gluon` imports, invalid
+  MFMA/instr_shape assumptions, and parent-layout/broadcast mismatch.
 
 **Gluon documentation gate metadata**: For Triton-family tasks that use Gluon
 guidance, task objects should include optional top-level fields

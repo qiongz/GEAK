@@ -32,6 +32,14 @@ Search policy and task allocation live in `10_search_policies.md`.
 - Construct layouts on the host when they depend on launch configuration.
 - Pass host-created layouts as `constexpr`.
 - Do not omit layout on `gl.arange`, `gl.zeros`, or similar Gluon tensors.
+- In the edited `@gluon.jit` path, replace the whole planned tensor-creation
+  chain. Do not mix a `gl.arange(..., layout=...)` for one axis with leftover
+  `tl.arange`, `tl.zeros`, `tl.full`, `tl.load`, `tl.where`, or `tl.dot` for
+  the same Gluon subpath.
+- `BlockedLayout.size_per_thread` should be derived from the tile and launch
+  contract. Avoid arbitrary values; on current Gluon layouts values are expected
+  to be powers of two and to multiply with `threads_per_warp` and
+  `warps_per_cta` to cover the logical tile.
 
 ### Trait: layout_slice_broadcast
 
@@ -51,6 +59,8 @@ Search policy and task allocation live in `10_search_policies.md`.
 - For kernels with several logical 2D contexts, create separate named index
   tensors such as `head_hc`, `head_hr`, or `head_hn` instead of one shared
   `head` tensor.
+- If a broadcast expression cannot name one parent layout shared by both sliced
+  axes, the patch scope is too large. Split the task before editing.
 
 ### Trait: layout_source_first_required
 
@@ -108,6 +118,17 @@ lowering. Do not add MFMA / WMMA just because Gluon is available.
 5. epilogue correctness.
 
 Do not skip accumulator and operand layout compatibility.
+
+MFMA-specific checks before editing:
+
+- `AMDMFMALayout.instr_shape` is a matrix instruction shape, not a convenient
+  tile shape. Confirm the Triton version and use the supported `(M, N, K)` form
+  expected by the installed source.
+- Valid CDNA MFMA result shapes are constrained; do not invent `[8, 8]`,
+  `[16, 32]`, or other unsupported intrinsic shapes because they match local
+  block constants.
+- If result layout, operand layouts, and `convert_layout` are not all known,
+  keep the task at L0 layout/memory viability instead of attempting MFMA.
 
 ### Trait: matrix_scaled_dot
 
@@ -211,7 +232,15 @@ Typical symptoms and first checks:
 - Layout or IR verification fails: check `BlockedLayout`, `threads_per_warp`,
   `warps_per_cta`, `order`, `num_warps`, and target arch alignment first.
 - `AMDMFMALayout` construction fails: check Triton minor version and whether
-  `instr_shape` is expected to be 2D or 3D.
+  `instr_shape` is expected to be 2D or 3D, then check whether the intrinsic
+  shape itself is supported by the AMD layout verifier.
+- `GluonSemantic.arange() missing required positional argument: 'layout'`:
+  a plain Triton `tl.arange` or layout-less arange survived inside the edited
+  Gluon path. Return to the pre-edit layout plan and replace that whole subpath.
+- `Did you forget to add @triton.jit`: a helper or nested function is being
+  called through the wrong JIT/language boundary. Check that Gluon helpers are
+  `@gluon.jit`, host helpers stay on the host, and plain Triton helpers are not
+  called as Gluon device functions.
 - Kernel compiles but targets the wrong path: re-check backend, arch,
   operator-local guards, and namespace-vs-layout-version assumptions.
 - Correctness passes but performance regresses: keep the plain Triton baseline,

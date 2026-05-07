@@ -736,6 +736,10 @@ def test_run_task_agent_plain_triton_auto_prefers_amd_gluon_first(
     assert "Base Set (plain Triton): at least 5 task(s)" in run_kwargs["search_space_allocation_guidance"]
     assert "Extension L0: minimal AMD Gluon viability" in run_kwargs["search_space_allocation_guidance"]
     assert "Round 1 should include one L0 minimal AMD Gluon viability task" in run_kwargs["gluon_planning_traits_guidance"]
+    system_prompt = mock_default_agent.call_args.kwargs["system_template"]
+    assert "Knowledge lookup contract: write a Gluon knowledge lookup plan before" in system_prompt
+    assert "Implementation contract: write a Gluon implementation plan before" in system_prompt
+    assert "leftover plain Triton tensor APIs" in system_prompt
 
 
 @patch("minisweagent.tools.tools_runtime.get_tools_list", return_value=[{"name": "str_replace_editor"}, {"name": "submit"}])
