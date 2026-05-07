@@ -356,9 +356,11 @@ Gluon patch is saved/tested and fails with a recorded compile/runtime error.
 **Gluon documentation gate metadata**: For Triton-family tasks that use Gluon
 guidance, task objects should include optional top-level fields
 `gluon_doc_profile` and `required_gluon_docs`. `gluon_doc_profile` should be one
-of `extension_l0_minimal`, `nv_to_amd_translation`, `matrix_lowering`,
-`shape_bucketed_dispatch`, `jit_aot_sensitive`, `shared_transplant`, or
-`hybrid_dispatch` when one applies. `required_gluon_docs` should list doc path
+of `extension_l0_minimal`, `nv_to_amd_translation`, `memory_lowering`,
+`matrix_lowering`, `shape_bucketed_dispatch`, `jit_aot_sensitive`,
+`shared_transplant`, `gluon_variant_from_anchor`, `hybrid_dispatch`, or
+`hybrid_dispatch_from_evidence` when one applies.
+`required_gluon_docs` should list doc path
 metadata keys such as `gluon_skill_path`, `gluon_always_read_path`,
 `gluon_search_policies_path`, `gluon_component_traits_path`,
 `gluon_architecture_notes_path`, `gluon_api_reference_path`, and
@@ -371,6 +373,10 @@ composition task_prompt MUST include:
 - `Safe anchor: <task>/<patch or original_baseline>`
 - `Source component: <component_type> from <task>/<patch or none>`
 - `Comparison target: safe_anchor`
+- `Allowed change: <one component or one dispatch decision>`
+- `Reject if: <conditions that invalidate the patch>`
+Unless the task explicitly says `bundle_allowed=true`, composition tasks must
+change at most one component and must preserve the safe anchor.
 
 **COMMANDMENT adherence**: Each task_prompt MUST instruct the sub-agent
 to read and follow the COMMANDMENT file. The COMMANDMENT defines the

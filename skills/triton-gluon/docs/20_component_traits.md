@@ -39,6 +39,18 @@ Search policy and task allocation live in `10_search_policies.md`.
   `SliceLayout` or explicit layout conversion.
 - Treat mask layout conversion as correctness-sensitive, not cosmetic cleanup.
 - Do not apply `[:, None]` to arbitrary incompatible layouts.
+- Every broadcast expression has a parent-layout invariant: the 1D tensors that
+  become `x[:, None]` and `y[None, :]` must be derived from `SliceLayout`
+  objects of the same 2D parent layout used by that expression.
+- Do not reuse a slice derived from one parent layout in another logical 2D
+  context, even if the shape names look compatible. For example, a head index
+  derived from an `[H, C]` parent must not be reused in an `[H, R]` expression.
+- Do not rely on `convert_layout(x, SliceLayout(...))` to turn an arbitrary 1D
+  tensor into a valid slice for a different parent layout. Generate the index
+  with the correct `SliceLayout(parent)` for that expression.
+- For kernels with several logical 2D contexts, create separate named index
+  tensors such as `head_hc`, `head_hr`, or `head_hn` instead of one shared
+  `head` tensor.
 
 ### Trait: layout_source_first_required
 

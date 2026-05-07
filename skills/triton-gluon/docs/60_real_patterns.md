@@ -12,6 +12,8 @@ Do not read this whole file by default. Use the routed section(s) below.
 | --- | --- |
 | product/runtime context beyond `00_always_read.md` | `product_and_runtime_context` |
 | plain Triton -> Gluon rewrite order and implicit layout recovery | `writing_model` |
+| first-pass scope for layout-heavy kernels | `extension_l0_scope_for_layout_heavy_kernels` |
+| L1 memory/buffer lowering after a viable Gluon patch | `extension_l1_memory_lowering_anchor` |
 | layout/sync/descriptor concepts without exact API snippets | `layout_sync_descriptor_mental_model` |
 | AMD/NVIDIA family comparison or namespace-vs-arch nuance | `nvidia_amd_family_differences` |
 | translator/current_target-based AMD lowering | `translator_derived_amd_dispatch` |
@@ -25,6 +27,8 @@ Do not read this whole file by default. Use the routed section(s) below.
 
 - `product_and_runtime_context`
 - `writing_model`
+- `extension_l0_scope_for_layout_heavy_kernels`
+- `extension_l1_memory_lowering_anchor`
 - `layout_sync_descriptor_mental_model`
 - `nvidia_amd_family_differences`
 - `translator_derived_amd_dispatch`
@@ -139,6 +143,56 @@ Stay in plain Triton when:
 first Gluon rewrite for scalar or simple vector paths. Move to
 `buffer_load` / `buffer_store` only when target family, existing AMD structure,
 or access pattern justifies it.
+
+## extension_l0_scope_for_layout_heavy_kernels
+
+For layout-heavy kernels, Extension L0 should establish a small compileable
+Gluon viability path. It should not translate the whole algorithm in one patch.
+
+Layout-heavy signals include:
+
+- multiple logical 2D contexts that need different `SliceLayout` parents;
+- `[:, None]` / `[None, :]` broadcasts;
+- masks built from multiple axes;
+- reductions such as `sum`, `max`, softmax, or online softmax;
+- more than one matrix path (`QK` and `PV`, for example);
+- RoPE, preshuffle, descriptor, or nested layout transformations.
+
+Prefer one of these L0 scopes:
+
+- index and mask layout smoke path for one logical 2D expression;
+- one load/store subpath with explicit layout;
+- one small matrix-layout skeleton without full epilogue;
+- one source-first extraction of layout contracts and host launcher alignment.
+
+Defer full attention/decode/GEMM rewrites until after L0 proves the relevant
+layout family compiles. L1 tasks can then add memory lowering, matrix lowering,
+or shared/descriptor features one at a time.
+
+## extension_l1_memory_lowering_anchor
+
+Extension L1 memory or buffer lowering is not a second attempt to wrap the
+original plain Triton kernel in `@gluon.jit`.
+
+Before adding `buffer_load`, `buffer_store`, or other target-specific memory
+ops, identify the verified Gluon anchor:
+
+- the last correctness-passing Gluon or mixed patch;
+- its parent layouts for each logical expression;
+- its host-created layouts and `constexpr` launch contract;
+- its known slow path or memory-bound section.
+
+Rules:
+
+- Preserve the verified anchor's layout plan. Do not regenerate indices with
+  plain `tl.arange` inside `@gluon.jit`.
+- Change one memory path at a time, such as one KV/cache load, one streaming
+  vector load, or one output store.
+- Keep masks and broadcast indices in the same parent-layout context as the
+  anchor.
+- If no Gluon anchor has passed correctness, downgrade the L1 memory task to a
+  narrower layout/memory smoke path and report that no anchor exists.
+- Compare against the verified Gluon anchor as well as the original baseline.
 
 ## layout_sync_descriptor_mental_model
 
