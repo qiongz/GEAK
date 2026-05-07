@@ -275,6 +275,12 @@ priority after the required kernel-body Base tasks.
     family checklist. Shared tasks that map a Base strategy must include
     `Shared source family: <family_id>`. Extension tasks must include
     `Extension layer: L0`, `Extension layer: L1`, or `Extension layer: Hybrid`.
+    For Triton-family task objects, include lightweight metadata when relevant:
+    `search_set` (`base`, `shared`, or `extension`) and
+    `required_output_dialect` (`plain_triton`, `amd_gluon`, `mixed`, or `any`).
+    Only true AMD Gluon Extension tasks should use
+    `required_output_dialect=amd_gluon`; Shared transplants that allow plain
+    Triton fallback should use `required_output_dialect=any`.
 17. If a "Shape Coverage Policy" block is present, treat it as mandatory.
     Each task_prompt MUST self-classify as exactly one of `single_shape_viability`,
     `shape_robust`, or `shape_bucketed`, and MUST NOT hardcode shape literals
@@ -338,6 +344,15 @@ family: <family_id>`. AMD Gluon Extension tasks MUST contain `Extension layer:
 L0`, `Extension layer: L1`, or `Extension layer: Hybrid`. These tags are used
 to audit that Base Triton coverage has not regressed.
 
+**Dialect contract metadata**: For Triton-family tasks, task objects may include
+optional top-level fields `search_set` and `required_output_dialect`. Use
+`search_set=extension` and `required_output_dialect=amd_gluon` only when plain
+Triton fallback is not a valid success. For these required AMD Gluon tasks,
+the prompt must instruct the worker to attempt a real Gluon patch using
+`from triton.experimental import gluon`; `from triton import gluon` is not a
+valid availability probe. Plain Triton fallback is only allowed after a real
+Gluon patch is saved/tested and fails with a recorded compile/runtime error.
+
 **Composition tags**: If Evidence-Anchored Composition is present, every
 composition task_prompt MUST include:
 - `Composition type: base_refine | shared_transplant | gluon_variant | hybrid_dispatch`
@@ -376,7 +391,16 @@ Generate optimization tasks for the kernel at {{ kernel_path }}.
 {% endif %}{% if baseline_metrics_path %}- **Baseline metrics**: {{ baseline_metrics_path }}
 {% endif %}{% if commandment_path %}- **COMMANDMENT.md** (evaluation contract): {{ commandment_path }}
 {% endif %}{% if knowledge_base_path %}- **Knowledge base** (optimization strategies): {{ knowledge_base_path }}
-{% endif %}{% if gluon_guide_path %}- **Gluon guide** (canonical GEAK workflow doc): {{ gluon_guide_path }}
+{% endif %}{% if gluon_skill_path %}- **Triton-Gluon skill**: {{ gluon_skill_path }}
+{% endif %}{% if gluon_always_read_path %}- **Triton-Gluon split-doc entrypoint**: {{ gluon_always_read_path }}
+{% endif %}{% if gluon_search_policies_path %}- **Triton-Gluon planner/search policies**: {{ gluon_search_policies_path }}
+{% endif %}{% if gluon_component_traits_path %}- **Triton-Gluon component traits**: {{ gluon_component_traits_path }}
+{% endif %}{% if gluon_architecture_notes_path %}- **Triton-Gluon architecture/runtime notes**: {{ gluon_architecture_notes_path }}
+{% endif %}{% if gluon_api_reference_path %}- **Triton-Gluon API reference**: {{ gluon_api_reference_path }}
+{% endif %}{% if gluon_real_patterns_path %}- **Triton-Gluon real patterns and benchmark rules**: {{ gluon_real_patterns_path }}
+{% endif %}{% if gluon_examples_doc_path %}- **Triton-Gluon schematic examples**: {{ gluon_examples_doc_path }}
+{% endif %}{% if gluon_backup_details_path %}- **Triton-Gluon residual backup routing**: {{ gluon_backup_details_path }}
+{% endif %}{% if gluon_guide_path %}- **Gluon guide** (backup long-form workflow doc): {{ gluon_guide_path }}
 {% endif %}{% if gluon_kb_path %}- **Gluon knowledge base** (structured AMD Gluon knowledge): {{ gluon_kb_path }}
 {% endif %}{% if gluon_examples_path %}- **Gluon examples** (repo examples and harness expectations): {{ gluon_examples_path }}
 {% endif %}{% if deep_search_path %}- **Deep search findings**: {{ deep_search_path }}

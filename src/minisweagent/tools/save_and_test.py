@@ -126,6 +126,9 @@ class SaveAndTestContext:
     # Without this, a 30-min benchmark started here would run past the
     # ``--mode quick`` budget because nothing else in the call stack tracks it.
     registry: "ProcessRegistry | None" = None
+    viewed_file_paths: set[str] | None = None
+    gluon_doc_gate_enabled: bool = False
+    gluon_doc_gate_required_paths: list[str] | None = None
 
 
 def _tracked_subprocess_run(
@@ -192,6 +195,11 @@ class SaveAndTestTool:
             return {"output": "SaveAndTestTool: context not configured", "returncode": 1}
 
         ctx = self.context
+        gate_error = self._check_gluon_doc_gate()
+        if gate_error:
+            self._log(f"\n[SaveAndTest] Gluon documentation gate failed:\n{gate_error}")
+            return {"output": gate_error, "returncode": 1}
+
         patch_name = f"patch_{ctx.patch_counter}"
         ctx.patch_counter += 1
 
@@ -264,6 +272,42 @@ class SaveAndTestTool:
     def _log(self, message: str):
         if self.context and self.context.log_fn:
             self.context.log_fn(message)
+
+    @staticmethod
+    def _normalize_gate_path(path: str) -> str:
+        try:
+            return str(Path(path).expanduser().resolve())
+        except (OSError, RuntimeError):
+            return str(path)
+
+    def _check_gluon_doc_gate(self) -> str | None:
+        ctx = self.context
+        if not ctx or not ctx.gluon_doc_gate_enabled:
+            return None
+        required = [
+            self._normalize_gate_path(path)
+            for path in (ctx.gluon_doc_gate_required_paths or [])
+            if str(path or "").strip()
+        ]
+        if not required:
+            return None
+        viewed = {
+            self._normalize_gate_path(path)
+            for path in (ctx.viewed_file_paths or set())
+            if str(path or "").strip()
+        }
+        missing = [path for path in required if path not in viewed]
+        if not missing:
+            return None
+        lines = [
+            "GLUON_DOC_GATE_FAILED: read the required Triton-Gluon split docs before save_and_test.",
+            "Use `str_replace_editor` with `command=\"view\"` on these absolute paths:",
+        ]
+        lines.extend(f"- {path}" for path in missing)
+        lines.append(
+            "Do not guess Gluon APIs or proceed from memory. After viewing the required docs, retry save_and_test."
+        )
+        return "\n".join(lines)
 
     def _generated_harness_helper_path(self) -> Path | None:
         """Return the generated worktree-root harness helper path, if any.

@@ -48,7 +48,11 @@ Do **not** stop at summarizing the skill. Apply it to the current kernel:
 - Valid optimized outputs:
   - `plain_triton`
   - `amd_gluon`
+  - `mixed` only for explicit host-side dispatch between verified
+    `plain_triton` and `amd_gluon` paths with no per-shape regression.
 - Never create a new optimized `nv_gluon` output path.
+- `mixed` is an output/dispatch result, not an input dialect. Do not use it to
+  avoid a required `amd_gluon` Extension task.
 - Treat Gluon as an additive Extension Set on top of the Base Triton search.
   Do not replace all plain Triton candidates with Gluon candidates.
 - If `amd_gluon` is allowed and structurally promising, generate an
@@ -199,6 +203,22 @@ Candidate task slots should follow the main GEAK planner style:
   - descriptor, async, scheduler, persistent, atomics, work stealing
   - launch-only or autotune-only changes
   - any path that relies on compile-only success
+
+Separate implementation traits from search policies:
+
+- Component traits tell the worker **what code direction to modify**:
+  `memory_access_policy`, `tiling_or_blocking`, `mask_or_boundary_simplification`,
+  `accumulator_representation`, `layout_or_indexing`, `matrix_lowering`,
+  `launch_or_dispatch_policy`, `scheduler_or_persistent_policy`, and
+  `dtype_or_precision_policy`.
+- Search policies tell the planner **how to allocate and combine tasks**:
+  `base_shared_extension`, `evidence_anchored_composition`, and
+  `dialect_contract_metadata`.
+
+Do not treat `evidence_anchored_composition` as a component trait. It only says
+how to choose the safe anchor, which portable components to transplant, and
+which comparison target to enforce. The actual implementation details still
+come from the component traits above.
 
 ## Input-dialect playbook
 
@@ -374,10 +394,33 @@ you see any of these:
 
 ## Read next
 
-- `docs/triton_gluon.md`
-  - first search for `## Quick section map for agents`
-  - then search for the matching stable heading, for example
-    `### Trait: matrix_dot` or `### Trait: dialect_nv_gluon`
-  - read only that trait section and the headings it names; do not read the
-    entire guide unless the task remains ambiguous
+- Always start with `skills/triton-gluon/docs/00_always_read.md`.
+- Use the `stable_split_doc_index` and `Task routing` table in
+  `00_always_read.md` to map each detected trait, search policy, or API need to
+  an exact split-doc file and heading before planning or editing.
+- Do not implement from memory or guess missing Gluon APIs. If the routed split
+  doc does not contain the detail needed, read the next routed reference in the
+  table; then read `skills/triton-gluon/docs/70_backup_details.md` before using
+  `docs/triton_gluon.md` as final backup.
+- If you are planning or reviewing task allocation, read
+  `skills/triton-gluon/docs/10_search_policies.md`.
+- If you are implementing a concrete optimization direction, read
+  `skills/triton-gluon/docs/20_component_traits.md` and jump to the internal
+  heading for the relevant component (`memory_amd_buffer`, `matrix_dot`,
+  `shape_dispatch_required`, etc.).
+- If the task mentions target backend, architecture guards, JIT/AOT, MFMA,
+  WMMA, descriptors, or Triton version issues, read
+  `skills/triton-gluon/docs/30_architecture_notes.md`.
+- If concrete API syntax, launch skeletons, quick patterns, compatibility
+  checklist, or failure-fix order is needed, read
+  `skills/triton-gluon/docs/50_api_reference.md`.
+- If real aiter patterns, common layout/sync/descriptor mental models,
+  kernel-family optimization paths, repo-local defaults, or benchmark rules are
+  needed, read `skills/triton-gluon/docs/60_real_patterns.md`.
+- Read at most one relevant example from
+  `skills/triton-gluon/docs/40_examples.md`.
+- If routed primary split docs still lack needed nuance or rationale, read
+  `skills/triton-gluon/docs/70_backup_details.md`.
+- The legacy long-form guide remains at `docs/triton_gluon.md`. Use it as a
+  final backup only when `70_backup_details.md` does not answer the question.
 - `examples/triton_gluon_inputs/README.md`

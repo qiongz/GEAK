@@ -2,6 +2,11 @@
 
 This is the single GEAK document for the Triton-family Gluon feature.
 
+Note: the agent-facing guide is now split for faster targeted reading under
+`skills/triton-gluon/docs/`. Keep this long document as a backup reference.
+Start with `skills/triton-gluon/SKILL.md` and
+`skills/triton-gluon/docs/00_always_read.md`.
+
 The goal is not just to explain the API surface. The goal is to help GEAK
 correctly read, translate, generate, and optimize:
 
@@ -14,8 +19,10 @@ implementations actually support today.
 
 ## Quick section map for agents
 
-Do not read this whole document first. Use the detected planning traits to jump
-to the short trait reference below, then view only the headings it names.
+Do not read this whole document first. Use detected component traits for
+implementation details, and search policies for planner / task-selection rules.
+
+Component traits:
 
 - `semantics_contract` -> `### Trait: semantics_contract`
 - `dialect_plain_triton` -> `### Trait: dialect_plain_triton`
@@ -40,7 +47,12 @@ to the short trait reference below, then view only the headings it names.
 - `shape_coverage_bucketed` -> `### Trait: shape_coverage_bucketed`
 - `shape_layout_constexpr_risk` -> `### Trait: shape_layout_constexpr_risk`
 - `shape_dispatch_required` -> `### Trait: shape_dispatch_required`
-- `search_space_allocation` -> `### Search space: base_shared_extension`
+
+Search policies:
+
+- `base_shared_extension` -> `### Search policy: base_shared_extension`
+- `evidence_anchored_composition` -> `### Search policy: evidence_anchored_composition`
+- `dialect_contract_metadata` -> `### Search policy: dialect_contract_metadata`
 
 ## Trait reference for targeted reading
 
@@ -375,7 +387,7 @@ Then view these headings:
 
 - `### Trait: layout_basic`
 - `### Trait: semantics_contract`
-- `### Search space: base_shared_extension`
+- `### Search policy: base_shared_extension`
 
 Do not:
 
@@ -400,7 +412,7 @@ Then view these headings:
 - `### Trait: shape_dispatch_required`
 - `### Trait: shape_layout_constexpr_risk`
 - `### Trait: layout_basic`
-- `### Search space: base_shared_extension`
+- `### Search policy: base_shared_extension`
 
 Do not:
 
@@ -444,7 +456,7 @@ Then view these headings:
 
 - `### Trait: shape_coverage_bucketed`
 - `### Trait: shape_layout_constexpr_risk`
-- `### Search space: base_shared_extension`
+- `### Search policy: base_shared_extension`
 
 Do not:
 
@@ -1177,7 +1189,7 @@ The planner should reject or deprioritize tasks that:
   before a simpler AMD Gluon candidate passes correctness;
 - claim success from compile-only validation without benchmark comparison.
 
-### Search space: base_shared_extension
+### Search policy: base_shared_extension
 
 GEAK should plan Triton-family optimization as a union of three sets:
 
@@ -1212,6 +1224,79 @@ Planning rules:
   to layout-only, translation-only, or memory-only work.
 - If Gluon passes correctness but is slower, refine memory or matrix lowering
   before scheduler, persistent, async, or descriptor work.
+
+### Search policy: evidence_anchored_composition
+
+This is a planner / task-selection rule, not a component implementation trait.
+The concrete component still comes from traits such as `memory_amd_buffer`,
+`matrix_dot`, `layout_basic`, or `shape_dispatch_required`.
+
+When prior-round evidence exists:
+
+1. Identify the safe anchor:
+   - prefer the best verified Base Set patch;
+   - otherwise use the best verified non-regressing patch;
+   - otherwise use the original baseline.
+2. Extract portable components from Shared / Extension evidence:
+   - `algorithm_decomposition`
+   - `tiling_or_blocking`
+   - `memory_access_policy`
+   - `layout_or_indexing`
+   - `matrix_lowering`
+   - `mask_or_boundary_simplification`
+   - `accumulator_representation`
+   - `launch_or_dispatch_policy`
+   - `scheduler_or_persistent_policy`
+   - `dtype_or_precision_policy`
+3. Generate composition tasks:
+   - `base_refine`: continue optimizing the safe anchor;
+   - `shared_transplant`: preserve the safe anchor algorithm and transplant one
+     portable component. Output may stay `plain_triton`;
+   - `gluon_variant`: re-express the safe anchor algorithm in AMD Gluon only
+     when the useful component requires explicit layout, AMD memory paths, or
+     matrix lowering;
+   - `hybrid_dispatch`: dispatch between Base and Gluon only when per-shape or
+     sub-operation evidence shows different winners.
+
+Composition candidates must compare against the safe anchor, not only the
+original baseline, and must reject per-shape regression against that anchor.
+
+### Search policy: dialect_contract_metadata
+
+This is a lightweight Triton-family task metadata contract. It is not intended
+for HIP, CK, ASM, FlyDSL, or PyTorch-to-FlyDSL tasks.
+
+Task frontmatter may include:
+
+```yaml
+search_set: base | shared | extension
+required_output_dialect: plain_triton | amd_gluon | mixed | any
+```
+
+Mapping:
+
+- Base Set:
+  - `search_set = base`
+  - `required_output_dialect = plain_triton`
+- Shared transplant:
+  - `search_set = shared`
+  - `required_output_dialect = any`
+- True AMD Gluon Extension:
+  - `search_set = extension`
+  - `required_output_dialect = amd_gluon`
+- Hybrid dispatch:
+  - `search_set = shared` or `extension`
+  - `required_output_dialect = mixed`
+
+Rules:
+
+- A required `amd_gluon` task must attempt a real Gluon patch. Plain Triton
+  fallback is not a valid success unless a real Gluon attempt failed and that
+  failure is recorded.
+- Required AMD Gluon Extension tasks should not be skipped by staged dispatch
+  after a Base improvement is found.
+- Shared tasks may produce plain Triton output; such results are
+  `Gluon-informed` / shared transplant evidence, not Gluon-positive evidence.
 
 ## 9. Representative examples
 

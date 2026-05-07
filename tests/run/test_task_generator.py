@@ -382,6 +382,83 @@ def test_audit_accepts_main_like_five_base_plus_gluon_l0() -> None:
     assert [task.label for task in tasks][-1] == "amd-gluon-l0-viability"
 
 
+def test_parse_llm_response_infers_search_contract_for_extension() -> None:
+    tasks = _parse_llm_response(
+        json.dumps(
+            [
+                {
+                    "label": "ext-l0-gluon-memory",
+                    "priority": 6,
+                    "agent_type": "strategy_agent",
+                    "kernel_language": "python",
+                    "task_prompt": "Extension Set task\nExtension layer: L0\nAttempt AMD Gluon.",
+                },
+                {
+                    "label": "shared-anchor-transplant",
+                    "priority": 5,
+                    "agent_type": "strategy_agent",
+                    "kernel_language": "python",
+                    "task_prompt": "Shared Set task\nShared source family: base_hot_path_streamline",
+                },
+            ]
+        ),
+        FakeAgentClass,
+    )
+
+    assert tasks[0].config["search_set"] == "shared"
+    assert tasks[0].config["required_output_dialect"] == "any"
+    assert tasks[1].config["search_set"] == "extension"
+    assert tasks[1].config["required_output_dialect"] == "amd_gluon"
+
+
+def test_parse_llm_response_infers_mixed_for_hybrid_before_extension_default() -> None:
+    tasks = _parse_llm_response(
+        json.dumps(
+            [
+                {
+                    "label": "ext-hybrid-shape-dispatch",
+                    "priority": 6,
+                    "agent_type": "strategy_agent",
+                    "kernel_language": "python",
+                    "task_prompt": "Extension Set task\nExtension layer: Hybrid\nComposition type: hybrid_dispatch",
+                }
+            ]
+        ),
+        FakeAgentClass,
+    )
+
+    assert tasks[0].config["search_set"] == "extension"
+    assert tasks[0].config["required_output_dialect"] == "mixed"
+
+
+def test_extension_audit_does_not_count_shared_gluon_variant_as_extension() -> None:
+    tasks = _parse_llm_response(
+        json.dumps(
+            [
+                {
+                    "label": "shared-amd-gluon-variant",
+                    "priority": 4,
+                    "agent_type": "strategy_agent",
+                    "kernel_language": "python",
+                    "task_prompt": "Shared Set task\nShared source family: base_hot_path_streamline\namd_gluon variant",
+                },
+                {
+                    "label": "amd-gluon-l0-viability",
+                    "priority": 8,
+                    "agent_type": "strategy_agent",
+                    "kernel_language": "python",
+                    "task_prompt": "Extension Set task\nExtension layer: L0\nminimal AMD Gluon viability",
+                },
+            ]
+        ),
+        FakeAgentClass,
+        expected_extension_slots=1,
+    )
+
+    assert tasks[0].config["search_set"] == "shared"
+    assert tasks[1].config["search_set"] == "extension"
+
+
 # ---- Agent submits valid JSON -> tasks produced ----
 
 
@@ -684,6 +761,10 @@ def test_write_task_files_marks_triton_tasks_with_skill_usage(tmp_path: Path):
     assert meta["preferred_output_dialects"] == ["amd_gluon", "plain_triton"]
     assert meta["output_dialect_search_policy"] == "prefer_amd_gluon_if_viable_else_plain_triton"
     assert meta["allowed_skill_tiers"] == ["general"]
+    assert Path(meta["gluon_always_read_path"]).is_absolute()
+    assert meta["gluon_always_read_path"].endswith("skills/triton-gluon/docs/00_always_read.md")
+    assert meta["gluon_api_reference_path"].endswith("skills/triton-gluon/docs/50_api_reference.md")
+    assert meta["gluon_real_patterns_path"].endswith("skills/triton-gluon/docs/60_real_patterns.md")
 
 
 def test_write_task_files_records_plain_triton_gluon_preference(tmp_path: Path):
@@ -760,6 +841,46 @@ def test_write_task_files_patches_shape_metadata_from_baseline_metrics(tmp_path:
         "perf4",
     ]
     assert meta["benchmark_test_cases_path"] == str(cases_path)
+
+
+def test_write_task_files_writes_triton_search_contract_only(tmp_path: Path):
+    triton_tasks = _parse_llm_response(
+        json.dumps(
+            [
+                {
+                    "label": "ext-l0-gluon-memory",
+                    "priority": 6,
+                    "agent_type": "strategy_agent",
+                    "task_prompt": "Extension Set task\nExtension layer: L0",
+                }
+            ]
+        ),
+        FakeAgentClass,
+    )
+    _write_knowledge_files(tmp_path)
+
+    triton_paths = write_task_files(
+        triton_tasks,
+        tmp_path / "triton",
+        kernel_path=str(tmp_path / "kernel.py"),
+        kernel_type="triton",
+        input_dialect="plain_triton",
+        gluon_feature_mode="auto",
+        allowed_output_dialects=["plain_triton", "amd_gluon"],
+    )
+    triton_meta, _body = read_task_file(triton_paths[0])
+    assert triton_meta["search_set"] == "extension"
+    assert triton_meta["required_output_dialect"] == "amd_gluon"
+
+    hip_paths = write_task_files(
+        triton_tasks,
+        tmp_path / "hip",
+        kernel_path=str(tmp_path / "kernel.hip"),
+        kernel_type="hip",
+    )
+    hip_meta, _body = read_task_file(hip_paths[0])
+    assert "search_set" not in hip_meta
+    assert "required_output_dialect" not in hip_meta
 
 
 def test_extract_kernel_meta_reinfers_unknown_gluon_type(tmp_path: Path):
