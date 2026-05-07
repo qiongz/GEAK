@@ -255,11 +255,35 @@ def _add_gate_path(paths: list[str], meta: dict[str, Any], key: str) -> None:
         paths.append(path)
 
 
+def _required_gluon_docs_from_metadata(meta: dict[str, Any]) -> list[str]:
+    raw_docs = meta.get("required_gluon_docs")
+    if isinstance(raw_docs, str):
+        doc_keys = [part.strip() for part in raw_docs.split(",") if part.strip()]
+    elif isinstance(raw_docs, list):
+        doc_keys = [str(part).strip() for part in raw_docs if str(part).strip()]
+    else:
+        return []
+
+    required: list[str] = []
+    for key_or_path in doc_keys:
+        if key_or_path in _GLUON_GATE_FALLBACK_RELS or key_or_path in meta:
+            _add_gate_path(required, meta, key_or_path)
+        else:
+            path = _normalize_gate_path(key_or_path)
+            if path and path not in required:
+                required.append(path)
+    return required
+
+
 def _gluon_doc_gate_required_paths(meta: dict[str, Any], task_body: str) -> list[str]:
     """Return split-doc paths that a Gluon worker must view before save_and_test."""
     feature_meta = _task_feature_metadata(meta)
     if not feature_uses_gluon_guidance_from_meta(feature_meta):
         return []
+
+    explicit_required = _required_gluon_docs_from_metadata(meta)
+    if explicit_required:
+        return explicit_required
 
     required: list[str] = []
     _add_gate_path(required, meta, "gluon_skill_path")
@@ -293,9 +317,22 @@ def _gluon_doc_gate_required_paths(meta: dict[str, Any], task_body: str) -> list
             "jit",
             "aot",
             "prebuilt",
+            "compile_gluon",
+            "compilegluon",
+            "signature",
+            "waves_per_eu",
+            "matrix_instr_nonkdim",
+            "kpack",
+            "sanitize_overflow",
+            "global_scratch",
+            "profile_scratch",
             "instr_shape",
             "descriptor",
+            "tensordescriptor",
             "tdm",
+            "current_target",
+            "translator",
+            "triton_to_gluon",
             "target_backend",
         )
     ):
@@ -311,8 +348,24 @@ def _gluon_doc_gate_required_paths(meta: dict[str, Any], task_body: str) -> list
             "@gluon.jit",
             "buffer_load",
             "buffer_store",
+            "buffer_atomic",
+            "atomic_",
             "convert_layout",
             "dotoperandlayout",
+            "full",
+            "full_like",
+            "reduce",
+            "sum",
+            "max",
+            "min",
+            "softmax",
+            "scan",
+            "associative_scan",
+            "histogram",
+            "reshape",
+            "permute",
+            "split",
+            "join",
         )
     ):
         _add_gate_path(required, meta, "gluon_api_reference_path")
@@ -328,6 +381,14 @@ def _gluon_doc_gate_required_paths(meta: dict[str, Any], task_body: str) -> list
             "preshuffle",
             "benchmark",
             "source-first",
+            "translator",
+            "current_target",
+            "tensordescriptor",
+            "tdm",
+            "artifact",
+            "zip",
+            "config",
+            "env",
         )
     ):
         _add_gate_path(required, meta, "gluon_real_patterns_path")
@@ -448,6 +509,7 @@ def task_file_to_agent_task(task_file: Path):
         gluon_api_reference_path=meta.get("gluon_api_reference_path"),
         gluon_real_patterns_path=meta.get("gluon_real_patterns_path"),
         gluon_backup_details_path=meta.get("gluon_backup_details_path"),
+        gluon_doc_gate_required_paths=gluon_doc_gate_paths,
     )
 
     if meta.get("starting_patch"):

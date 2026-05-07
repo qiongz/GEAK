@@ -742,6 +742,10 @@ def write_task_files(
                 metadata["search_set"] = t.config["search_set"]
             if t.config.get("required_output_dialect"):
                 metadata["required_output_dialect"] = t.config["required_output_dialect"]
+            if t.config.get("gluon_doc_profile"):
+                metadata["gluon_doc_profile"] = t.config["gluon_doc_profile"]
+            if t.config.get("required_gluon_docs"):
+                metadata["required_gluon_docs"] = list(t.config["required_gluon_docs"])
         body = f"# {t.label}\n\n{t.task}\n"
         write_task_file(task_path, metadata, body)
         paths.append(task_path)
@@ -1126,6 +1130,96 @@ def _infer_search_set_and_required_output(label: str, task_prompt: str, item: di
             required_output = "any"
 
     return search_set, required_output
+
+
+def _infer_gluon_doc_profile(label: str, task_prompt: str, search_set: str, required_output: str) -> str:
+    text = f"{label}\n{task_prompt}\n{search_set}\n{required_output}".lower()
+    if "hybrid_dispatch" in text or "extension layer: hybrid" in text or required_output == "mixed":
+        return "hybrid_dispatch"
+    if "shared_transplant" in text or search_set == "shared":
+        return "shared_transplant"
+    if "nv_gluon" in text or "nvidia" in text or "translation" in text:
+        return "nv_to_amd_translation"
+    if any(marker in text for marker in ("shape_bucketed", "shape_dispatch", "bucketed")):
+        return "shape_bucketed_dispatch"
+    if any(marker in text for marker in ("jit", "aot", "prebuilt", "compile_gluon", "signature", "waves_per_eu", "scratch")):
+        return "jit_aot_sensitive"
+    if any(marker in text for marker in ("matrix", "dot", "mfma", "wmma", "scaled", "gemm", "fp8", "fp4")):
+        return "matrix_lowering"
+    if search_set == "extension" and required_output == "amd_gluon":
+        return "extension_l0_minimal"
+    return "base_or_shared_gluon"
+
+
+def _infer_required_gluon_doc_keys(
+    label: str,
+    task_prompt: str,
+    search_set: str,
+    required_output: str,
+    profile: str,
+) -> list[str]:
+    text = f"{label}\n{task_prompt}\n{search_set}\n{required_output}\n{profile}".lower()
+    docs = [
+        "gluon_skill_path",
+        "gluon_always_read_path",
+        "gluon_search_policies_path",
+    ]
+
+    def add(key: str) -> None:
+        if key not in docs:
+            docs.append(key)
+
+    if any(marker in text for marker in ("gluon", "amd_gluon", "nv_gluon", "extension", "shared", "matrix", "memory", "layout")):
+        add("gluon_component_traits_path")
+    if required_output == "amd_gluon" or profile in {"extension_l0_minimal", "matrix_lowering", "jit_aot_sensitive"}:
+        add("gluon_api_reference_path")
+    if profile in {"nv_to_amd_translation", "matrix_lowering", "shape_bucketed_dispatch", "jit_aot_sensitive", "hybrid_dispatch"} or any(
+        marker in text
+        for marker in (
+            "gfx",
+            "cdna",
+            "rdna",
+            "mfma",
+            "wmma",
+            "jit",
+            "aot",
+            "prebuilt",
+            "compile_gluon",
+            "signature",
+            "waves_per_eu",
+            "global_scratch",
+            "profile_scratch",
+            "instr_shape",
+            "descriptor",
+            "tdm",
+            "current_target",
+            "translator",
+        )
+    ):
+        add("gluon_architecture_notes_path")
+    if profile in {"nv_to_amd_translation", "shape_bucketed_dispatch", "shared_transplant", "hybrid_dispatch"} or any(
+        marker in text
+        for marker in (
+            "aiter",
+            "attention",
+            "decode",
+            "gemm",
+            "kv",
+            "cache",
+            "preshuffle",
+            "benchmark",
+            "source-first",
+            "translator",
+            "current_target",
+            "artifact",
+            "zip",
+            "env",
+        )
+    ):
+        add("gluon_real_patterns_path")
+    if "example" in text:
+        add("gluon_examples_doc_path")
+    return docs
 
 
 def _gluon_trait_headings(traits: list[str]) -> list[str]:
@@ -2444,9 +2538,27 @@ def _parse_llm_response(
             logger.debug("_parse_llm_response: unknown agent_type %r for '%s'; using default class.", agent_type, label)
 
         search_set, required_output_dialect = _infer_search_set_and_required_output(label, task_prompt, item)
+        gluon_doc_profile = str(item.get("gluon_doc_profile") or "").strip().lower()
+        if not gluon_doc_profile:
+            gluon_doc_profile = _infer_gluon_doc_profile(label, task_prompt, search_set, required_output_dialect)
+        raw_required_docs = item.get("required_gluon_docs")
+        if isinstance(raw_required_docs, str):
+            required_gluon_docs = [part.strip() for part in raw_required_docs.split(",") if part.strip()]
+        elif isinstance(raw_required_docs, list):
+            required_gluon_docs = [str(part).strip() for part in raw_required_docs if str(part).strip()]
+        else:
+            required_gluon_docs = _infer_required_gluon_doc_keys(
+                label,
+                task_prompt,
+                search_set,
+                required_output_dialect,
+                gluon_doc_profile,
+            )
         cfg: dict[str, Any] = {
             "search_set": search_set,
             "required_output_dialect": required_output_dialect,
+            "gluon_doc_profile": gluon_doc_profile,
+            "required_gluon_docs": required_gluon_docs,
         }
 
         tasks.append(

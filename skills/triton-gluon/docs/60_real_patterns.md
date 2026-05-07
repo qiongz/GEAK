@@ -10,7 +10,9 @@ triggers live here.
 - `writing_model`
 - `layout_sync_descriptor_mental_model`
 - `nvidia_amd_family_differences`
+- `translator_derived_amd_dispatch`
 - `real_patterns_from_aiter`
+- `operator_local_support_matrix`
 - `optimization_paths_by_kernel_family`
 - `source_first_triggers`
 - `repo_local_notes`
@@ -232,6 +234,28 @@ Concept map:
 | Barrier / cluster | `mbarrier`, `cluster` | family-specific barrier / cluster APIs |
 | Tensor memory | Blackwell tensor memory | no direct global AMD equivalent; use gfx1250-specific `tdm` / WMMA where appropriate |
 
+## translator_derived_amd_dispatch
+
+Triton's `triton_to_gluon_translator` AMD helper code is a useful mental model
+for migration tasks:
+
+- Use `current_target()` or equivalent target metadata to dispatch, not string
+  replacement.
+- `gfx1250` routes matrix lowering through `AMDWMMALayout`, `DotOperandLayout`,
+  `convert_layout`, and `wmma`.
+- CDNA3/CDNA4 routes matrix lowering through `AMDMFMALayout`,
+  `DotOperandLayout`, `convert_layout`, and `mfma`.
+- CDNA3/CDNA4 MFMA instruction K width depends on target generation and element
+  bitwidth.
+- `tl.dot_scaled` style paths may decompose through target-specific dot helpers
+  plus scale layouts; do not translate by name alone.
+- `tl_make_tensor_descriptor` / descriptor object load/store are gfx1250-only
+  AMD TDM concepts in this model.
+
+Planner implication: if a task mentions `translator`, `current_target`,
+`tl_make_tensor_descriptor`, `tdm`, or `TensorDescriptor`, route it to both
+`30_architecture_notes.md` and this file before implementation.
+
 ## real_patterns_from_aiter
 
 Paged-attention Gluon code on `gfx942` / `gfx950` shows production-style
@@ -278,6 +302,29 @@ Feature availability is not operator support:
 
 Always read operator-local guards before concluding that an architecture is
 supported or unsupported.
+
+## operator_local_support_matrix
+
+Do not use one global Gluon-available helper as the operator support matrix.
+Observed downstream patterns differ by operator:
+
+| Operator family | Observed Gluon path | Support notes |
+| --- | --- | --- |
+| Paged-attention decode | JIT Gluon main attention + normal Triton reduce, plus AOT wrapper path | CDNA3/CDNA4 style path; operator-local guards may include `gfx942` and `gfx950` |
+| GEMM A8W8 / blockscale / AFP4WFP4 | Gluon GEMM with checked-in JSON configs | Existing configs may be `gfx950`-specific; do not infer `gfx942` support |
+| PA MQA logits | JIT Gluon or prebuilt/AOT artifact selected by Triton version/env | Artifact shape can be zip/config/env driven rather than Jinja `.so` |
+| gfx1250 descriptor/WMMA examples | WMMA/TDM/descriptor-oriented examples and tests | Separate family from CDNA; not a drop-in replacement for CDNA attention/GEMM |
+
+Artifact shapes also differ:
+
+- JIT-only: Python `@gluon.jit` launched directly.
+- Jinja `.so`: Gluon AOT stage plus generated C++/pybind wrapper.
+- Zip/config/env: prebuilt artifacts selected by environment variables and
+  config lookup.
+
+Treat these as operator-local integration contracts. A worker should preserve
+existing artifact selection and environment gates unless benchmark evidence
+proves they are irrelevant.
 
 ## optimization_paths_by_kernel_family
 

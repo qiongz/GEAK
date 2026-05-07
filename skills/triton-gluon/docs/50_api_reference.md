@@ -9,7 +9,9 @@ failure-driven debug order. It expands the concise rules in
 - `imports`
 - `jit_entry_and_host_launcher`
 - `core_language_and_layout_surface`
+- `common_language_api_surface`
 - `common_rewrite_table`
+- `aot_compile_api_surface`
 - `shared_memory_synchronization_cluster`
 - `descriptor_and_tensor_memory_surface`
 - `amd_quick_patterns`
@@ -98,6 +100,9 @@ Runtime facts:
 | API | Purpose |
 | --- | --- |
 | `program_id` | Triton-like program id |
+| `num_programs` | Query grid program count |
+| `num_warps` / `num_ctas` | Query launch attributes inside Gluon |
+| `warp_specialize` | Warp-specialization control, target-sensitive |
 | `constexpr` | Compile-time argument marker |
 | `BlockedLayout` | Base thread/warp/CTA distribution |
 | `SliceLayout` | Select a sub-dimension from a parent layout |
@@ -110,11 +115,16 @@ Runtime facts:
 | `AMDWMMALayout` | AMD WMMA result layout |
 | `TensorMemoryLayout` | Blackwell tensor-memory layout |
 | `arange` | Layout-aware index construction |
+| `full` / `full_like` | Layout-aware tensor creation |
 | `load` / `store` | Generic Gluon memory access |
 | `zeros(..., layout=...)` | Accumulator/register tensor construction |
 | `convert_layout` | Move a tensor into another layout |
 | `allocate_shared_memory` | Create shared-memory buffers |
 | `barrier` | Synchronization primitive |
+| `broadcast`, `expand_dims`, `reshape`, `permute`, `split`, `join`, `ravel` | Shape manipulation with layout implications |
+| `sum`, `max`, `min`, `reduce`, `reduce_or` | Reduction APIs used in attention/softmax style kernels |
+| `associative_scan`, `histogram` | Scan APIs; treat as specialized, source-first paths |
+| `atomic_add`, `atomic_cas`, `atomic_max`, `atomic_min`, `atomic_xchg`, etc. | Generic atomics; target-specific buffer atomics have stricter arch rules |
 | `to_linear_layout` | Convert to a linearized layout view when needed |
 | `set_auto_layout` | Allow automatic layout selection in constrained flows |
 
@@ -126,6 +136,40 @@ Recommended order:
 4. Convert layout when needed.
 5. Run target-specific memory or matrix ops.
 
+## common_language_api_surface
+
+The official Gluon common language surface is broader than the small rewrite
+subset most first candidates need. Use this section to route workers before
+they invent API names.
+
+Common creation and shape APIs:
+
+- `arange`, `zeros`, `zeros_like`, `full`, `full_like`, `cast`, `to_tensor`;
+- `broadcast`, `expand_dims`, `reshape`, `permute`, `split`, `join`, `ravel`,
+  `map_elementwise`.
+
+Common memory and indexing APIs:
+
+- `load`, `store`;
+- `gather`, `where`;
+- generic atomics such as `atomic_add`, `atomic_and`, `atomic_cas`,
+  `atomic_max`, `atomic_min`, `atomic_or`, `atomic_xchg`, `atomic_xor`.
+
+Common reductions and scans:
+
+- `sum`, `max`, `min`, `reduce`, `reduce_or`, `xor_sum`;
+- `associative_scan`, `histogram`.
+
+Planning implications:
+
+- `full` / `zeros` / accumulator creation still need explicit layout.
+- `reshape`, `permute`, `split`, `join`, and nested `SliceLayout` usage are
+  correctness-sensitive in attention and preshuffle paths.
+- `sum` / `max` reductions are common in softmax-style attention kernels and
+  should route to this API reference before implementation.
+- Atomics are late-stage features. Prefer simpler layout/memory candidates
+  first, and use target-specific atomic docs before buffer atomics.
+
 ## common_rewrite_table
 
 | Plain Triton pattern | First Gluon rewrite | Escalate when |
@@ -134,9 +178,42 @@ Recommended order:
 | `tl.load` / `tl.store` | `gl.load` / `gl.store` | Switch to AMD `buffer_load` / `buffer_store` when target family or existing AMD path requires it |
 | `tl.zeros((M, N), dtype=...)` | `gl.zeros((M, N), dtype=..., layout=layout)` | Always; accumulators need explicit layout |
 | `tl.full(...)` | `gl.full(..., layout=layout)` when supported by local Triton | Always for distributed tensors |
+| `tl.max` / `tl.sum` reductions | `gl.max` / `gl.sum` with matching layout assumptions | Softmax/reduction paths need API reference and correctness audit |
+| `reshape` / `permute` / `split` / `join` | Gluon shape APIs with layout-aware tensors | Preserve transformation semantics; source-first for unshuffle paths |
+| `tl.atomic_*` | generic `gl.atomic_*` or target-specific buffer atomics | Late-stage only; arch and dtype support must be checked |
 | `tl.dot` / `tl.dot_scaled` | result layout + operand layouts + `convert_layout` + target-specific matrix op | Always; not a direct rename target |
 | tensor descriptor helpers | target-specific descriptor family | Only when the target family actually supports descriptors or tensor memory |
 | implicit shared-memory staging | `allocate_shared_memory` after the first correct candidate | Only after blocked-layout or matrix path is correct |
+
+## aot_compile_api_surface
+
+Downstream aiter code uses a real Gluon AOT compiler path. Do not treat AOT as
+equivalent to JIT.
+
+Important compile-time fields:
+
+- `path`: Python source containing the Gluon kernel; the file is executed from
+  its parent directory.
+- `kernel_name`: function name; the function must be a real `@gluon.jit`
+  kernel and expose `is_gluon()`.
+- `signature`: comma-separated argument types and constexpr values. Pointer
+  signatures may carry divisibility hints such as `*fp32:16`; constexpr values
+  are removed from the generated C prototype.
+- `grid`: launch grid for the generated entry point.
+- `target`: `<backend>:<arch>:<warp-size>`, e.g. `hip:gfx942:64`.
+- `num_warps`, `num_ctas`, `waves_per_eu`, `num_stages`.
+- `matrix_instr_nonkdim`, `kpack`.
+- `enable_fp_fusion`, `allow_flush_denorm`, `sanitize_overflow`,
+  `launch_cooperative_grid`, `debug`.
+
+AOT failure boundaries:
+
+- AOT wrappers may reject kernels with `global_scratch_size` or
+  `profile_scratch_size`.
+- HIP AOT compile checks may prove that a HSACO is produced without proving the
+  whole package/link/runtime path is valid.
+- Mixed pipelines may compile a Gluon stage with `GluonASTSource` and a normal
+  Triton helper stage with `ASTSource`; route and debug those stages separately.
 
 ## shared_memory_synchronization_cluster
 

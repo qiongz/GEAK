@@ -900,6 +900,20 @@ def _build_gluon_working_set(feature_metadata: dict[str, Any] | None) -> list[st
     return lines
 
 
+def _build_required_gluon_doc_gate_block(required_paths: list[str] | None) -> list[str]:
+    paths = [str(path).strip() for path in (required_paths or []) if str(path).strip()]
+    if not paths:
+        return []
+    lines = [
+        "## REQUIRED BEFORE EDITING OR SAVE_AND_TEST",
+        "Before editing the kernel or calling `save_and_test`, use `str_replace_editor` with `command=\"view\"` on every required Triton-Gluon doc path below.",
+        "`save_and_test` will fail with `GLUON_DOC_GATE_FAILED` until these exact paths have been viewed.",
+    ]
+    lines.extend(f"- {path}" for path in paths)
+    lines.append("")
+    return lines
+
+
 def _task_requires_amd_gluon_output(feature_metadata: dict[str, Any] | None) -> bool:
     """Return whether the task contract requires a real AMD Gluon patch."""
     if not feature_metadata:
@@ -1024,6 +1038,7 @@ def inject_pipeline_context(
     gluon_api_reference_path: str | None = None,
     gluon_real_patterns_path: str | None = None,
     gluon_backup_details_path: str | None = None,
+    gluon_doc_gate_required_paths: list[str] | None = None,
 ) -> tuple[str, dict]:
     """Prepend pipeline context to *task_body* and augment *config*.
 
@@ -1076,6 +1091,7 @@ def inject_pipeline_context(
                 )
             )
             ctx.extend(_build_gluon_working_set(feature_metadata))
+            ctx.extend(_build_required_gluon_doc_gate_block(gluon_doc_gate_required_paths))
         if _task_requires_amd_gluon_output(feature_metadata):
             ctx.extend(_build_forced_triton_gluon_skill_context())
         # Apply shape-coverage rules to ALL kernel types, not only Gluon paths.

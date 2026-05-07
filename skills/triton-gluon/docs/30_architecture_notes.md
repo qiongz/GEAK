@@ -13,6 +13,7 @@ Triton versions, JIT/AOT, MFMA, WMMA, descriptors, or prebuilt kernels.
 - `### Trait: operator_support_sensitive`
 - `runtime_target_resolution`
 - `kernel_path_compatibility`
+- `aot_compile_contract`
 - `amd_layout_version_map`
 - `gfx1250_descriptor_constraints`
 
@@ -133,6 +134,31 @@ Architecture is a decision boundary, not a naming convention:
 Module path and architecture version are not always the same thing. Seeing
 `gl.amd.cdna3.*` does not prove the whole path targets CDNA3; layout version,
 target arch, and feature guards may still point at `gfx950`.
+
+## aot_compile_contract
+
+Gluon AOT is a separate integration contract from JIT. Route AOT tasks here when
+the prompt mentions `AOT`, `prebuilt`, `compile_gluon`, `signature`,
+`waves_per_eu`, `matrix_instr_nonkdim`, `kpack`, `sanitize_overflow`,
+`global_scratch`, or `profile_scratch`.
+
+Required checks:
+
+- Confirm the Triton version and commit. `triton.experimental.gluon` is an
+  experimental API surface, and Triton `3.5` / `3.6+` metadata can differ.
+- Confirm target triple: backend, arch, and warp size, e.g. `hip:gfx942:64` or
+  `hip:gfx1250:32`.
+- Confirm launch attributes: `num_warps`, `num_ctas`, `waves_per_eu`, and
+  target arch must match layout assumptions.
+- Confirm AOT signature: pointer type hints such as `*fp32:16` encode
+  divisibility/alignment assumptions; constexpr values disappear from the
+  generated C prototype.
+- Confirm scratch behavior: current downstream AOT wrappers may reject kernels
+  with nonzero `global_scratch_size` or `profile_scratch_size`.
+
+Mixed AOT/JIT pipelines are common. A real operator may compile one Gluon stage
+with `GluonASTSource` and a helper/reduce stage with normal Triton `ASTSource`.
+Do not debug or classify the whole operator as a single AOT mechanism.
 
 ## amd_layout_version_map
 

@@ -539,13 +539,16 @@ def _has_significant_shape_regression(
 
 
 def classify_patch_output_dialect(patch_text: str) -> str:
-    """Classify whether a patch appears to implement plain Triton or AMD Gluon."""
+    """Classify whether a patch appears to implement plain Triton, AMD Gluon, or both."""
     has_gluon = any(marker in patch_text for marker in _AMD_GLUON_PATCH_MARKERS) or bool(
         re.search(r"\bgl\.(?:load|store|program_id|arange|zeros|full)\b", patch_text)
     )
+    has_plain_triton = any(marker in patch_text for marker in _PLAIN_TRITON_PATCH_MARKERS)
+    if has_gluon and has_plain_triton:
+        return "mixed"
     if has_gluon:
         return "amd_gluon"
-    if any(marker in patch_text for marker in _PLAIN_TRITON_PATCH_MARKERS):
+    if has_plain_triton:
         return "plain_triton"
     return "unknown"
 
@@ -582,6 +585,8 @@ def _dialect_contract_satisfied(required: str, actual: str) -> bool:
         return True
     if required == "mixed":
         return actual == "mixed"
+    if required == "amd_gluon":
+        return actual in {"amd_gluon", "mixed"}
     return actual == required
 
 
@@ -669,6 +674,15 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         if candidate_ms is None or candidate_ms <= 0:
             continue
         candidate_shape_latencies = parse_shape_latencies_ms(candidate_text)
+        actual_output_dialect = classify_patch_output_dialect(patch_text)
+        if not _dialect_contract_satisfied(required_output_dialect, actual_output_dialect):
+            logger.info(
+                "Skipping %s because required_output_dialect=%s but patch classified as %s",
+                name,
+                required_output_dialect,
+                actual_output_dialect,
+            )
+            continue
         shape_speedups = compute_shape_speedups(baseline_shape_latencies, candidate_shape_latencies)
         if shape_speedups and _has_significant_shape_regression(shape_speedups):
             logger.info(
@@ -687,7 +701,7 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
             best_patch_file = str(patch_file)
             best_test_file = str(test_file)
             best_patch_size = psz
-            best_actual_output_dialect = classify_patch_output_dialect(patch_text)
+            best_actual_output_dialect = actual_output_dialect
             best_candidate_shape_latencies = candidate_shape_latencies
             best_candidate_shape_geomean = _geomean_ms(candidate_shape_latencies)
             best_shape_speedups = shape_speedups
