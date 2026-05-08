@@ -19,6 +19,7 @@ Do not read this whole file by default. Use the routed section(s) below.
 | translator/current_target-based AMD lowering | `translator_derived_amd_dispatch` |
 | aiter attention/GEMM/MQA examples and operator-local support | `real_patterns_from_aiter`, `operator_local_support_matrix` |
 | elementwise/attention/GEMM/preshuffled/gfx1250 strategy order | `optimization_paths_by_kernel_family` |
+| end-to-end, wrapper-heavy, fair benchmark, or same-ABI comparison | `benchmark_boundary_and_integration_costs` |
 | source-first triggers | `source_first_triggers` |
 | repo-local defaults or benchmark interpretation | `repo_local_notes`, `benchmark_aware_rules` |
 | final sanity check for risky patterns | `anti_patterns` |
@@ -35,6 +36,7 @@ Do not read this whole file by default. Use the routed section(s) below.
 - `real_patterns_from_aiter`
 - `operator_local_support_matrix`
 - `optimization_paths_by_kernel_family`
+- `benchmark_boundary_and_integration_costs`
 - `source_first_triggers`
 - `repo_local_notes`
 - `benchmark_aware_rules`
@@ -51,6 +53,8 @@ GEAK treats Gluon as a feature extension of Triton:
   debugging;
 - prefer `amd_gluon` when allowed and structurally promising, while keeping
   plain Triton as a benchmarked fallback;
+- choose the optimization direction from the main HIP/Triton strategy first,
+  then decide whether Gluon is a useful implementation layer for that direction;
 - never create a new optimized `nv_gluon` output path.
 
 In Triton, Gluon is not just syntax sugar:
@@ -138,6 +142,8 @@ Stay in plain Triton when:
 - the kernel is simple and already expresses the right execution shape;
 - explicit layouts add complexity without plausible performance upside;
 - the target-specific path would only be compile-valid, not benchmark-valid.
+- the Gluon task cannot name the optimization direction, plain Triton
+  competitor, and measured hot path it improves.
 
 `gl.load` / `gl.store` are not a failure to use AMD. They are often the right
 first Gluon rewrite for scalar or simple vector paths. Move to
@@ -527,6 +533,49 @@ gfx1250 WMMA or descriptor kernels:
 This family has more frontend assertions than current CDNA3/4 paths, so
 speculative rewrites fail quickly.
 
+## benchmark_boundary_and_integration_costs
+
+End-to-end kernels such as aiter attention wrappers are often pipelines rather
+than a single hot kernel. Before choosing a Gluon rewrite, classify the measured
+boundary:
+
+- `kernel_only`: payloads are already prepared and the benchmark measures the
+  hot kernel body. Use this to judge whether a Gluon kernel implementation is
+  locally useful.
+- `fair_make_inputs_run_kernel`: input preparation plus kernel launch is in
+  scope. Packing, cache layout conversion, temporary allocation, and wrapper
+  dispatch may dominate.
+- `full_operator`: the whole operator path is in scope. Attribute wins to the
+  component that changed, not automatically to the kernel dialect.
+
+Same-ABI rule:
+
+- Compare plain Triton and AMD Gluon under the same host ABI whenever possible:
+  same input tensor layout, cache format, wrapper signature, grid semantics, and
+  correctness oracle.
+- If the Gluon path requires a different packed cache or prebuilt artifact,
+  record that as an integration change and benchmark it under the same
+  measurement boundary as the plain Triton path.
+- If `kernel_only` Gluon wins but `fair_make_inputs_run_kernel` loses, the next
+  task should target pack/unpack, cache ABI, wrapper dispatch, or artifact lookup
+  cost. Do not keep tuning the Gluon kernel body until the integration cost is
+  accounted for.
+- If `fair_make_inputs_run_kernel` wins but `kernel_only` loses, report the win
+  as integration/ABI evidence. It is not proof that the Gluon kernel body is
+  faster.
+
+Hot-path task strategy:
+
+- For pure hot-path kernels, Gluon must reduce real measured work: fewer memory
+  transactions, a better matrix instruction path, less masking/index overhead,
+  or shape-specialized dispatch that beats the plain competitor.
+- For pipeline kernels, keep the Gluon scope to one stage or subpath unless the
+  task explicitly allows a bundled end-to-end rewrite.
+- Hybrid dispatch must preserve the plain Triton path for shapes or subpaths
+  where it wins. A kernel-only Gluon win cannot replace a fair/full-operator
+  path unless the same boundary also preserves no-regression against the safe
+  anchor.
+
 ## source_first_triggers
 
 Stop generic rewriting and read operator-local source when you see:
@@ -576,6 +625,8 @@ or optimization logs into reusable syntax guidance.
   correctness, profile, and benchmark.
 - If `plain_triton` remains an allowed output, compare it against `amd_gluon`
   instead of assuming AMD Gluon wins.
+- Gluon must beat the safe plain Triton anchor to count as `Gluon-positive`.
+  Faster-than-original but slower-than-safe-anchor is evidence, not a win.
 - Treat Triton minor version, JIT/AOT availability, and target architecture as
   part of the benchmark contract.
 - Treat checked-in examples and optimization logs as examples, not benchmark

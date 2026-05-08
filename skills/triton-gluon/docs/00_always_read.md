@@ -15,6 +15,7 @@ the stable contract shared by Base, Shared, Extension, and Hybrid tasks.
 - `dialect_contract`
 - `imports_and_runtime`
 - `output_and_fallback_contract`
+- `measurement_boundary_contract`
 - `multi_shape_contract`
 - `detailed_reference_index`
 - `anti_patterns`
@@ -28,7 +29,8 @@ the stable contract shared by Base, Shared, Extension, and Hybrid tasks.
   path. Pure Triton fallback is not a success.
 - `mixed` means explicit host-side dispatch between verified plain Triton and
   AMD Gluon paths; it is not an input dialect.
-- Gluon is additive. Do not remove Base Set coverage.
+- Gluon is additive. Do not remove the plain Triton competitor for a high-value
+  optimization direction.
 - Compile-only success is not enough.
 
 ## required_before_editing_or_save_and_test
@@ -77,6 +79,9 @@ Before reporting success:
   - `mixed` when explicit host-side dispatch preserves no-regression.
 - Never produce an optimized `nv_gluon` output path.
 - Plain Triton winning the benchmark is a valid outcome.
+- `Base`, `Shared`, and `Extension` are metadata for audit and attribution. The
+  planner should choose an optimization direction first, then choose whether the
+  implementation layer is plain Triton, AMD Gluon, paired comparison, or mixed.
 
 ## stable_split_doc_index
 
@@ -135,6 +140,10 @@ Search policies:
 
 - `base_shared_extension` -> `10_search_policies.md`,
   `### Search policy: base_shared_extension`
+- `optimization_direction_dialect_overlay` -> `10_search_policies.md`,
+  `### Search policy: optimization_direction_dialect_overlay`
+- `measurement_boundary_policy` -> `10_search_policies.md`,
+  `### Search policy: measurement_boundary_policy`
 - `evidence_anchored_composition` -> `10_search_policies.md`,
   `### Search policy: evidence_anchored_composition`
 - `dialect_contract_metadata` -> `10_search_policies.md`,
@@ -157,8 +166,9 @@ Task routing:
 | Task need or visible signal | Must read |
 | --- | --- |
 | Any Triton-Gluon task | `00_always_read.md`, `product_contract`, `semantic_contract`, `output_and_fallback_contract` |
-| Planning Base/Shared/Extension/Hybrid tasks | `10_search_policies.md`, `### Search policy: base_shared_extension`, `### Search policy: dialect_contract_metadata` |
+| Planning Base/Shared/Extension/Hybrid tasks | `10_search_policies.md`, `### Search policy: base_shared_extension`, `### Search policy: optimization_direction_dialect_overlay`, `### Search policy: dialect_contract_metadata` |
 | Later-round composition from prior results | `10_search_policies.md`, `### Search policy: evidence_anchored_composition` |
+| End-to-end, wrapper-heavy, or aiter-style pipeline | `10_search_policies.md`, `### Search policy: measurement_boundary_policy`; `60_real_patterns.md`, `benchmark_boundary_and_integration_costs` |
 | `plain_triton -> amd_gluon` | `00_always_read.md`, `### Trait: dialect_plain_triton`; then relevant traits in `20_component_traits.md` |
 | `nv_gluon -> amd_gluon` | `00_always_read.md`, `### Trait: dialect_nv_gluon`; `60_real_patterns.md`, `nvidia_amd_family_differences`; optionally `40_examples.md`, `nv_gluon_to_amd_gluon_translation` |
 | existing `amd_gluon` input | `00_always_read.md`, `### Trait: dialect_amd_gluon`; `30_architecture_notes.md`, `### Trait: operator_support_sensitive` |
@@ -228,6 +238,25 @@ before changing code:
 Gluon implementation plan:
 - Scope: Extension L0 | Extension L1 | Hybrid, and the single subpath/component
   allowed by this task.
+- Optimization direction: the main HIP/Triton strategy being implemented
+  (split/decomposition, fusion, memory/layout cleanup, shape specialization,
+  persistent/launch amortization, or another named family).
+- Source Base family: the planner family this Gluon overlay maps to, when
+  provided for audit compatibility.
+- Implementation layer: plain_triton competitor | amd_gluon overlay | paired
+  comparison | mixed/hybrid dispatch.
+- Gluon overlay reason: explicit_layout | buffer_path | matrix_lowering |
+  shape_bucket | dialect_specific_memory | local_subpath_win.
+- Measurement boundary: kernel_only | fair_make_inputs_run_kernel |
+  full_operator; include whether integration cost is in scope.
+- Same ABI comparison: how the Gluon candidate is compared to the plain Triton
+  competitor without changing input packing, cache layout, or wrapper semantics.
+- Freeze contract: launcher signature, grid, constexprs, wrapper ABI, and
+  non-target modules that must stay unchanged.
+- Hot path evidence: profiler/source evidence that the scoped component is on
+  the measured path.
+- Regression ladder: compare against true baseline, safe plain Triton anchor,
+  and any prior Gluon anchor named by the task.
 - Parent layouts: one line per logical expression, e.g. [H,C], [H,R], [H,N],
   [Q,K], [P,V].
 - Index tensors: every original `tl.arange(...)` and its replacement
@@ -268,6 +297,11 @@ Rules:
   Host-side launch math outside `@gluon.jit` may still use `triton.cdiv`.
 - If the plan cannot name the layout for an index, mask, temporary, or matrix
   operand, reduce the task scope before editing.
+- If the plan cannot name the optimization direction or Gluon overlay reason,
+  do not write a Gluon patch; keep the work in the plain Triton/HIP path.
+- A Gluon patch must not be the only implementation of a high-value direction
+  unless the task explicitly requires AMD Gluon. Keep or compare against the
+  plain Triton competitor.
 - Do not combine differently sized 1D `SliceLayout` tensors directly. If an
   offset uses `[X] + [Y]`, `[X] + [Z]`, or similar, first broadcast them into the
   intended 2D parent expression with `[:, None]` / `[None, :]`.
@@ -394,6 +428,23 @@ Rules:
 - Shared tasks may output plain Triton; those results are
   `Gluon-informed` / shared transplant evidence, not Gluon-positive evidence.
 - Required AMD Gluon tasks are checked by patch dialect classification.
+
+## measurement_boundary_contract
+
+For end-to-end or wrapper-heavy tasks, state the measurement boundary before
+editing:
+
+- `kernel_only`: only the hot kernel body is in scope.
+- `fair_make_inputs_run_kernel`: input preparation, packing, cache conversion,
+  and kernel launch are in scope.
+- `full_operator`: the full operator path is in scope.
+
+Compare plain Triton and AMD Gluon under the same ABI. If a patch changes input
+packing, cache layout, wrapper dispatch, prebuilt artifact lookup, or JIT/AOT
+selection, report that as integration evidence rather than a pure kernel-body
+Gluon win. A kernel-only Gluon win cannot replace a fair/full-operator path
+unless the fair/full boundary also preserves no-regression against the safe
+anchor.
 
 ## multi_shape_contract
 

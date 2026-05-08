@@ -118,6 +118,19 @@ def scan_single_round_results(results_dir: Path) -> list[str]:
                     else:
                         anchor_viability = "neutral_or_slow_anchor"
                 section.append(f"- Gluon L1 anchor viability: {anchor_viability}")
+                attribution = "unknown"
+                if actual_dialect in {"amd_gluon", "mixed"} and dialect_ok and execution_ok:
+                    if numeric_speedup >= 1.0 and not br.get("has_significant_shape_regression"):
+                        attribution = "Gluon-positive"
+                    elif numeric_speedup > 0.0:
+                        attribution = "Gluon-slower"
+                elif required_dialect == "any" and actual_dialect == "plain_triton":
+                    attribution = "Gluon-informed"
+                elif required_dialect == "amd_gluon" and actual_dialect == "plain_triton":
+                    attribution = "invalid-gluon-fallback"
+                elif "gluon" in label.lower():
+                    attribution = "Gluon-neutral"
+                section.append(f"- Gluon result attribution: {attribution}")
                 if br.get("llm_selection_analysis"):
                     section.append(f"- Selection: {br['llm_selection_analysis']}")
             except (json.JSONDecodeError, OSError) as exc:

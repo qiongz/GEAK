@@ -738,15 +738,15 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
     ]
 
     if search_policy == PREFER_AMD_GLUON_IF_VIABLE_POLICY:
-        lines.append("- Prefer an AMD Gluon candidate first when it looks structurally promising for this Triton-family input.")
+        lines.append("- Prefer AMD Gluon only as a same-direction implementation overlay when it looks structurally promising for this Triton-family input.")
         if input_dialect == NV_GLUON_DIALECT:
             lines.append("- If the input is NVIDIA-oriented Gluon, translate vendor-specific APIs, layouts, or memory paths into AMD-facing Gluon semantics before tuning.")
         elif input_dialect == AMD_GLUON_DIALECT:
             lines.append("- The input is already AMD Gluon; keep the optimized path in amd_gluon space unless the allowed outputs explicitly require a comparison fallback.")
         else:
-            lines.append("- Generate an early AMD Gluon candidate before filling the plan with only plain Triton tuning.")
+            lines.append("- Generate an early AMD Gluon candidate only when it names the optimization direction and concrete Gluon overlay reason; otherwise spend width on plain Triton directions.")
         if PLAIN_TRITON_DIALECT in outputs:
-            lines.append("- Keep a plain Triton fallback alive unless the policy explicitly requires AMD Gluon.")
+            lines.append("- Keep a same-direction plain Triton competitor alive unless the policy explicitly requires AMD Gluon.")
     elif search_policy == REQUIRE_AMD_GLUON_POLICY:
         lines.append("- This run requires an AMD Gluon output path.")
     elif search_policy == PLAIN_TRITON_ONLY_SEARCH_POLICY:
