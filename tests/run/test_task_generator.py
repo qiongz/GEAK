@@ -320,11 +320,11 @@ def test_gluon_extension_strength_and_previous_signal_helpers() -> None:
     assert _previous_gluon_signal("gluon [BEST] verified_speedup=1.0067x") == "attempted"
 
 
-def test_audit_rejects_missing_split_k_or_persistent_base_family() -> None:
+def test_audit_repairs_missing_split_k_or_persistent_base_family() -> None:
     degraded = json.dumps(
         [
             {
-                "label": "triton-scale-simplify-kernel-body",
+                "label": "triton-eliminate-redundant-ops-streamline",
                 "priority": 0,
                 "agent_type": "strategy_agent",
                 "kernel_language": "python",
@@ -354,19 +354,22 @@ def test_audit_rejects_missing_split_k_or_persistent_base_family() -> None:
         ]
     )
 
-    with pytest.raises(ValueError, match="base_split_k_or_multipass_reduce"):
-        _parse_llm_response(
-            degraded,
-            FakeAgentClass,
-            required_base_families=[
-                _BASE_FAMILY_SWIZZLE_TILE,
-                _BASE_FAMILY_SPLIT_K,
-                _BASE_FAMILY_SCALED_FUSION,
-                _BASE_FAMILY_STREAMLINE,
-                _BASE_FAMILY_PERSISTENT,
-            ],
-            expected_extension_slots=1,
-        )
+    tasks = _parse_llm_response(
+        degraded,
+        FakeAgentClass,
+        required_base_families=[
+            _BASE_FAMILY_SWIZZLE_TILE,
+            _BASE_FAMILY_SPLIT_K,
+            _BASE_FAMILY_SCALED_FUSION,
+            _BASE_FAMILY_STREAMLINE,
+            _BASE_FAMILY_PERSISTENT,
+        ],
+        expected_extension_slots=1,
+    )
+
+    labels = {task.label for task in tasks}
+    assert "triton-split-k-or-multipass-reduce" in labels
+    assert "triton-small-matrix-persistent-or-launch-amortization" in labels
 
 
 def test_audit_accepts_main_like_five_base_plus_gluon_l0() -> None:
@@ -480,7 +483,7 @@ def test_audit_rejects_l0_overlay_when_plain_competitor_family_mismatches() -> N
         _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
 
 
-def test_audit_rejects_l0_overlay_with_low_priority_bucket() -> None:
+def test_audit_drops_l0_overlay_with_low_priority_bucket() -> None:
     payload = json.dumps(
         [
             {
@@ -500,8 +503,72 @@ def test_audit_rejects_l0_overlay_with_low_priority_bucket() -> None:
         ]
     )
 
-    with pytest.raises(ValueError, match="invalid L0 Overlay priority"):
-        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+    tasks = _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+
+    assert [task.label for task in tasks] == ["triton-eliminate-redundant-ops-streamline"]
+
+
+def test_parse_repairs_missing_family_and_drops_plain_consider_l0_overlay() -> None:
+    payload = json.dumps(
+        [
+            {
+                "label": "triton-split-k-reduction",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Base Set task\nBase family: base_split_k_or_multipass_reduce\ntry split-K reduction",
+            },
+            {
+                "label": "triton-scale-fusion-into-dot",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Base Set task\nBase family: base_scaled_dot_fusion\nfuse scale into dot",
+            },
+            {
+                "label": "triton-eliminate-redundant-ops-streamline",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nstreamline plain Triton path",
+            },
+            {
+                "label": "triton-persistent-small-matrix",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Base Set task\nBase family: base_small_matrix_persistent_or_launch_amortization\npersistent kernel",
+            },
+            {
+                "label": "gluon-l0-explicit-layout-overlay",
+                "priority": 8,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "amd_gluon",
+                "task_prompt": _gluon_overlay_prompt().replace(
+                    "Overlay priority: Prefer",
+                    "Overlay priority: Consider",
+                ),
+            },
+        ]
+    )
+
+    tasks = _parse_llm_response(
+        payload,
+        FakeAgentClass,
+        required_base_families=[
+            _BASE_FAMILY_SWIZZLE_TILE,
+            _BASE_FAMILY_SPLIT_K,
+            _BASE_FAMILY_SCALED_FUSION,
+            _BASE_FAMILY_STREAMLINE,
+            _BASE_FAMILY_PERSISTENT,
+        ],
+        expected_extension_slots=1,
+    )
+
+    labels = {task.label for task in tasks}
+    assert "gluon-l0-explicit-layout-overlay" not in labels
+    assert "triton-swizzle-and-tile-schedule" in labels
 
 
 def test_plain_competitor_requires_plain_triton_contract() -> None:
@@ -546,8 +613,9 @@ def test_audit_treats_body_only_l0_overlay_as_l0_for_priority_and_binding() -> N
         ]
     )
 
-    with pytest.raises(ValueError, match="invalid L0 Overlay priority"):
-        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+    tasks = _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+
+    assert [task.label for task in tasks] == ["triton-eliminate-redundant-ops-streamline"]
 
 
 def test_audit_rejects_l1_without_anchor_contract() -> None:
