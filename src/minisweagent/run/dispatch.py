@@ -331,14 +331,13 @@ def _gluon_doc_gate_required_paths(meta: dict[str, Any], task_body: str) -> list
     if not feature_uses_gluon_guidance_from_meta(feature_meta):
         return []
 
-    explicit_required = _required_gluon_docs_from_metadata(meta)
-    if explicit_required:
-        return explicit_required
-
     required: list[str] = []
     _add_gate_path(required, meta, "gluon_skill_path")
     _add_gate_path(required, meta, "gluon_always_read_path")
     _add_gate_path(required, meta, "gluon_search_policies_path")
+    for path in _required_gluon_docs_from_metadata(meta):
+        if path and path not in required:
+            required.append(path)
 
     text = "\n".join(
         str(part or "")
@@ -348,6 +347,13 @@ def _gluon_doc_gate_required_paths(meta: dict[str, Any], task_body: str) -> list
             meta.get("search_set"),
             meta.get("required_output_dialect"),
             meta.get("input_dialect"),
+            meta.get("target_backend"),
+            meta.get("target_arch"),
+            meta.get("gluon_doc_profile"),
+            meta.get("implementation_layer"),
+            meta.get("extension_layer"),
+            meta.get("source_base_family"),
+            meta.get("plain_competitor"),
         )
     ).lower()
 
