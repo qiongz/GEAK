@@ -106,6 +106,8 @@ Component traits:
   `### Trait: layout_slice_broadcast`
 - `layout_source_first_required` -> `20_component_traits.md`,
   `### Trait: layout_source_first_required`
+- `layout_derivation_and_cost_model` -> `20_component_traits.md`,
+  `## layout_derivation_and_cost_model`
 - `memory_generic` -> `20_component_traits.md`, `### Trait: memory_generic`
 - `memory_amd_buffer` -> `20_component_traits.md`,
   `### Trait: memory_amd_buffer`
@@ -123,6 +125,8 @@ Component traits:
   `### Trait: version_sensitive`
 - `operator_support_sensitive` -> `30_architecture_notes.md`,
   `### Trait: operator_support_sensitive`
+- `amd_arch_family_quick_directions` -> `30_architecture_notes.md`,
+  `## amd_arch_family_quick_directions`
 - `shape_coverage_unknown` -> `20_component_traits.md`,
   `### Trait: shape_coverage_unknown`
 - `shape_coverage_single` -> `20_component_traits.md`,
@@ -155,8 +159,13 @@ Detailed references:
 
 - API surface, concrete snippets, quick patterns, compatibility checklist, and
   debug order -> `50_api_reference.md`
+- Matrix lowering ladder by architecture family ->
+  `50_api_reference.md`, `### matrix_lowering_ladders_by_arch`
+- Evidence inventory and generalized real-code patterns ->
+  `60_real_patterns.md`, `evidence_inventory_for_guide_authoring` and
+  `generalized_real_code_patterns`
 - product/runtime context, writing model, layout/sync/descriptor mental model,
-  NVIDIA/AMD family differences, real aiter patterns, kernel-family
+  NVIDIA/AMD family differences, real operator patterns, kernel-family
   optimization paths, source-first triggers, repo-local notes, benchmark rules,
   and anti-patterns -> `60_real_patterns.md`
 - Representative schematic examples -> `40_examples.md`
@@ -170,19 +179,20 @@ Task routing:
 | Any Triton-Gluon task | `00_always_read.md`, `product_contract`, `semantic_contract`, `output_and_fallback_contract` |
 | Planning optimization-direction overlays or compatibility metadata | `10_search_policies.md`, `### Search policy: optimization_direction_metadata_sets`, `### Search policy: optimization_direction_dialect_overlay`, `### Search policy: overlay_priority_routing`, `### Search policy: dialect_contract_metadata` |
 | Later-round composition from prior results | `10_search_policies.md`, `### Search policy: evidence_anchored_composition` |
-| End-to-end, wrapper-heavy, or aiter-style pipeline | `10_search_policies.md`, `### Search policy: measurement_boundary_policy`; `60_real_patterns.md`, `benchmark_boundary_and_integration_costs` |
+| End-to-end, wrapper-heavy, or multi-stage operator pipeline | `10_search_policies.md`, `### Search policy: measurement_boundary_policy`; `60_real_patterns.md`, `benchmark_boundary_and_integration_costs` |
 | `plain_triton -> amd_gluon` | `00_always_read.md`, `### Trait: dialect_plain_triton`; then relevant traits in `20_component_traits.md` |
 | `nv_gluon -> amd_gluon` | `00_always_read.md`, `### Trait: dialect_nv_gluon`; `60_real_patterns.md`, `nvidia_amd_family_differences`; optionally `40_examples.md`, `nv_gluon_to_amd_gluon_translation` |
 | existing `amd_gluon` input | `00_always_read.md`, `### Trait: dialect_amd_gluon`; `30_architecture_notes.md`, `### Trait: operator_support_sensitive` |
-| `tl.arange`, block sizes, layout, masks, broadcasts, `[:, None]`, `expand_dims` | `20_component_traits.md`, `### Trait: layout_basic` and `### Trait: layout_slice_broadcast` |
+| `tl.arange`, block sizes, layout, masks, broadcasts, `[:, None]`, `expand_dims`, `BlockedLayout`, `SliceLayout`, `convert_layout` | `20_component_traits.md`, `### Trait: layout_basic`, `### Trait: layout_slice_broadcast`, and `layout_derivation_and_cost_model` |
 | `tl.load` / `tl.store`, buffer ops, memory-bound path | `20_component_traits.md`, `### Trait: memory_generic` and/or `### Trait: memory_amd_buffer` |
 | shared memory, swizzle, async, descriptor, `tdm`, cluster, scheduler hints | `20_component_traits.md`, `### Trait: memory_shared_async_descriptor`; `50_api_reference.md`, `shared_memory_synchronization_cluster` and `descriptor_and_tensor_memory_surface` |
-| `tl.dot`, `tl.dot_scaled`, MFMA, WMMA, FP8/FP4/scales | `20_component_traits.md`, `### Trait: matrix_dot`, `### Trait: matrix_scaled_dot`, and/or `### Trait: matrix_wmma_descriptor`; `50_api_reference.md`, `amd_quick_patterns` |
-| target backend, `gfx942`, `gfx950`, `gfx1250`, arch guards | `30_architecture_notes.md`, target section plus `runtime_target_resolution`; `60_real_patterns.md`, `nvidia_amd_family_differences` |
+| `tl.dot`, `tl.dot_scaled`, MFMA, WMMA, FP8/FP4/scales, `AMDMFMALayout`, `AMDWMMALayout`, `DotOperandLayout` | `20_component_traits.md`, `### Trait: matrix_dot`, `### Trait: matrix_scaled_dot`, and/or `### Trait: matrix_wmma_descriptor`; `50_api_reference.md`, `matrix_lowering_ladders_by_arch` and `amd_quick_patterns`; `30_architecture_notes.md`, `amd_arch_family_quick_directions` |
+| target backend, `gfx942`, `gfx950`, `gfx1250`, arch guards, wave32/wave64 assumptions | `30_architecture_notes.md`, `amd_arch_family_quick_directions`, target section, and `runtime_target_resolution`; `60_real_patterns.md`, `nvidia_amd_family_differences` |
 | Triton version, `instr_shape`, JIT/AOT, prebuilt kernels | `30_architecture_notes.md`, `### Trait: version_sensitive` and `### Trait: execution_jit_aot_sensitive`; `50_api_reference.md`, `version_and_compatibility_checklist` |
 | multi-shape or bucketed benchmark | `20_component_traits.md`, relevant `shape_coverage_*` trait plus `### Trait: shape_layout_constexpr_risk` / `### Trait: shape_dispatch_required` |
 | concrete code skeleton or exact API call needed | `50_api_reference.md`; do not invent API names from memory |
-| real attention/decode/GEMM/preshuffled/gfx1250 pattern | `60_real_patterns.md`, `real_patterns_from_aiter` and `optimization_paths_by_kernel_family` |
+| source-derived guide claim, limited Gluon sample, backend-only support, or `gfx950` capability question | `60_real_patterns.md`, `evidence_inventory_for_guide_authoring`; then the relevant API/architecture/source section |
+| real attention-style, GEMM, preshuffled, descriptor, or RDNA WMMA pattern | `60_real_patterns.md`, `generalized_real_code_patterns`, `real_operator_patterns`, and `optimization_paths_by_kernel_family` |
 | source shows `DistributedLinearLayout`, `PartitionedSharedLayout`, host `TensorDescriptor`, nested 3D/5D layouts, unshuffle transforms, JIT/AOT package gates | `60_real_patterns.md`, `source_first_triggers`; then read operator-local source before editing |
 | one schematic example would help | at most one relevant section in `40_examples.md` after reading the trait/policy file above |
 | routed split docs still lack a needed nuance or rationale | `70_backup_details.md`; report the missing route if still unresolved |
@@ -218,7 +228,8 @@ Signal routing examples:
   `gl.*`.
 - MFMA, `tl.dot`, `instr_shape` -> `20_component_traits.md` / `matrix_dot`,
   `30_architecture_notes.md` / version or target section, and
-  `50_api_reference.md` / `amd_quick_patterns`.
+  `50_api_reference.md` / `matrix_lowering_ladders_by_arch` and
+  `amd_quick_patterns`.
 - `buffer_load` / `buffer_store` -> `20_component_traits.md` /
   `memory_amd_buffer` and `60_real_patterns.md` /
   `extension_l1_memory_lowering_anchor`.
@@ -226,7 +237,12 @@ Signal routing examples:
   `50_api_reference.md` / `jit_entry_and_host_launcher` and
   `30_architecture_notes.md` / `execution_jit_aot_sensitive`.
 - `BlockedLayout` verifier, `size_per_thread`, parent-layout mismatch ->
-  `20_component_traits.md` / `layout_basic` and `layout_slice_broadcast`.
+  `20_component_traits.md` / `layout_basic`, `layout_slice_broadcast`, and
+  `layout_derivation_and_cost_model`.
+- `gfx950`, CDNA4, scaled MFMA, FP8/FP4, or backend-only support evidence ->
+  `60_real_patterns.md` / `evidence_inventory_for_guide_authoring`,
+  `30_architecture_notes.md` / `amd_arch_family_quick_directions`, and
+  `50_api_reference.md` / `matrix_lowering_ladders_by_arch`.
 
 Do not write code while any required row is still `viewed=no`, unless the route
 is genuinely missing and has been recorded as a missing-doc detail.
@@ -474,7 +490,7 @@ When the harness exposes multiple cases:
 Read only the file needed for the current task:
 
 - Concrete API or code skeleton needed: read `50_api_reference.md`.
-- Runtime, layout, architecture, real aiter pattern, or benchmark nuance needed:
+- Runtime, layout, architecture, real operator pattern, or benchmark nuance needed:
   read `60_real_patterns.md`.
 - One schematic example is enough: read at most one relevant section from
   `40_examples.md`.

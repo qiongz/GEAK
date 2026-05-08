@@ -330,7 +330,7 @@ Profile guidance:
   `gluon_api_reference_path`.
 - `shared_transplant`: add `gluon_component_traits_path` and
   `gluon_real_patterns_path` when the source component comes from real Gluon or
-  aiter evidence.
+  downstream operator evidence.
 - `gluon_variant_from_anchor`: add `gluon_component_traits_path`,
   `gluon_architecture_notes_path`, `gluon_api_reference_path`, and
   `gluon_real_patterns_path`. The task must name the safe anchor and preserve

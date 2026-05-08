@@ -8,6 +8,7 @@ Triton versions, JIT/AOT, MFMA, WMMA, descriptors, or prebuilt kernels.
 - `gfx942_cdna3`
 - `gfx950_cdna4`
 - `gfx1250_rdna_wmma`
+- `amd_arch_family_quick_directions`
 - `### Trait: version_sensitive`
 - `### Trait: execution_jit_aot_sensitive`
 - `### Trait: operator_support_sensitive`
@@ -52,6 +53,74 @@ Typical focus:
 - `AMDWMMALayout`.
 
 This is not a renamed CDNA path. Do not port CDNA MFMA assumptions blindly.
+
+## amd_arch_family_quick_directions
+
+Use this section to choose the first AMD Gluon direction from the target family.
+These are starting points for a valid candidate, not final performance answers.
+If an API call or architecture feature is not backed by the routed docs, tests,
+or operator-local source, record it as missing detail instead of guessing.
+
+| Target family | First safe mental model | Matrix family | Memory/layout direction | Do not infer |
+| --- | --- | --- | --- | --- |
+| CDNA3 / `gfx942` | wave64-valid blocked layouts and regular MFMA | `AMDMFMALayout(version=3)` with `mfma` | generic `gl.load` / `gl.store` first, then `buffer_load` / `buffer_store` when the access pattern or existing AMD path justifies it | scaled MFMA or CDNA4-only scale layouts |
+| CDNA4 / `gfx950` | CDNA-style layouts plus CDNA4-only checks | `AMDMFMALayout(version=4)`, regular MFMA, and only then scaled MFMA when dtype/scale evidence exists | CDNA3-style blocked/buffer paths may carry over, but async/scaled surfaces need explicit evidence | that a `gfx950` win applies to `gfx942` |
+| RDNA / `gfx1250` | separate wave32 WMMA/descriptor family | `AMDWMMALayout(version=3)` and `wmma`; `wmma_scaled` only after plain WMMA works | descriptor/TDM/shared layout constraints are part of correctness | CDNA MFMA layouts, K widths, or buffer-path assumptions |
+
+CDNA3 / `gfx942` quick direction:
+
+- Start from target triple and launch attributes such as `hip:gfx942:64`,
+  `num_warps`, `num_ctas`, and optional `waves_per_eu`.
+- For 1D memory paths, derive a `BlockedLayout` whose
+  `threads_per_warp` product is 64 and whose lane/thread coverage follows the
+  contiguous memory dimension.
+- For 2D/3D expressions, choose one parent layout per logical expression before
+  creating `SliceLayout` or `DotOperandLayout`.
+- Use MFMA only for a real matrix hot path. `tl.dot` lowering still requires
+  result layout, operand layouts, `convert_layout`, target op, and epilogue
+  planning.
+- Treat MI300X-style CU count and HBM bandwidth as parallelism/bandwidth
+  context, not as a universal partition formula.
+
+CDNA4 / `gfx950` quick direction:
+
+- Re-check target arch, layout version, and dtype path before using CDNA4
+  features. `AMDMFMALayout(version=4)` and `mfma_scaled` are not a textual
+  replacement for CDNA3 MFMA.
+- Use regular MFMA or a plain Triton competitor as the anchor unless the task has
+  explicit `tl.dot_scaled`, FP8/FP4, scale-layout, or `gfx950` evidence.
+- For scaled MFMA, plan operand layouts, scale layouts, scale formats, K width,
+  accumulator dtype, and store dtype together. Missing scale evidence should
+  stop the patch at regular MFMA or plain Triton.
+- Backend or CK evidence for `gfx950` support is enough to document a capability
+  boundary, but not enough to invent a concrete Gluon API template.
+
+RDNA / `gfx1250` quick direction:
+
+- Treat `gfx1250` as WMMA/descriptor-first, not CDNA with different names.
+- Get plain `wmma` or a basic descriptor path correct before adding
+  `wmma_scaled`, `tdm`, async, or cluster behavior.
+- Check descriptor rank, contiguous last dimension, valid shared-layout family,
+  swizzle/padding restrictions, and scale-factor constraints before tuning.
+- Use `hip:gfx1250:32` style target assumptions when checking launch/layout
+  compatibility; do not reuse wave64 CDNA layout defaults.
+- Full gfx1250 examples can include aggregate memory descriptors, multi-buffer
+  shared memory, `tdm.async_load` / `tdm.async_store`, `async_wait`, split-K
+  scale layouts, and codegen assertions. Treat those as mature-example evidence,
+  not required L0 boilerplate.
+
+Backend capability hints are not first-pass API recipes:
+
+- CDNA3/CDNA4 share several buffer and async-mark lowering paths, but this does
+  not mean every CDNA3 namespace call is a CDNA4 scaled feature.
+- CDNA4 and GFX1250 expose newer backend capabilities such as permlane swap or
+  hardware scaled-upcast support. Treat them as reasons to check source/tests,
+  not as permission to add scheduler or shared-memory rewrites to an L0 patch.
+- GFX1250 has separate TDM, multi-CTA, direct LDS/scatter, and descriptor
+  surfaces. These are capability boundaries for later tasks after plain WMMA or
+  descriptor correctness, not defaults for every RDNA Gluon candidate.
+- If evidence is backend-only or CK-only, write a verification checklist and
+  keep the first candidate on documented Gluon APIs.
 
 ### Trait: version_sensitive
 

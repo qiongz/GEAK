@@ -1,7 +1,7 @@
 # Triton-Gluon Real Patterns And Benchmark Rules
 
 Read this file when docs or examples are not enough: architecture families,
-real aiter patterns, benchmark rules, repo-local defaults, and source-first
+real operator patterns, benchmark rules, repo-local defaults, and source-first
 triggers live here.
 
 Do not read this whole file by default. Use the routed section(s) below.
@@ -11,13 +11,15 @@ Do not read this whole file by default. Use the routed section(s) below.
 | If the task needs... | Read |
 | --- | --- |
 | product/runtime context beyond `00_always_read.md` | `product_and_runtime_context` |
+| checking whether a guide claim is backed by real samples, backend support, or operator-local evidence | `evidence_inventory_for_guide_authoring` |
 | plain Triton -> Gluon rewrite order and implicit layout recovery | `writing_model` |
 | first-pass scope for layout-heavy kernels | `extension_l0_scope_for_layout_heavy_kernels` |
 | L1 memory/buffer lowering after a viable Gluon patch | `extension_l1_memory_lowering_anchor` |
 | layout/sync/descriptor concepts without exact API snippets | `layout_sync_descriptor_mental_model` |
 | AMD/NVIDIA family comparison or namespace-vs-arch nuance | `nvidia_amd_family_differences` |
 | translator/current_target-based AMD lowering | `translator_derived_amd_dispatch` |
-| aiter attention/GEMM/MQA examples and operator-local support | `real_patterns_from_aiter`, `operator_local_support_matrix` |
+| generalized writing patterns from real code, without copying one operator | `generalized_real_code_patterns` |
+| real attention, GEMM, descriptor, or wrapper-heavy operator patterns | `real_operator_patterns`, `operator_local_support_matrix` |
 | elementwise/attention/GEMM/preshuffled/gfx1250 strategy order | `optimization_paths_by_kernel_family` |
 | end-to-end, wrapper-heavy, fair benchmark, or same-ABI comparison | `benchmark_boundary_and_integration_costs` |
 | source-first triggers | `source_first_triggers` |
@@ -27,13 +29,15 @@ Do not read this whole file by default. Use the routed section(s) below.
 ## Internal Index
 
 - `product_and_runtime_context`
+- `evidence_inventory_for_guide_authoring`
 - `writing_model`
 - `extension_l0_scope_for_layout_heavy_kernels`
 - `extension_l1_memory_lowering_anchor`
 - `layout_sync_descriptor_mental_model`
 - `nvidia_amd_family_differences`
 - `translator_derived_amd_dispatch`
-- `real_patterns_from_aiter`
+- `generalized_real_code_patterns`
+- `real_operator_patterns`
 - `operator_local_support_matrix`
 - `optimization_paths_by_kernel_family`
 - `benchmark_boundary_and_integration_costs`
@@ -74,6 +78,40 @@ JIT and AOT are both real downstream modes:
 Triton minor version is part of the contract. Real code carries branches for
 layout construction and AOT metadata, especially around Triton `3.5` versus
 `3.6+` `AMDMFMALayout.instr_shape`.
+
+## evidence_inventory_for_guide_authoring
+
+Quick directions are guide rails for a first correct and plausible candidate,
+not proof of the fastest possible kernel. Before turning a pattern into reusable
+guidance, classify its evidence:
+
+| Evidence source | Use it for | Do not use it for |
+| --- | --- | --- |
+| `skills/triton-gluon/docs/*.md`, `docs/triton_gluon.md`, and the ROCm Gluon knowledge-base | existing product contracts, routed headings, and known API names | inventing new API calls that are absent from docs or source |
+| `40_examples.md` | reasoning shape, host/layout wiring, version guards, and fallback patterns | benchmark truth or constants to copy |
+| upstream Gluon tutorials | common Gluon mental model: layouts, host launch, shared-memory phases, barriers | assuming target-specific tutorial APIs are AMD APIs |
+| upstream block-scaled matrix tutorials | scale-packing reasoning for scaled matrix variants | assuming one scale packing works for every instruction shape |
+| upstream AMD Gluon tests | WMMA, scaled WMMA, descriptor, and constraint examples | extrapolating CDNA MFMA behavior to RDNA/GFX1250 |
+| upstream AMD Gluon examples | descriptor setup, split-K scale-layout rank changes, and codegen-check patterns | treating advanced example structure as required L0 scope |
+| upstream AMD backend/tests with target-specific matrix, async, or descriptor support | architecture capability boundaries and verifier/lowering constraints | writing a concrete Gluon API template when no Gluon example exists |
+| downstream real-operator Gluon sources | real operator composition, guards, layouts, JIT/AOT wiring, and launch/config practices | treating one operator's constants as universal defaults |
+| external support matrices, low-precision GEMM configs, and integration tests | architecture/operator support side evidence | deriving Gluon API syntax directly |
+
+Use evidence labels when writing new guidance:
+
+- `exact_sample`: the API shape appears in a Gluon doc, tutorial, test, or real
+  Gluon source.
+- `backend_support`: the architecture/lowering appears in Triton AMD backend or
+  tests, but the exact Gluon API call still needs sample confirmation.
+- `operator_local`: the pattern is valid for a specific operator family or
+  wrapper contract; generalize only the decision rule.
+- `hypothesis`: the idea follows from hardware or source structure but needs
+  profiling or a missing-doc report before becoming a rule.
+
+If only backend or CK evidence exists for a `gfx950` feature, document the
+capability boundary and verification checklist, not a concrete Gluon call
+template. If a claim cannot be tied to one of the evidence labels above, do not
+put it in a quick direction.
 
 ## writing_model
 
@@ -212,6 +250,9 @@ Patch evolution model:
   `Observed effect`, and `Keep / revert / compose later`.
 - If a patch bundles unrelated changes, later rounds cannot tell whether Gluon
   helped or was masked by another regression.
+- Quick directions and checked-in examples are starting points for `patch_0` or
+  a single L1 component, not final answers. After correctness, follow this same
+  patch evolution model instead of adding a new tuning workflow.
 
 Defer full attention/decode/GEMM rewrites until after L0 proves the relevant
 layout family compiles. L1 tasks can then add memory lowering, matrix lowering,
@@ -415,10 +456,73 @@ Planner implication: if a task mentions `translator`, `current_target`,
 `tl_make_tensor_descriptor`, `tdm`, or `TensorDescriptor`, route it to both
 `30_architecture_notes.md` and this file before implementation.
 
-## real_patterns_from_aiter
+## generalized_real_code_patterns
 
-Paged-attention Gluon code on `gfx942` / `gfx950` shows production-style
-composition:
+Use real Gluon code to extract decisions, not constants:
+
+1. Bind the Gluon idea to the same optimization direction as a plain Triton
+   competitor. Do not start from "use Gluon" as the optimization direction.
+2. State the measurement boundary (`kernel_only`,
+   `fair_make_inputs_run_kernel`, or `full_operator`) before interpreting a
+   Gluon win or loss.
+3. Identify the physical continuous memory dimension and assign the most useful
+   lane/thread coverage there first.
+4. Choose the target matrix family from the architecture and dtype path before
+   choosing result and operand layouts.
+5. Build one parent layout per logical 2D/3D expression, then derive
+   `SliceLayout`, `DotOperandLayout`, shared, or descriptor layouts from that
+   parent.
+6. Keep shape-dependent layouts, `num_warps`, instruction shapes, and dispatch
+   buckets in host-side code or explicit `constexpr` arguments.
+7. Treat `convert_layout` as a paid operation unless the source or layout output
+   proves it is a trivial reinterpretation.
+8. Treat cross-CTA layouts as synchronization-sensitive. Upstream tutorials say
+   layout-driven operations such as `convert_layout`, reductions, sums, and maxes
+   can emit CGA barriers when they cross CTAs; do not move these into
+   warp-specialized regions as a generic optimization.
+9. Preserve operator-local JIT/AOT, artifact, and environment gates until the
+   benchmark contract proves they are not part of the measured path.
+
+Generalizable patterns:
+
+- Elementwise/vector paths: start with explicit `BlockedLayout` plus generic
+  `gl.load` / `gl.store`; move to AMD buffer ops only when memory-bound evidence
+  or existing AMD structure justifies it.
+- Attention/decode-style paths: preserve stride-rich host arguments, partition
+  logic, masks, query/key/value logical shapes, and separate parent layouts
+  before attempting MFMA or shared-memory staging.
+- GEMM/FP8/FP4 paths: choose the matrix family, result layout, operand layouts,
+  scale layout, accumulator dtype, and store dtype before adding shared-memory
+  or launch/config tuning.
+- RDNA/gfx1250 descriptor paths: get a plain WMMA or descriptor path correct
+  before adding scaled WMMA, `tdm`, async, or cluster behavior.
+- Split-K or block-scaled paths: derive scale layouts and output/reduction
+  shapes from the chosen split regime. Do not reuse a single 2D scale layout
+  when `SPLIT_K` introduces an extra logical rank.
+- Config-driven GEMM paths: treat checked-in JSON configs, `NUM_KSPLIT`,
+  `SPLITK_BLOCK_SIZE`, `GROUP_K`, `GROUP_N`, `num_warps`, `num_stages`, and
+  `waves_per_eu` as a host-side configuration contract. The reusable pattern is
+  shape/config dispatch plus same-ABI comparison, not the literal config values.
+- Codegen-audited examples: source mapping checks for `wmma`, LDS loads,
+  permlane swaps, or absence of `convert_layout` are useful evidence for
+  validating a mature path. They are not mandatory for first L0 candidates.
+
+Do not generalize:
+
+- numeric partition formulas from one operator;
+- `instr_shape`, `k_width`, `num_warps`, `waves_per_eu`, or JSON config choices
+  without checking target, dtype, and shape regime;
+- module namespace names such as `gl.amd.cdna3.*` as a complete architecture
+  contract;
+- CK or backend-only support notes into Gluon API syntax.
+- a kernel-only win into a full-operator replacement when packing, cache layout,
+  wrapper dispatch, or artifact lookup changes between paths.
+- scheduler priority calls, backend assembly checks, or example-only static
+  profiling helpers as portable Gluon requirements.
+
+## real_operator_patterns
+
+Real operator Gluon code shows production-style composition:
 
 - `BlockedLayout`;
 - `SliceLayout`;
@@ -429,7 +533,8 @@ composition:
 - `buffer_load` / `buffer_store`;
 - explicit stride-rich host arguments.
 
-This is more representative than a toy vector-add kernel.
+This is more representative than a toy vector-add kernel, but still only gives
+operator-local evidence.
 
 Toy vector examples are useful for syntax but weak evidence for real
 optimization decisions.
@@ -441,6 +546,9 @@ GEMM and FP8 paths on `gfx950` additionally use:
 - architecture-conditioned K widths and instruction shapes;
 - JSON-config or heuristic-selected launch configs instead of only online
   autotune.
+- split-K partial outputs and separate reduce stages when `NUM_KSPLIT > 1`;
+- scale-group parameters such as `GROUP_K` and `GROUP_N` derived from scale
+  tensor shapes, not guessed from the main matrix tile alone.
 
 JIT and AOT can coexist in one operator family:
 
@@ -469,10 +577,10 @@ Observed downstream patterns differ by operator:
 
 | Operator family | Observed Gluon path | Support notes |
 | --- | --- | --- |
-| Paged-attention decode | JIT Gluon main attention + normal Triton reduce, plus AOT wrapper path | CDNA3/CDNA4 style path; operator-local guards may include `gfx942` and `gfx950` |
-| GEMM A8W8 / blockscale / AFP4WFP4 | Gluon GEMM with checked-in JSON configs | Existing configs may be `gfx950`-specific; do not infer `gfx942` support |
-| PA MQA logits | JIT Gluon or prebuilt/AOT artifact selected by Triton version/env | Artifact shape can be zip/config/env driven rather than Jinja `.so` |
-| gfx1250 descriptor/WMMA examples | WMMA/TDM/descriptor-oriented examples and tests | Separate family from CDNA; not a drop-in replacement for CDNA attention/GEMM |
+| Attention-style operator | Gluon main kernel plus plain Triton helper stages, or an AOT wrapper path | CDNA-family path; operator-local guards decide exact architecture support |
+| Low-precision GEMM operator | Gluon GEMM with checked-in or heuristic configs | Configs may be architecture-specific; do not infer support across families |
+| Prebuilt-artifact operator | JIT Gluon or prebuilt/AOT artifact selected by version/env | Artifact shape can be package/config/env driven rather than generated locally |
+| RDNA descriptor/WMMA operator | WMMA/TDM/descriptor-oriented path | Separate family from CDNA; not a drop-in replacement for CDNA attention/GEMM |
 
 Artifact shapes also differ:
 
@@ -519,8 +627,8 @@ GEMM or FP8 kernels:
 5. only then add shared-memory staging, async features, preshuffle support, or
    tuned config selection.
 
-In real `gfx950` code, config selection may come from heuristics or checked-in
-JSON, not only online autotune.
+In real low-precision GEMM code, config selection may come from heuristics or
+checked-in JSON, not only online autotune.
 
 Preshuffled GEMM:
 
@@ -542,9 +650,8 @@ speculative rewrites fail quickly.
 
 ## benchmark_boundary_and_integration_costs
 
-End-to-end kernels such as aiter attention wrappers are often pipelines rather
-than a single hot kernel. Before choosing a Gluon rewrite, classify the measured
-boundary:
+End-to-end operator wrappers are often pipelines rather than a single hot
+kernel. Before choosing a Gluon rewrite, classify the measured boundary:
 
 - `kernel_only`: payloads are already prepared and the benchmark measures the
   hot kernel body. Use this to judge whether a Gluon kernel implementation is

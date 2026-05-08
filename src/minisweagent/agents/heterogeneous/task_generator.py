@@ -1279,51 +1279,146 @@ def _infer_required_gluon_doc_keys(
         if key not in docs:
             docs.append(key)
 
-    if any(marker in text for marker in ("gluon", "amd_gluon", "nv_gluon", "extension", "shared", "matrix", "memory", "layout")):
-        add("gluon_component_traits_path")
-    if required_output == "amd_gluon" or profile in {"extension_l0_minimal", "memory_lowering", "matrix_lowering", "jit_aot_sensitive", "gluon_variant_from_anchor"}:
-        add("gluon_api_reference_path")
-    if profile in {"nv_to_amd_translation", "memory_lowering", "matrix_lowering", "shape_bucketed_dispatch", "jit_aot_sensitive", "gluon_variant_from_anchor", "hybrid_dispatch", "hybrid_dispatch_from_evidence"} or any(
+    if any(
         marker in text
         for marker in (
-            "gfx",
-            "cdna",
-            "rdna",
-            "mfma",
-            "wmma",
-            "jit",
-            "aot",
-            "prebuilt",
-            "compile_gluon",
-            "signature",
-            "waves_per_eu",
-            "global_scratch",
-            "profile_scratch",
-            "instr_shape",
-            "descriptor",
-            "tdm",
-            "current_target",
-            "translator",
+            "gluon",
+            "amd_gluon",
+            "nv_gluon",
+            "extension",
+            "shared",
+            "matrix",
+            "memory",
+            "layout",
+            "blockedlayout",
+            "slicelayout",
+            "dotoperandlayout",
+            "convert_layout",
+            "amdmfmalayout",
+            "amdwmmalayout",
+            "threads_per_warp",
+            "warps_per_cta",
+            "wave64",
+            "wave32",
+        )
+    ):
+        add("gluon_component_traits_path")
+    if (
+        required_output == "amd_gluon"
+        or profile
+        in {
+            "extension_l0_minimal",
+            "memory_lowering",
+            "matrix_lowering",
+            "jit_aot_sensitive",
+            "gluon_variant_from_anchor",
+        }
+        or any(
+            marker in text
+            for marker in (
+                "convert_layout",
+                "dotoperandlayout",
+                "amdmfmalayout",
+                "amdwmmalayout",
+                "buffer_load",
+                "buffer_store",
+                "mfma_scaled",
+                "wmma_scaled",
+                "get_mfma_scale_layout",
+                "get_wmma_scale_layout",
+                "k_width",
+            )
+        )
+    ):
+        add("gluon_api_reference_path")
+    if (
+        profile
+        in {
+            "nv_to_amd_translation",
+            "memory_lowering",
+            "matrix_lowering",
+            "shape_bucketed_dispatch",
+            "jit_aot_sensitive",
+            "gluon_variant_from_anchor",
+            "hybrid_dispatch",
+            "hybrid_dispatch_from_evidence",
+        }
+        or any(
+            marker in text
+            for marker in (
+                "gfx",
+                "gfx942",
+                "gfx950",
+                "gfx1250",
+                "cdna",
+                "cdna3",
+                "cdna4",
+                "rdna",
+                "mfma",
+                "wmma",
+                "jit",
+                "aot",
+                "prebuilt",
+                "compile_gluon",
+                "signature",
+                "waves_per_eu",
+                "global_scratch",
+                "profile_scratch",
+                "instr_shape",
+                "k_width",
+                "amdmfmalayout",
+                "amdwmmalayout",
+                "mfma_scaled",
+                "wmma_scaled",
+                "wave64",
+                "wave32",
+                "descriptor",
+                "tdm",
+                "current_target",
+                "translator",
+            )
         )
     ):
         add("gluon_architecture_notes_path")
-    if profile in {"nv_to_amd_translation", "memory_lowering", "shape_bucketed_dispatch", "shared_transplant", "gluon_variant_from_anchor", "hybrid_dispatch", "hybrid_dispatch_from_evidence"} or any(
-        marker in text
-        for marker in (
-            "aiter",
-            "attention",
-            "decode",
-            "gemm",
-            "kv",
-            "cache",
-            "preshuffle",
-            "benchmark",
-            "source-first",
-            "translator",
-            "current_target",
-            "artifact",
-            "zip",
-            "env",
+    if (
+        profile
+        in {
+            "nv_to_amd_translation",
+            "memory_lowering",
+            "shape_bucketed_dispatch",
+            "shared_transplant",
+            "gluon_variant_from_anchor",
+            "hybrid_dispatch",
+            "hybrid_dispatch_from_evidence",
+        }
+        or any(
+            marker in text
+            for marker in (
+                "aiter",
+                "attention",
+                "decode",
+                "gemm",
+                "kv",
+                "cache",
+                "mqa",
+                "blockscale",
+                "afp4",
+                "wfp4",
+                "fp8",
+                "fp4",
+                "preshuffle",
+                "benchmark",
+                "per-shape",
+                "shape regression",
+                "source-first",
+                "translator",
+                "current_target",
+                "artifact",
+                "zip",
+                "json",
+                "config",
+                "env",
+            )
         )
     ):
         add("gluon_real_patterns_path")

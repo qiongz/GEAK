@@ -353,14 +353,37 @@ def _gluon_doc_gate_required_paths(meta: dict[str, Any], task_body: str) -> list
 
     # Gluon implementation workers need the trait file for the planner-emitted
     # route, even when the prompt does not name a specific trait explicitly.
-    if any(marker in text for marker in ("gluon", "amd_gluon", "nv_gluon", "extension", "shared set")):
+    if any(
+        marker in text
+        for marker in (
+            "gluon",
+            "amd_gluon",
+            "nv_gluon",
+            "extension",
+            "shared set",
+            "layout",
+            "blockedlayout",
+            "slicelayout",
+            "dotoperandlayout",
+            "convert_layout",
+            "amdmfmalayout",
+            "amdwmmalayout",
+            "threads_per_warp",
+            "warps_per_cta",
+        )
+    ):
         _add_gate_path(required, meta, "gluon_component_traits_path")
 
     if any(
         marker in text
         for marker in (
             "gfx",
+            "gfx942",
+            "gfx950",
+            "gfx1250",
             "cdna",
+            "cdna3",
+            "cdna4",
             "rdna",
             "mfma",
             "wmma",
@@ -377,6 +400,13 @@ def _gluon_doc_gate_required_paths(meta: dict[str, Any], task_body: str) -> list
             "global_scratch",
             "profile_scratch",
             "instr_shape",
+            "k_width",
+            "amdmfmalayout",
+            "amdwmmalayout",
+            "mfma_scaled",
+            "wmma_scaled",
+            "wave64",
+            "wave32",
             "descriptor",
             "tensordescriptor",
             "tdm",
@@ -402,6 +432,13 @@ def _gluon_doc_gate_required_paths(meta: dict[str, Any], task_body: str) -> list
             "atomic_",
             "convert_layout",
             "dotoperandlayout",
+            "amdmfmalayout",
+            "amdwmmalayout",
+            "mfma_scaled",
+            "wmma_scaled",
+            "get_mfma_scale_layout",
+            "get_wmma_scale_layout",
+            "k_width",
             "full",
             "full_like",
             "reduce",
@@ -428,8 +465,15 @@ def _gluon_doc_gate_required_paths(meta: dict[str, Any], task_body: str) -> list
             "decode",
             "gemm",
             "fp8",
+            "fp4",
+            "mqa",
+            "blockscale",
+            "afp4",
+            "wfp4",
             "preshuffle",
             "benchmark",
+            "per-shape",
+            "shape regression",
             "source-first",
             "translator",
             "current_target",
