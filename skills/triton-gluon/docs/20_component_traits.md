@@ -8,6 +8,7 @@ Search policy and task allocation live in `10_search_policies.md`.
 - `### Trait: layout_basic`
 - `### Trait: layout_slice_broadcast`
 - `### Trait: layout_source_first_required`
+- `layout_derivation_and_cost_model`
 - `### Trait: memory_generic`
 - `### Trait: memory_amd_buffer`
 - `### Trait: memory_shared_async_descriptor`
@@ -88,6 +89,63 @@ Read operator-local source before rewriting when you see:
 - `reshape`, `permute`, or `trans` used to unshuffle tiles
 - nested 3D / 5D layout trees
 - JIT/AOT gates or prebuilt-kernel loading
+
+## layout_derivation_and_cost_model
+
+Use this section when the task changes `BlockedLayout`, `SliceLayout`,
+`convert_layout`, masks, or the layout used by load/store or matrix operands.
+The goal is a correct, performance-plausible first layout, not a promised best
+layout.
+
+Derive the base layout in this order:
+
+1. Recover the logical tile from the source: `tl.arange` bounds, pointer
+   arithmetic, masks, reductions, matrix dimensions, and launcher constants.
+2. Identify the physical contiguous dimension from strides or address
+   expressions. Give that dimension the most useful lane/thread coverage first.
+3. Pick the target family. CDNA3/CDNA4 paths normally need wave64-valid
+   `threads_per_warp` products; gfx1250/RDNA WMMA paths are a separate family and
+   should not inherit CDNA wave64 defaults.
+4. Check `size_per_thread * threads_per_warp * warps_per_cta` against the
+   logical tile per dimension. Do not patch verifier failures by inserting
+   arbitrary powers of two.
+5. For each logical 2D/3D expression, define one parent layout and derive
+   `SliceLayout`, `DotOperandLayout`, shared, or descriptor layouts from that
+   parent.
+6. Keep shape-, target-, `num_warps`-, or instruction-dependent layouts in
+   host-side factories and pass them as `constexpr`.
+
+`convert_layout` decision table:
+
+| Situation | Use `convert_layout`? | Reason |
+| --- | --- | --- |
+| Moving A/B or Q/K/V operands into `DotOperandLayout` for a real MFMA/WMMA hot path | yes | matrix instructions require operand layouts |
+| Re-parenting a 1D slice so it can join a different 2D expression | no | regenerate the index from the correct parent `SliceLayout` |
+| Fixing a catastrophic non-coalesced load/store layout after correctness is known | maybe | benchmark against the safe anchor and change one memory path at a time |
+| Repeated conversion inside the innermost hot loop | avoid | layout movement can require cross-thread or cross-warp data movement |
+| Converting between layouts believed to be equivalent | maybe with `assert_trivial=True` | fail early if the conversion is not a trivial reinterpretation |
+| Adding a conversion only so code "looks Gluon-like" | no | it adds cost without a performance hypothesis |
+
+Cost checks before editing:
+
+- Does the conversion happen once per tile, once per loop iteration, or once per
+  element group?
+- Does it cross warp/thread ownership, or is it a trivial layout reinterpretation?
+- Does it enable a measured hot-path improvement such as coalesced memory,
+  `buffer_load` / `buffer_store`, MFMA, WMMA, or descriptor access?
+- Can the same effect be obtained by creating the index in the right parent
+  layout from the start?
+- If the patch is low-latency or tiny-stage, is the conversion overhead likely
+  larger than the work it removes?
+- In multi-CTA layouts, layout-driven operations such as `gl.convert_layout`,
+  `gl.reduce`, `gl.sum`, and `gl.max` can imply cross-CTA synchronization.
+  Treat this as a separate cost/correctness boundary, and do not place a
+  cross-CTA conversion/reduction inside warp-specialized regions unless the
+  target tutorial/API explicitly permits it.
+
+When in doubt, keep the first patch smaller: explicit base layout plus generic
+memory access, then move one layout, memory, or matrix component at a time under
+the existing patch evolution rules.
 
 ### Trait: memory_generic
 

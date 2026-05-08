@@ -165,9 +165,9 @@ sort / attention algorithms -- all **inside** the kernel body itself.
 
 **Wrapper changes are LOW priority**: Launch config tuning (`num_warps`,
 `BLOCK_SIZE`), Python dispatch changes (`matmul` -> `mm`), import routing
-changes (`aiter` bypass), and `repeat_interleave` -> `expand` style wrapper
-fixes are acceptable ONLY after exhausting kernel-body approaches.  Assign
-wrapper-only tasks priority 15.
+changes (project-specific bypasses), and `repeat_interleave` -> `expand` style
+wrapper fixes are acceptable ONLY after exhausting kernel-body approaches.
+Assign wrapper-only tasks priority 15.
 
 **Do NOT give up**: Even if the kernel looks well-optimized by human experts,
 you MUST attempt novel algorithmic improvements.  The entire purpose of this

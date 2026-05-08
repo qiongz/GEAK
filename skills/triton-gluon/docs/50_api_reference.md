@@ -17,7 +17,7 @@ Do not read this whole file by default. Use the routed section(s) below.
 | shared memory, barriers, async phase ordering | `shared_memory_synchronization_cluster` |
 | descriptor/TDM/tensor-memory concepts | `descriptor_and_tensor_memory_surface` |
 | `[:, None]`, `[None, :]`, or broadcast layout errors | `slice_broadcast_recipe` |
-| AMD MFMA/WMMA/scaled quick syntax | `amd_quick_patterns` |
+| AMD MFMA/WMMA/scaled lowering order and quick syntax | `matrix_lowering_ladders_by_arch`, `amd_quick_patterns` |
 | NVIDIA TMA/WGMMA/Blackwell recognition only | `nvidia_quick_patterns` |
 | failure triage | `common_failures_and_fix_order`; read `common_pitfalls` only if stuck |
 
@@ -32,6 +32,7 @@ Do not read this whole file by default. Use the routed section(s) below.
 - `slice_broadcast_recipe`
 - `shared_memory_synchronization_cluster`
 - `descriptor_and_tensor_memory_surface`
+- `matrix_lowering_ladders_by_arch`
 - `amd_quick_patterns`
 - `nvidia_quick_patterns`
 - `version_and_compatibility_checklist`
@@ -307,8 +308,8 @@ Rules:
 
 ## aot_compile_api_surface
 
-Downstream aiter code uses a real Gluon AOT compiler path. Do not treat AOT as
-equivalent to JIT.
+Downstream integration code can use a real Gluon AOT compiler path. Do not
+treat AOT as equivalent to JIT.
 
 Important compile-time fields:
 
@@ -427,6 +428,78 @@ Buffer op dtype preconditions:
 - Generic `gl.load` / `gl.store` is the first candidate path; move to
   `buffer_load` / `buffer_store` only after these dtype and layout preconditions
   are named in the implementation plan.
+
+### matrix_lowering_ladders_by_arch
+
+`tl.dot` and `tl.dot_scaled` are not direct rename targets. Use this ladder
+before copying any quick pattern below.
+
+Common matrix lowering checklist:
+
+1. Confirm the matrix subpath is on the benchmark hot path and has a plain
+   Triton or prior Gluon anchor for comparison.
+2. Confirm the measurement boundary. If the measured loss is dominated by input
+   packing, cache-format conversion, wrapper dispatch, or artifact lookup, fix
+   that boundary before tuning the matrix body.
+3. Choose the architecture family: CDNA MFMA, CDNA4 scaled MFMA, or
+   RDNA/gfx1250 WMMA.
+4. Choose the result layout first (`AMDMFMALayout` or `AMDWMMALayout`).
+5. Derive `DotOperandLayout` for each operand from the result layout and planned
+   K width.
+6. Convert operands into those operand layouts; avoid repeated conversion in the
+   hot loop unless there is no better layout source.
+7. Create the accumulator in the result layout and planned accumulator dtype.
+8. Call the target op.
+9. Finish the epilogue: scale/bias, dtype conversion, store layout, and masks.
+
+CDNA MFMA ladder (`gfx942` / CDNA3 and regular `gfx950` / CDNA4):
+
+- Use `AMDMFMALayout(version=3)` for `gfx942` and
+  `AMDMFMALayout(version=4)` for `gfx950`; verify Triton minor-version
+  expectations for `instr_shape`.
+- Pick `instr_shape` from supported backend/operator evidence, not local block
+  constants.
+- Pick `DotOperandLayout(0, mfma_layout, k_width)` and
+  `DotOperandLayout(1, mfma_layout, k_width)` only after dtype and K width are
+  known.
+- Keep generic memory or regular MFMA as the anchor unless the task has evidence
+  for a stronger CDNA4 path.
+
+CDNA4 scaled-MFMA ladder (`gfx950`):
+
+- Require explicit scaled-dot evidence: `tl.dot_scaled`, FP8/FP4/MX formats,
+  scale tensors, or a `gfx950` operator path.
+- Plan data operand layouts and scale layouts together. `get_mfma_scale_layout`
+  is part of the correctness contract, not optional tuning.
+- Check scale format strings, scale tensor shape, K width, accumulator dtype, and
+  store dtype before introducing `mfma_scaled`.
+- Official block-scaled matmul material shows different scale packing orders for
+  `mfma_scaled_16x16x128` and `mfma_scaled_32x32x64`. Derive scale packing from
+  the selected instruction shape instead of copying one order across variants.
+- If scale layout or dtype support is unclear, stop at regular MFMA or the plain
+  Triton competitor and record missing evidence.
+
+RDNA / `gfx1250` WMMA ladder:
+
+- Get plain `wmma` or a basic descriptor load/store path correct first.
+- Use `AMDWMMALayout` and `DotOperandLayout`; do not reuse CDNA
+  `AMDMFMALayout` or MFMA K-width assumptions.
+- For scaled WMMA, verify input format, operand `instr_shape`, accumulator
+  layout, scale factor, and scale dtype combination before editing.
+- Derive scale layouts from the operand layouts and the actual logical rank. For
+  split-K or block-scaled attention, scale tensors may become 3D while the
+  no-split path is 2D.
+- Use `assert_trivial=True` or a config flag only when the example/source proves
+  the conversion should be trivial. If that assertion fails, treat it as layout
+  evidence, not as something to bypass.
+- Descriptor/TDM paths must satisfy descriptor rank, contiguous last dimension,
+  accepted shared-layout family, swizzle, and padding constraints before tuning.
+- TDM examples combine host/device descriptors, shared-memory allocation,
+  async issue, wait, and store. Keep these as later-stage descriptor tasks, not
+  the default path for a first WMMA candidate.
+
+These ladders describe first-pass ordering. Later performance refinement follows
+the existing `patch_0` / `patch_1+` single-component patch evolution rules.
 
 ### CDNA3 MFMA pattern
 

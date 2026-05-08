@@ -11,7 +11,7 @@ proper primary docs:
 - runtime, target, arch, JIT/AOT -> `30_architecture_notes.md`
 - concrete API, snippets, compatibility checks, debug order ->
   `50_api_reference.md`
-- writing model, family differences, real aiter patterns, benchmark rules ->
+- writing model, family differences, real operator patterns, benchmark rules ->
   `60_real_patterns.md`
 - schematic examples -> `40_examples.md`
 

@@ -76,6 +76,10 @@ torch2hip tasks.
      Gluon path that can pass correctness; each later patch should change one
      component or one dispatch decision and record the expected and observed
      effect before moving on;
+   - whether any quick direction, checked-in example, or real operator pattern is
+     being used only as a starting point. These guides help produce a valid or
+     promising first candidate; they are not proof of the final fastest layout,
+     launch config, or matrix path;
    - whether the task is L0, L1, or Hybrid, and the single subpath/component it
      is allowed to change. If the task names a stage/helper, write
      `Target symbol: <symbol>` and do not modify a different stage as the
@@ -113,6 +117,10 @@ torch2hip tasks.
    - Shared transplant of one portable component
    - Hybrid/mixed dispatch when per-shape or sub-operation evidence justifies it
 5. Verify correctness and benchmark. Reject per-shape regressions.
+6. If the first Gluon candidate is correct, keep following the existing
+   `patch_0` / `patch_1+` evolution rule: change one component at a time,
+   compare against the safe anchor, and record keep/revert/compose-later
+   evidence. Do not invent a separate tuning workflow from a quick guide.
 
 ## Required AMD Gluon Implementation Contract
 
@@ -195,7 +203,7 @@ Round 1 L0 overlays must name a same-batch `plain_competitor`; that task's
   `skills/triton-gluon/docs/30_architecture_notes.md`.
 - API syntax, snippets, compatibility checks, failure-fix order:
   `skills/triton-gluon/docs/50_api_reference.md`.
-- Real aiter patterns, benchmark rules, source-first triggers:
+- Real operator patterns, benchmark rules, source-first triggers:
   `skills/triton-gluon/docs/60_real_patterns.md`.
 - Schematic examples, at most one relevant section:
   `skills/triton-gluon/docs/40_examples.md`.
