@@ -316,7 +316,11 @@ def _find_task_metadata_for_patch_dir(patch_dir: Path) -> dict[str, Any]:
     try:
         from minisweagent.run.task_file import read_task_file
 
-        meta, _body = read_task_file(candidates[0])
+        meta, body = read_task_file(candidates[0])
+        inferred_targets = _infer_required_patch_target_symbols(body, meta)
+        if inferred_targets:
+            meta = dict(meta)
+            meta["required_patch_target_symbols"] = inferred_targets
         return meta
     except Exception as exc:
         logger.debug("Could not read task metadata for %s: %s", patch_dir, exc)
@@ -329,6 +333,22 @@ def _metadata_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     return []
+
+
+def _infer_required_patch_target_symbols(task_body: str, task_meta: dict[str, Any]) -> list[str]:
+    symbols = _metadata_list(task_meta.get("required_patch_target_symbols"))
+    for match in re.finditer(
+        r"^\s*(?:Target symbol|Required patch target symbols?)\s*:\s*(.+?)\s*$",
+        task_body,
+        re.IGNORECASE | re.MULTILINE,
+    ):
+        symbols.extend(part.strip().strip("`") for part in match.group(1).split(","))
+
+    unique: list[str] = []
+    for symbol in symbols:
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", symbol) and symbol not in unique:
+            unique.append(symbol)
+    return unique
 
 
 def _identifier_pattern(symbol: str) -> re.Pattern[str]:
@@ -386,14 +406,16 @@ def _gluon_execution_contract_satisfied(
     A patch that only defines ``target_gluon`` while the host still dispatches the
     plain target path should not satisfy a stage-specific AMD Gluon task.
     """
-    if required_output_dialect != "amd_gluon" or not required_symbols:
+    if required_output_dialect != "amd_gluon":
         return True
     gluon_defs = _extract_added_gluon_jit_defs(patch_text)
     if not gluon_defs:
         return True
     exact_targets = {symbol for symbol in required_symbols}
     for helper in gluon_defs:
-        if helper in exact_targets or _added_line_calls_symbol(patch_text, helper):
+        if helper in exact_targets:
+            return True
+        if _added_line_calls_symbol(patch_text, helper):
             return True
     return False
 

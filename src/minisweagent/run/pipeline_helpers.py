@@ -851,6 +851,7 @@ def _build_gluon_working_set(feature_metadata: dict[str, Any] | None) -> list[st
         "- Before editing a Gluon path, write a `Gluon implementation plan`, `Performance hypothesis`, and `Patch evolution` plan. Use `00_always_read.md` for required fields, `20_component_traits.md` for layout/memory/matrix traits, `50_api_reference.md` for exact API patterns, `60_real_patterns.md` for L0/L1 evolution, and `10_search_policies.md` for round composition rules.",
         "- Required AMD Gluon patches must be real executed Gluon paths, not import-only, helper-only, empty, or plain Triton fallbacks.",
         "- Keep task scope narrow: one subpath/component unless `bundle_allowed=true`; use the docs for detailed rejection conditions and fix order.",
+        "- For low-latency kernels or tiny stages, L0 is a smallest executed anchor. If a correctness-passing L0 is slower than Base, record the overhead evidence and avoid repeated `num_warps`, block-size, or launch-constant sweeps.",
     ]
 
     if input_dialect == NV_GLUON_DIALECT:

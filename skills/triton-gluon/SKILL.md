@@ -120,9 +120,18 @@ implementation plan above, then edit only the scoped path.
   expression, one load/store path, or one matrix-layout skeleton, not the full
   attention/decode/GEMM body. L0 success is a real executed Gluon anchor; it may
   be slower than Base. Do not keep tuning `num_warps` / block sizes as if L0 is a
-  performance win unless the hypothesis explains which overhead was removed.
+  performance win unless the hypothesis explains which overhead was removed. For
+  low-latency kernels or tiny stages (roughly sub-100us benchmark cases), L0
+  should stop after the smallest correctness-passing executed anchor; if it is
+  slower than Base, record overhead evidence and do not spend later patches on
+  launch-constant sweeps.
 - Extension L1: refine a correctness-passing Gluon or mixed anchor. If no anchor
-  exists, shrink the task to an L0-style layout/memory smoke path.
+  exists, shrink the task to an L0-style layout/memory smoke path. L1 tasks must
+  name `Anchor patch`, `Anchor speedup`, `Anchor execution: true`,
+  `Comparison target: anchor_patch`, and exactly one `Allowed change`. If the
+  anchor is below `0.5x`, has significant per-shape regression, or did not
+  execute AMD Gluon, L1 is not valid; write an anchor-diagnosis or smaller L0
+  task instead.
 - Matrix/MFMA work: do not introduce MFMA until result layout, operand layouts,
   `convert_layout`, valid `AMDMFMALayout.instr_shape`, and a plausible
   performance reason are known. If the plan cannot say why MFMA reduces a real

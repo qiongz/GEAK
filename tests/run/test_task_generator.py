@@ -178,6 +178,22 @@ def test_search_space_allocation_for_large_budget_keeps_full_base() -> None:
     assert "Gluon extension strength: strong" in guidance
     assert "Base Set (plain Triton): at least 6 task(s)" in guidance
     assert "Shared Set (Triton/Gluon common strategies): 1 task(s)" in guidance
+    assert "Extension Set (AMD Gluon): 1 task(s)" in guidance
+    assert "Round 1 without an existing AMD Gluon input/anchor" in guidance
+    assert "low-latency kernels or tiny stages" in guidance
+    assert "slots 2+ may be Extension L1" not in guidance
+
+
+def test_search_space_allocation_allows_l1_after_prior_gluon_win() -> None:
+    guidance = _build_search_space_allocation_guidance(
+        _gluon_feature_meta("plain_triton"),
+        traits=["semantics_contract", "dialect_plain_triton", "layout_basic", "matrix_dot"],
+        num_gpus=6,
+        previous_results_text="### ext-l0-gluon\n- Best patch: patch_2 (speedup=1.12x)",
+        current_round=2,
+    )
+
+    assert "Previous Gluon signal: won" in guidance
     assert "Extension Set (AMD Gluon): 2 task(s)" in guidance
     assert "slots 2+ may be Extension L1" in guidance
 
@@ -380,6 +396,68 @@ def test_audit_accepts_main_like_five_base_plus_gluon_l0() -> None:
         expected_extension_slots=1,
     )
     assert [task.label for task in tasks][-1] == "amd-gluon-l0-viability"
+
+
+def test_audit_rejects_l1_without_anchor_contract() -> None:
+    payload = json.dumps(
+        [
+            {
+                "label": "ext-l1-gluon-mfma",
+                "priority": 8,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Extension Set task\nExtension layer: L1\nTry MFMA lowering.",
+            }
+        ]
+    )
+
+    with pytest.raises(ValueError, match="missing L1 anchor contract fields"):
+        _parse_llm_response(
+            payload,
+            FakeAgentClass,
+            expected_extension_slots=2,
+        )
+
+
+def test_audit_accepts_l1_with_anchor_contract() -> None:
+    payload = json.dumps(
+        [
+            {
+                "label": "ext-l0-gluon-anchor",
+                "priority": 8,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Extension Set task\nExtension layer: L0\nminimal AMD Gluon viability",
+            },
+            {
+                "label": "ext-l1-gluon-one-buffer-load",
+                "priority": 9,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "\n".join(
+                    [
+                        "Extension Set task",
+                        "Extension layer: L1",
+                        "Anchor patch: ext-l0-gluon-anchor/patch_2",
+                        "Anchor speedup: 1.04x",
+                        "Anchor execution: true",
+                        "Comparison target: anchor_patch",
+                        "Allowed change: one KV buffer_load",
+                        "Reject if: changes MFMA or dispatch",
+                        "Target symbol: target_stage",
+                    ]
+                ),
+            },
+        ]
+    )
+
+    tasks = _parse_llm_response(
+        payload,
+        FakeAgentClass,
+        expected_extension_slots=2,
+    )
+
+    assert [task.label for task in tasks] == ["ext-l0-gluon-anchor", "ext-l1-gluon-one-buffer-load"]
 
 
 def test_parse_llm_response_infers_search_contract_for_extension() -> None:
@@ -735,6 +813,7 @@ def test_run_task_agent_plain_triton_auto_prefers_amd_gluon_first(
     assert "`dialect_plain_triton`" in run_kwargs["gluon_planning_traits_guidance"]
     assert "Base Set (plain Triton): at least 5 task(s)" in run_kwargs["search_space_allocation_guidance"]
     assert "Extension L0: minimal AMD Gluon viability" in run_kwargs["search_space_allocation_guidance"]
+    assert "low-latency kernels or tiny stages" in run_kwargs["search_space_allocation_guidance"]
     assert "Round 1 should include one L0 minimal AMD Gluon viability task" in run_kwargs["gluon_planning_traits_guidance"]
     system_prompt = mock_default_agent.call_args.kwargs["system_template"]
     assert "Knowledge lookup contract: write a Gluon knowledge lookup plan before" in system_prompt

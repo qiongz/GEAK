@@ -541,9 +541,28 @@ def test_quota_keeps_base_and_shared_for_multi_shape() -> None:
     assert base + shared + extension > 4
 
 
+def test_quota_caps_round1_plain_triton_extension_to_l0() -> None:
+    base, shared, extension = _base_extension_quotas(
+        8,
+        "strong",
+        "none",
+        shape_profile=SHAPE_COVERAGE_BUCKETED,
+        current_round=1,
+        input_dialect="plain_triton",
+    )
+
+    assert base == 8
+    assert shared == 2
+    assert extension == 1
+
+
 def test_quota_grows_extension_for_bucketed_with_5_gpus() -> None:
     base, shared, extension = _base_extension_quotas(
-        5, "strong", "won", shape_profile=SHAPE_COVERAGE_BUCKETED,
+        5,
+        "strong",
+        "won",
+        shape_profile=SHAPE_COVERAGE_BUCKETED,
+        current_round=2,
     )
     assert base == 5
     assert shared == 2
@@ -638,6 +657,7 @@ def test_search_space_allocation_for_eight_gpus_parallel_mixed_portfolio() -> No
         traits=["semantics_contract", "dialect_plain_triton", "layout_basic", "matrix_dot", "shape_dispatch_required"],
         num_gpus=8,
         previous_results_text="gluon [BEST] verified_speedup=1.2x",
+        current_round=2,
     )
     assert "Scheduling mode: `parallel_mixed_portfolio`" in text
     assert "Base Set (plain Triton): at least 8 task(s)" in text
