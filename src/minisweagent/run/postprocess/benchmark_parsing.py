@@ -320,15 +320,21 @@ def _find_task_metadata_for_patch_dir(patch_dir: Path) -> dict[str, Any]:
         inferred_targets = _infer_required_patch_target_symbols(body, meta)
         comparison_target = _parse_tagged_task_value(body, "Comparison target")
         safe_anchor = _parse_tagged_task_value(body, "Safe anchor")
+        implementation_layer = _parse_tagged_task_value(body, "Implementation layer")
+        extension_layer = _parse_tagged_task_value(body, "Extension layer")
         if inferred_targets:
             meta = dict(meta)
             meta["required_patch_target_symbols"] = inferred_targets
-        if comparison_target or safe_anchor:
+        if comparison_target or safe_anchor or implementation_layer or extension_layer:
             meta = dict(meta)
             if comparison_target:
                 meta["comparison_target"] = comparison_target
             if safe_anchor:
                 meta["safe_anchor"] = safe_anchor
+            if implementation_layer:
+                meta["implementation_layer"] = implementation_layer
+            if extension_layer:
+                meta["extension_layer"] = extension_layer
         return meta
     except Exception as exc:
         logger.debug("Could not read task metadata for %s: %s", patch_dir, exc)
@@ -515,13 +521,17 @@ def _required_output_dialect(task_meta: dict[str, Any], *, label: str) -> str:
     if required:
         return required
 
-    search_set = str(task_meta.get("search_set") or "").strip().lower()
     label_text = label.lower()
+    implementation_layer = str(task_meta.get("implementation_layer") or "").strip().lower()
+    extension_layer = str(task_meta.get("extension_layer") or "").strip().lower()
     if "hybrid" in label_text or "mixed" in label_text:
         return "mixed"
+    if "mixed" in implementation_layer or "hybrid" in implementation_layer or extension_layer == "hybrid":
+        return "mixed"
+    if "amd_gluon" in implementation_layer or extension_layer in {"l0", "l1"}:
+        return "amd_gluon"
     if (
-        search_set == "extension"
-        or label_text.startswith(("ext-", "extension-"))
+        label_text.startswith(("ext-", "extension-"))
         or "extension-l" in label_text
         or "ext_l" in label_text
     ) and ("gluon" in label_text or "amd-gluon" in label_text or "amd_gluon" in label_text):

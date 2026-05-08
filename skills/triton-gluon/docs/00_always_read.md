@@ -142,6 +142,8 @@ Search policies:
   `### Search policy: optimization_direction_metadata_sets`
 - `optimization_direction_dialect_overlay` -> `10_search_policies.md`,
   `### Search policy: optimization_direction_dialect_overlay`
+- `overlay_priority_routing` -> `10_search_policies.md`,
+  `### Search policy: overlay_priority_routing`
 - `measurement_boundary_policy` -> `10_search_policies.md`,
   `### Search policy: measurement_boundary_policy`
 - `evidence_anchored_composition` -> `10_search_policies.md`,
@@ -166,7 +168,7 @@ Task routing:
 | Task need or visible signal | Must read |
 | --- | --- |
 | Any Triton-Gluon task | `00_always_read.md`, `product_contract`, `semantic_contract`, `output_and_fallback_contract` |
-| Planning optimization-direction overlays or Base/Shared/Extension metadata | `10_search_policies.md`, `### Search policy: optimization_direction_metadata_sets`, `### Search policy: optimization_direction_dialect_overlay`, `### Search policy: dialect_contract_metadata` |
+| Planning optimization-direction overlays or compatibility metadata | `10_search_policies.md`, `### Search policy: optimization_direction_metadata_sets`, `### Search policy: optimization_direction_dialect_overlay`, `### Search policy: overlay_priority_routing`, `### Search policy: dialect_contract_metadata` |
 | Later-round composition from prior results | `10_search_policies.md`, `### Search policy: evidence_anchored_composition` |
 | End-to-end, wrapper-heavy, or aiter-style pipeline | `10_search_policies.md`, `### Search policy: measurement_boundary_policy`; `60_real_patterns.md`, `benchmark_boundary_and_integration_costs` |
 | `plain_triton -> amd_gluon` | `00_always_read.md`, `### Trait: dialect_plain_triton`; then relevant traits in `20_component_traits.md` |
@@ -233,10 +235,10 @@ is genuinely missing and has been recorded as a missing-doc detail.
 
 Planner task prompts and worker strategy notes have different contracts:
 
-- Planner-audited task fields: `Optimization direction`, `Source Base family`,
-  `Gluon overlay reason`, `Implementation layer`, `Performance hypothesis`,
-  `Measurement boundary`, `Comparison target`, `Allowed change`, and
-  `Reject if`.
+- Planner-audited Gluon prompt fields: `Extension layer`, `Optimization
+  direction`, `Source Base family`, `Plain competitor`, `Gluon overlay reason`,
+  `Implementation layer`, `Performance hypothesis`, `Measurement boundary`,
+  `Comparison target`, `Allowed change`, and `Reject if`.
 - Worker pre-edit plan fields: the full `Gluon knowledge lookup plan` and
   `Gluon implementation plan` below. These are written in strategy notes before
   code edits; they do not all need to appear as top-level planner prompt fields.
@@ -246,17 +248,9 @@ before changing code:
 
 ```text
 Gluon implementation plan:
-- Scope: Extension L0 | Extension L1 | Hybrid, and the single subpath/component
-  allowed by this task.
-- Optimization direction: the main Triton strategy being implemented
-  (split/decomposition, fusion, memory/layout cleanup, shape specialization,
-  persistent/launch amortization, or another named family).
-- Source Base family: the planner family this Gluon overlay maps to, when
-  provided for audit compatibility.
-- Implementation layer: plain_triton competitor | amd_gluon overlay | paired
-  comparison | mixed/hybrid dispatch.
-- Gluon overlay reason: explicit_layout | buffer_path | matrix_lowering |
-  shape_bucket | dialect_specific_memory | local_subpath_win.
+- Scope: L0 | L1 | Hybrid, and the single subpath/component allowed by this task.
+- Direction binding: optimization direction, Source Base family, Plain
+  competitor, Implementation layer, and Gluon overlay reason.
 - Measurement boundary: kernel_only | fair_make_inputs_run_kernel |
   full_operator; include whether integration cost is in scope.
 - Same ABI comparison: how the Gluon candidate is compared to the plain Triton
@@ -419,15 +413,17 @@ AMD Gluon task fails, record the actual failure from a real Gluon patch using
 Triton-family task frontmatter may include:
 
 ```yaml
-search_set: base | shared | extension
 required_output_dialect: plain_triton | amd_gluon | mixed | any
 gluon_doc_profile: extension_l0_minimal | nv_to_amd_translation | memory_lowering | matrix_lowering | shape_bucketed_dispatch | jit_aot_sensitive | shared_transplant | gluon_variant_from_anchor | hybrid_dispatch | hybrid_dispatch_from_evidence
+search_set: base | shared | extension  # optional compatibility bucket
 ```
 
 Rules:
 
-- `search_set` is audit metadata, not the optimization direction. The
-  optimization direction must be named separately in the task prompt.
+- `required_output_dialect`, `Implementation layer`, and `Extension layer` are
+  the output contract source of truth.
+- `search_set` is optional compatibility metadata, not the optimization
+  direction.
 - `required_output_dialect=amd_gluon` means a real AMD Gluon patch is required.
 - Plain Triton fallback is not a valid success for required AMD Gluon tasks.
 - Fallback is only evidence after a real Gluon patch was saved/tested and
@@ -436,8 +432,6 @@ Rules:
   verified `plain_triton` and `amd_gluon` paths. It is valid only when the
   dispatch condition is visible to the audit and every benchmark shape preserves
   no-regression against the safe anchor.
-- Hybrid/mixed dispatch uses `search_set=extension` and
-  `required_output_dialect=mixed`.
 - `mixed` is an output contract, not an input dialect and not a way to satisfy a
   required pure AMD Gluon Extension task.
 - Shared tasks may output plain Triton; those results are

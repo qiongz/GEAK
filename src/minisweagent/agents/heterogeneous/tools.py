@@ -204,11 +204,25 @@ def _dispatch_stage_name(priority: int) -> str:
     return "low"
 
 
-def _is_required_gluon_extension(meta: dict) -> bool:
-    """Return whether this task is a required AMD Gluon Extension attempt."""
-    return (
-        str(meta.get("search_set") or "").strip().lower() == "extension"
-        and str(meta.get("required_output_dialect") or "").strip().lower() == "amd_gluon"
+def _is_required_gluon_extension(meta: dict, body: str = "") -> bool:
+    """Return whether this task is a required AMD Gluon implementation attempt."""
+    required = str(meta.get("required_output_dialect") or "").strip().lower()
+    if required == "amd_gluon":
+        return True
+    if required:
+        return False
+
+    text = "\n".join(
+        str(part or "")
+        for part in (
+            body,
+            meta.get("label"),
+            meta.get("implementation_layer"),
+            meta.get("extension_layer"),
+        )
+    ).lower()
+    return "implementation layer: amd_gluon" in text or (
+        "extension layer:" in text and "gluon" in text and "hybrid" not in text
     )
 
 
@@ -218,9 +232,9 @@ def _group_task_files_by_dispatch_stage(task_files: list[Path]) -> list[tuple[st
 
     buckets: dict[str, list[Path]] = {}
     for tf in task_files:
-        meta, _ = read_task_file(tf)
+        meta, body = read_task_file(tf)
         pri = int(meta.get("priority", 10))
-        stage = "high" if _is_required_gluon_extension(meta) else _dispatch_stage_name(pri)
+        stage = "high" if _is_required_gluon_extension(meta, body) else _dispatch_stage_name(pri)
         buckets.setdefault(stage, []).append(tf)
     order = ["high", "medium", "low"]
     return [(s, buckets[s]) for s in order if s in buckets]

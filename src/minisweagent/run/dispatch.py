@@ -220,6 +220,14 @@ def _task_feature_metadata(meta: dict[str, Any]) -> dict[str, Any]:
         feature_meta["gluon_doc_profile"] = str(meta.get("gluon_doc_profile"))
     if meta.get("required_gluon_docs"):
         feature_meta["required_gluon_docs"] = meta.get("required_gluon_docs")
+    if meta.get("source_base_family"):
+        feature_meta["source_base_family"] = str(meta.get("source_base_family"))
+    if meta.get("plain_competitor"):
+        feature_meta["plain_competitor"] = str(meta.get("plain_competitor"))
+    if meta.get("implementation_layer"):
+        feature_meta["implementation_layer"] = str(meta.get("implementation_layer"))
+    if meta.get("extension_layer"):
+        feature_meta["extension_layer"] = str(meta.get("extension_layer"))
     if meta.get("required_patch_target_symbols"):
         feature_meta["required_patch_target_symbols"] = meta.get("required_patch_target_symbols")
     return feature_meta

@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from minisweagent.run.postprocess.benchmark_parsing import (
+    _required_output_dialect,
     compute_best_patch,
     extract_latency_ms,
     parse_shape_latencies_ms,
@@ -36,6 +37,23 @@ def test_named_case_latencies_are_totaled_for_baseline_objective() -> None:
         "case_medium": 0.0558,
     }
     assert extract_latency_ms(output) == pytest.approx(0.1124)
+
+
+def test_required_output_dialect_uses_layer_metadata_before_search_set() -> None:
+    assert (
+        _required_output_dialect(
+            {
+                "implementation_layer": "amd_gluon overlay",
+                "extension_layer": "L0",
+            },
+            label="same-direction-overlay",
+        )
+        == "amd_gluon"
+    )
+
+
+def test_required_output_dialect_does_not_infer_from_search_set_alone() -> None:
+    assert _required_output_dialect({"search_set": "extension"}, label="same-direction-overlay") == "any"
 
 
 def test_compute_best_patch_includes_per_shape_speedups(tmp_path: Path) -> None:
