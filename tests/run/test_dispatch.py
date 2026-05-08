@@ -208,7 +208,7 @@ def test_worker_context_infers_required_gluon_from_body_layer_contract(tmp_path)
     assert "Task extension_layer: L0" in task.task
 
 
-def test_required_gluon_docs_metadata_overrides_heuristic_gate(tmp_path) -> None:
+def test_required_gluon_docs_metadata_augments_heuristic_gate(tmp_path) -> None:
     task_path = tmp_path / "required_docs.md"
     write_task_file(
         task_path,
@@ -223,6 +223,7 @@ def test_required_gluon_docs_metadata_overrides_heuristic_gate(tmp_path) -> None
             "allowed_output_dialects": ["plain_triton", "amd_gluon"],
             "search_set": "extension",
             "required_output_dialect": "amd_gluon",
+            "target_backend": "hip/gfx942",
             "required_gluon_docs": ["gluon_skill_path", "gluon_always_read_path"],
         },
         "Extension task using AMD Gluon with many matrix mfma terms.",
@@ -230,9 +231,12 @@ def test_required_gluon_docs_metadata_overrides_heuristic_gate(tmp_path) -> None
 
     task = task_file_to_agent_task(task_path)
     paths = task.config["gluon_doc_gate_required_paths"]
-    assert len(paths) == 2
     assert any(path.endswith("skills/triton-gluon/SKILL.md") for path in paths)
     assert any(path.endswith("skills/triton-gluon/docs/00_always_read.md") for path in paths)
+    assert any(path.endswith("skills/triton-gluon/docs/10_search_policies.md") for path in paths)
+    assert any(path.endswith("skills/triton-gluon/docs/20_component_traits.md") for path in paths)
+    assert any(path.endswith("skills/triton-gluon/docs/30_architecture_notes.md") for path in paths)
+    assert any(path.endswith("skills/triton-gluon/docs/50_api_reference.md") for path in paths)
 
 
 def test_gluon_doc_gate_not_enabled_for_hip_task(tmp_path) -> None:
