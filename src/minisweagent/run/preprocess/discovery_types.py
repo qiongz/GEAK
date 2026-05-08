@@ -727,6 +727,10 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
     required_output_dialect = feature_meta.get("required_output_dialect")
     gluon_doc_profile = feature_meta.get("gluon_doc_profile")
     required_docs = feature_meta.get("required_gluon_docs")
+    source_base_family = feature_meta.get("source_base_family")
+    plain_competitor = feature_meta.get("plain_competitor")
+    implementation_layer = feature_meta.get("implementation_layer")
+    extension_layer = feature_meta.get("extension_layer")
     target_symbols = feature_meta.get("required_patch_target_symbols")
 
     lines = [
@@ -742,7 +746,7 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
         + (f" ({int(shape_count_val)} cases)" if isinstance(shape_count_val, int) and shape_count_val > 0 else ""),
     ]
     if search_set:
-        lines.append(f"- Task search_set: {search_set}")
+        lines.append(f"- Task compat_search_set: {search_set}")
     if required_output_dialect:
         lines.append(f"- Task required_output_dialect: {required_output_dialect}")
     if gluon_doc_profile:
@@ -753,6 +757,14 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
         else:
             docs_text = ", ".join(str(item) for item in required_docs)
         lines.append(f"- Task required_gluon_docs: {docs_text}")
+    if source_base_family:
+        lines.append(f"- Task source_base_family: {source_base_family}")
+    if plain_competitor:
+        lines.append(f"- Task plain_competitor: {plain_competitor}")
+    if implementation_layer:
+        lines.append(f"- Task implementation_layer: {implementation_layer}")
+    if extension_layer:
+        lines.append(f"- Task extension_layer: {extension_layer}")
     if target_symbols:
         if isinstance(target_symbols, str):
             symbols_text = target_symbols

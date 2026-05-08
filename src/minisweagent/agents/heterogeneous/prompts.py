@@ -192,9 +192,9 @@ Dispatch-path checks are allowed but LOW priority. Only propose them when the
 profile strongly suggests an unfused or misrouted entry path, and still assign
 them priority 15 behind kernel-body algorithmic work.
 Exception: when a mandatory Search Space Allocation block explicitly reserves a
-Base Set host/dispatch/cache task for a latency-bound or small-matrix case, that
-task is a no-regression Base competitor rather than padding. It may use a medium
-priority after the required kernel-body Base tasks.
+plain Triton host/dispatch/cache task for a latency-bound or small-matrix case,
+that task is a no-regression competitor rather than padding. It may use a medium
+priority after the required kernel-body plain Triton tasks.
 
 ## Your analysis process
 
@@ -245,11 +245,9 @@ priority after the required kernel-body Base tasks.
     your final `submit` payload must still be a JSON array of task objects
     and nothing else.
 13. If a "Gluon Task Staging Policy" block is present, treat it as
-    mandatory. For `plain_triton -> amd_gluon` paths, only generate an Extension
-    L0 when it is tied to a named optimization direction and concrete Gluon
-    overlay reason. Only generate Extension L1, Shared paired, or Hybrid/mixed
-    tasks when Search Space Allocation grants those layers or prior benchmark
-    evidence justifies them.
+    mandatory. Generate Gluon only as a same-direction overlay: L0 requires a
+    named direction, concrete overlay reason, and same-batch plain Triton
+    competitor; L1/paired/hybrid require the staging block or prior evidence.
 14. If a "Gluon Failure Guardrails" block is present, treat it as
     mandatory. Avoid assigning high-priority tasks that assume risky layout
     conversions, direct API renames, or compile-only validation is enough.
@@ -259,38 +257,22 @@ priority after the required kernel-body Base tasks.
     the traits it is addressing and should not collapse the plan into one
     generic "rewrite to Gluon" task.
 16. If a "Search Space Allocation" block is present, treat it as mandatory.
-    Preserve plain-Triton competitors for high-value optimization directions;
-    AMD Gluon tasks are optional same-direction overlays, not replacements for
-    the main Triton search. Shared strategies must state their dialect variant
-    (`plain_triton variant`, `amd_gluon variant`, or paired comparison). If this
-    block recommends more tasks than GPUs, keep the task count; the GPU pool
-    queues overflow tasks. Follow the layer order within a direction: plain
-    Triton competitor -> optional L0 Gluon overlay or Shared paired mapping ->
-    L1 single-component lowering -> later-round Hybrid/mixed. Every Base Set
-    task_prompt must include `Base family: <family_id>` when the block lists a
-    family checklist. Shared tasks that map a Base strategy must include
-    `Shared source family: <family_id>`. Gluon tasks must include `Optimization
-    direction:`, `Source Base family:`, `Gluon overlay reason:`,
-    `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`,
-    `Comparison target:`, `Allowed change:`, `Reject if:`, and
-    `Extension layer: L0 | L1 | Hybrid`.
-    Required AMD Gluon Extension task_prompts must also tell the worker to write
-    the `Gluon knowledge lookup plan`, `Gluon implementation plan`,
-    `Performance hypothesis`, and `Patch evolution` blocks before editing.
-    For Triton-family task objects, include lightweight metadata when relevant:
-    `search_set` (`base`, `shared`, or `extension`) and
-    `required_output_dialect` (`plain_triton`, `amd_gluon`, `mixed`, or `any`).
-    Only true AMD Gluon Extension tasks should use
-    `required_output_dialect=amd_gluon`; Shared transplants that allow plain
-    Triton fallback should use `required_output_dialect=any`.
+    Preserve plain-Triton competitors for high-value directions and keep any
+    explicitly granted overlay layers. Queue overflow tasks instead of trimming
+    the portfolio to GPU count. Layer order is: plain Triton competitor ->
+    optional L0 Gluon or paired mapping -> L1 single-component lowering ->
+    later-round Hybrid/mixed. Use `required_output_dialect` as the output
+    contract; `search_set` is optional compatibility metadata and must not drive
+    planning.
 17. If a "Shape Coverage Policy" block is present, treat it as mandatory.
     Each task_prompt MUST self-classify as exactly one of `single_shape_viability`,
     `shape_robust`, or `shape_bucketed`, and MUST NOT hardcode shape literals
     (`M`, `N`, `K`, `seq_len`, batch, hidden size, ...) unless the task is
     explicitly `shape_bucketed` with a documented dispatch condition. At least
-    one Base Set task must be `shape_robust`; Extension Set tasks beyond round 1
-    must NOT be `single_shape_viability`. When prior per-shape regressions are
-    listed, generate at least one task that explicitly addresses those shapes.
+    one plain Triton competitor task must be `shape_robust`; Gluon overlay
+    tasks beyond round 1 must NOT be `single_shape_viability`. When prior
+    per-shape regressions are listed, generate at least one task that explicitly
+    addresses those shapes.
 18. If an "Evidence-Anchored Composition" block is present, treat it as
     mandatory. Identify the safe anchor from prior verified evidence, then
     generate composition tasks around that anchor instead of treating Base and
@@ -339,70 +321,33 @@ compare its results against the baseline metrics provided in the task
 metadata. The sub-agent should report the specific metric improvement
 (e.g. duration reduction, bandwidth improvement) relative to baseline.
 
-**Family/layer tags**: If Search Space Allocation lists mandatory Base
-families, every Base Set task_prompt MUST contain exactly one line in the form
-`Base family: <family_id>`. Shared paired tasks MUST contain `Shared source
-family: <family_id>`. AMD Gluon Extension tasks MUST contain `Extension layer:
-L0`, `Extension layer: L1`, or `Extension layer: Hybrid`. AMD Gluon Extension
-tasks MUST also contain `Optimization direction:`, `Source Base family:`, and
-`Gluon overlay reason:`. These tags are used to audit that plain Triton
-coverage has not regressed and that Gluon is tied to a real optimization
-direction.
+**Direction/layer contract**: If Search Space Allocation lists mandatory
+families, each plain Triton competitor needs `Base family: <family_id>`. AMD
+Gluon overlay tasks must include these audited lines: `Extension layer: L0 | L1
+| Hybrid`, `Optimization direction:`, `Source Base family:`, `Plain
+competitor:`, `Gluon overlay reason:`, `Implementation layer:`, `Performance
+hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`,
+and `Reject if:`. Paired tasks should name their source family and
+implementation layer.
 
-**Dialect contract metadata**: For Triton-family tasks, task objects may include
-optional top-level fields `search_set` and `required_output_dialect`. Use
-`search_set=extension` and `required_output_dialect=amd_gluon` only when plain
-Triton fallback is not a valid success. For these required AMD Gluon tasks,
-the prompt must instruct the worker to attempt a real Gluon patch using
-`from triton.experimental import gluon`; `from triton import gluon` is not a
-valid availability probe. Plain Triton fallback is only allowed after a real
-Gluon patch is saved/tested and fails with a recorded compile/runtime error.
+**Dialect contract metadata**: Use `required_output_dialect=amd_gluon` only
+when plain Triton fallback is not a valid success. Required AMD Gluon tasks must
+tell the worker to attempt `from triton.experimental import gluon`; `from
+triton import gluon` is only a bad availability probe. Plain Triton fallback is
+only evidence after a saved/tested Gluon attempt fails with a recorded error.
+`search_set` is optional compatibility metadata.
 
-Planner-audited AMD Gluon Extension task_prompt fields:
-- Include `Optimization direction: <main Triton strategy>`.
-- Include `Source Base family: <family_id>`.
-- Include `Gluon overlay reason: explicit_layout | buffer_path |
-  matrix_lowering | shape_bucket | dialect_specific_memory |
-  local_subpath_win`.
-- Include `Implementation layer: amd_gluon overlay | paired comparison |
-  mixed/hybrid dispatch`.
-- Include `Performance hypothesis: <why this scoped overlay might beat the safe
-  plain/base path or what slower result would prove>`.
-- Include `Measurement boundary: kernel_only | fair_make_inputs_run_kernel |
-  full_operator`.
-- Include `Comparison target: true_baseline | safe_anchor | anchor_patch`.
-- Include `Allowed change: <one component or one dispatch decision>`.
-- Include `Reject if: <conditions that invalidate the patch>`.
-
-Worker pre-edit requirements for AMD Gluon tasks:
-- Tell the worker to write a `Gluon knowledge lookup plan` before editing.
-- Tell the worker to write a `Gluon implementation plan` before editing.
-- Point workers to `skills/triton-gluon/docs/00_always_read.md` for the full
-  required plan fields and doc-routing contract before any code edit.
-- Tell the worker to write `Performance hypothesis:` before editing. It must state why this
-  scoped Gluon path might beat the safe Base/plain path; detailed viability
-  checks live in `docs/10_search_policies.md` and `docs/60_real_patterns.md`.
-- Tell the worker to write `Same ABI comparison:`. End-to-end
-  details live in `docs/10_search_policies.md` and `docs/60_real_patterns.md`.
-- Tell the worker to write `Patch evolution:` and require single-variable patch evolution unless
-  `bundle_allowed=true`; detailed fields live in `docs/00_always_read.md` and
-  `docs/60_real_patterns.md`.
-- For `Extension layer: L0`, scope layout-heavy kernels to one compileable
-  index/mask/load/store/matrix-skeleton subpath. Do not ask for a full
-  attention/decode/GEMM rewrite as L0. Treat L0 as an executed correctness
-  anchor, not a promised speedup.
-- For `Extension layer: L1`, require a correctness-passing Gluon/mixed anchor
-  or an explicit shrink-to-anchor fallback. Keep MFMA/buffer details in
-  `docs/20_component_traits.md`, `docs/50_api_reference.md`, and
-  `docs/60_real_patterns.md`.
-- For stage-specific L1 tasks, include `Target symbol: <function/helper>` in
-  task_prompt and top-level `required_patch_target_symbols`. The selected patch
-  must touch that exact symbol and execute the intended Gluon path.
-- `Reject if:` must cover non-executed Gluon, missing required plan blocks,
-  target-symbol mismatch, leftover plain Triton device APIs inside the edited
-  `@gluon.jit` path, and bundled unrelated changes without
-  `bundle_allowed=true`. Put the detailed API/layout/buffer/MFMA rejection
-  rules in the routed split docs rather than duplicating them in the prompt.
+**AMD Gluon worker contract**: Required AMD Gluon task_prompts must point to
+`skills/triton-gluon/docs/00_always_read.md` and require pre-edit `Gluon
+knowledge lookup plan`, `Gluon implementation plan`, `Performance hypothesis`,
+`Same ABI comparison`, and `Patch evolution` blocks. The task must also specify
+the routed docs that justified overlay priority: `10_search_policies.md` for
+policy, `20_component_traits.md` for component viability, `60_real_patterns.md`
+for end-to-end/source-first/low-latency risk, and `50_api_reference.md` only for
+API-sensitive details. `Reject if:` must cover non-executed Gluon,
+target-symbol mismatch, missing plan blocks, leftover plain Triton device APIs
+inside edited `@gluon.jit`, and bundled unrelated changes unless
+`bundle_allowed=true`.
 
 **Gluon documentation gate metadata**: For Triton-family tasks that use Gluon
 guidance, task objects should include optional top-level fields
@@ -520,8 +465,10 @@ profiling data instead.
 {% if search_space_allocation_guidance %}## GPU Budget
 Available GPUs: {{ num_gpus }}
 Search Space Allocation may recommend more total tasks than GPUs. Preserve the
-recommended Base, Shared, and Extension counts; the GPU pool queues overflow
-tasks instead of requiring the planner to trim the portfolio to {{ num_gpus }}.
+recommended direction-first portfolio and any explicitly granted overlay layers;
+the GPU pool queues overflow tasks instead of requiring the planner to trim the
+portfolio to {{ num_gpus }}. Do not invent Gluon overlays merely to fill a legacy
+metadata bucket.
 Each task uses 1 GPU unless explicitly stated otherwise.
 {% elif num_gpus > 1 %}## GPU Budget
 Available GPUs: {{ num_gpus }}

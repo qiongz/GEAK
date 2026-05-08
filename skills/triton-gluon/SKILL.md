@@ -160,22 +160,27 @@ audit and result attribution. They are not the primary planning axis; the
 primary axis is the named optimization direction.
 
 ```yaml
-search_set: base | shared | extension
 required_output_dialect: plain_triton | amd_gluon | mixed | any
+search_set: base | shared | extension  # optional legacy compatibility bucket
 gluon_doc_profile: extension_l0_minimal | nv_to_amd_translation | memory_lowering | matrix_lowering | shape_bucketed_dispatch | jit_aot_sensitive | shared_transplant | gluon_variant_from_anchor | hybrid_dispatch | hybrid_dispatch_from_evidence
 required_gluon_docs:
   - gluon_skill_path
   - gluon_always_read_path
   - gluon_search_policies_path
+source_base_family: <family_id for the overlaid Triton direction>
+plain_competitor: <same-batch plain Triton task label for Round 1 L0 overlays>
 ```
 
 Add `gluon_component_traits_path`, `gluon_architecture_notes_path`,
 `gluon_api_reference_path`, or `gluon_real_patterns_path` when the task route
 requires them. `save_and_test` gates on these paths.
 
-Use `search_set=extension` for AMD Gluon L0/L1 and hybrid/mixed dispatch tasks.
-Use `required_output_dialect=mixed` only for explicit host-side dispatch between
-verified plain Triton and AMD Gluon paths.
+Use `required_output_dialect=amd_gluon` for required AMD Gluon L0/L1 tasks and
+`required_output_dialect=mixed` only for explicit host-side dispatch between
+verified plain Triton and AMD Gluon paths. `search_set` is optional compatibility
+metadata, not a planning axis.
+Round 1 L0 overlays must name a same-batch `plain_competitor`; that task's
+`Base family` must match the overlay's `source_base_family`.
 
 ## Read Next
 

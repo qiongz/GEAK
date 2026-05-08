@@ -30,8 +30,9 @@ For GEAK agent runs:
 
 1. Start from `skills/triton-gluon/docs/00_always_read.md`.
 2. Follow the task metadata contract:
-   - `search_set`
    - `required_output_dialect`
+   - `Implementation layer` / `Extension layer` in the task body
+   - `search_set` only as a derived legacy compatibility bucket
    - `gluon_doc_profile`
    - `required_gluon_docs`
 3. Let `save_and_test` enforce the required-doc gate and patch dialect contract.

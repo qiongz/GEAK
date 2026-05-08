@@ -9,6 +9,7 @@ live in `20_component_traits.md`.
 
 - `### Search policy: optimization_direction_metadata_sets`
 - `### Search policy: optimization_direction_dialect_overlay`
+- `### Search policy: overlay_priority_routing`
 - `### Search policy: evidence_anchored_composition`
 - `### Search policy: measurement_boundary_policy`
 - `### Search policy: dialect_contract_metadata`
@@ -19,48 +20,39 @@ live in `20_component_traits.md`.
 
 ### Search policy: optimization_direction_metadata_sets
 
-GEAK still stores Triton-family task metadata in three sets:
-
-- **Base Set**: a plain Triton implementation of an optimization direction.
-- **Shared Set**: a paired comparison or transplant for the same optimization
-  direction across dialects.
-- **Extension Set**: an AMD Gluon implementation of an optimization direction,
-  including L0 viability and L1 trait-specific lowering.
-
-These sets are not mutually exclusive optimization directions and should not be
-used as task ideas by themselves. They are metadata used for audit, result
-attribution, scheduling, and selector contracts. The primary planning axis is
-the optimization direction: split/decomposition, fusion, memory/layout cleanup,
-shape specialization, persistent/launch amortization, or another Triton
-family from the main planner.
+Plan by optimization direction first: split/decomposition, fusion,
+memory/layout cleanup, shape specialization, persistent/launch amortization, or
+another Triton family from the main planner. Legacy Base/Shared/Extension labels
+are compatibility metadata for audit, attribution, scheduling, and selector
+contracts; do not use them as task ideas.
 
 Plain Triton coverage is mandatory for every high-value direction. Gluon is an
 additional implementation option, not a reason to remove the plain Triton
 competitor.
+Round 1 L0 overlays must bind to a concrete same-batch plain task through
+`Plain competitor`, not merely to a family name. The `Plain competitor` task's
+`Base family` must match the overlay's `Source Base family`.
 
-Tasks with `search_set=base` should include:
+Required prompt fields by layer:
 
 ```text
+Plain Triton competitor:
 Base family: <family_id>
 Optimization direction: <main Triton strategy>
-```
 
-Tasks with `search_set=shared` should include:
-
-```text
+Paired mapping:
 Shared source family: <base_family_id>
 Optimization direction: <main Triton strategy>
 Implementation layer: plain_triton variant | amd_gluon variant | paired comparison | shared_transplant
 Comparison target: true_baseline | safe_anchor
 Allowed change: <one portable component>
 Reject if: <conditions that invalidate the patch>
-```
 
-Tasks with `search_set=extension` and an AMD Gluon overlay should include:
-
-```text
+AMD Gluon overlay:
+Extension layer: L0 | L1 | Hybrid
 Optimization direction: <main Triton strategy>
 Source Base family: <family_id>
+Plain competitor: <plain Triton task label in this batch>
 Gluon overlay reason: explicit_layout | buffer_path | matrix_lowering | shape_bucket | dialect_specific_memory | local_subpath_win
 Implementation layer: amd_gluon overlay | paired comparison | mixed/hybrid dispatch
 Performance hypothesis: <why this scoped overlay might beat the safe plain/base path>
@@ -68,7 +60,6 @@ Measurement boundary: kernel_only | fair_make_inputs_run_kernel | full_operator
 Comparison target: true_baseline | safe_anchor | anchor_patch
 Allowed change: <one component or one dispatch decision>
 Reject if: <conditions that invalidate the patch>
-Extension layer: L0 | L1 | Hybrid
 ```
 
 ### Search policy: optimization_direction_dialect_overlay
@@ -99,6 +90,48 @@ Examples:
 Do not emit a generic "rewrite to Gluon" task. A Gluon task must name the
 optimization direction it implements and the single allowed component it changes
 in the next patch.
+
+### Search policy: overlay_priority_routing
+
+This policy decides whether a concrete Triton optimization direction should get
+an AMD Gluon overlay task, and at what priority. It does not choose the
+optimization direction itself.
+
+Read order for planner priority:
+
+1. `00_always_read.md` task routing table.
+2. `10_search_policies.md`,
+   `optimization_direction_dialect_overlay` and this section.
+3. `20_component_traits.md` for the detected component traits.
+4. `60_real_patterns.md` when the task is end-to-end, source-first, low-latency,
+   architecture-guarded, or has benchmark/measurement-boundary risk.
+5. `50_api_reference.md` only when assigning a concrete API-sensitive task such
+   as buffer ops, MFMA/WMMA, descriptor, or failure triage.
+
+Overlay priority buckets:
+
+- Prefer: existing AMD/NV Gluon input; explicit layout is already part of the
+  algorithm; one local sub-operation is layout-bound or matrix-lowering-bound;
+  benchmark/profiling shows the target subpath is hot enough that layout
+  control could pay for its overhead.
+- Consider: memory/layout cleanup with a narrow load/store or index/mask
+  subpath; a paired comparison can answer whether plain Triton or AMD Gluon wins;
+  prior correctness-passing Gluon evidence isolates one overhead source to
+  remove.
+- Deprioritize: low-latency or tiny stages where launch/layout overhead is
+  likely to dominate; full-operator rewrites; persistent scheduling,
+  work-stealing, atomics, async/shared-memory, or descriptor work before a
+  simpler Gluon path has passed correctness.
+- Do not generate: no named plain Triton competitor, no concrete Gluon overlay
+  reason, no same-direction optimization target, only compile-valid value, or a
+  prior same-scope Gluon attempt already regressed without a named removable
+  overhead.
+
+Round 1 for plain Triton inputs may include at most one L0 overlay, and only in
+the Prefer or high-confidence Consider buckets. Otherwise spend the task on the
+plain Triton direction. Later rounds may create L1, `gluon_variant`, or
+`hybrid_dispatch` only from verified Gluon execution evidence and safe-anchor
+comparison.
 
 ### Search policy: evidence_anchored_composition
 
@@ -230,28 +263,20 @@ This metadata contract is Triton-family only. Do not apply it to HIP, CK, ASM,
 FlyDSL, PyTorch-to-FlyDSL, or torch2hip tasks.
 
 ```yaml
-search_set: base | shared | extension
 required_output_dialect: plain_triton | amd_gluon | mixed | any
+search_set: base | shared | extension  # optional compatibility bucket
 ```
 
-Mapping:
+`required_output_dialect`, `Implementation layer`, and `Extension layer` are
+the output contract source of truth. `search_set` is optional compatibility
+metadata; do not choose task ideas by `search_set` first.
 
-- Base Set:
-  - `search_set = base`
-  - `required_output_dialect = plain_triton`
-- Shared transplant:
-  - `search_set = shared`
-  - `required_output_dialect = any`
-- True AMD Gluon Extension:
-  - `search_set = extension`
-  - `required_output_dialect = amd_gluon`
-- Hybrid dispatch:
-  - `search_set = extension`
-  - `required_output_dialect = mixed`
-
-Required AMD Gluon Extension tasks must run before staged dispatch can stop.
-They must attempt a real AMD Gluon patch and cannot silently succeed as plain
-Triton fallback.
+Use `required_output_dialect=plain_triton` for plain competitors,
+`required_output_dialect=any` for transplant/paired tasks that may remain plain
+Triton, `required_output_dialect=amd_gluon` for required Gluon execution, and
+`required_output_dialect=mixed` for explicit host-side dispatch. Required
+Gluon tasks must attempt a real AMD Gluon patch and cannot silently succeed as
+plain Triton fallback.
 
 `mixed` is for explicit host-side dispatch between already validated plain
 Triton and AMD Gluon candidates. It must keep a visible dispatch condition and
@@ -325,6 +350,7 @@ Round 1:
 - choose optimization directions from the standard Triton priority order;
 - fill mandatory plain Triton competitors for high-value directions;
 - include at most one Extension L0 when a concrete Gluon overlay reason exists;
+  that L0 must name the exact same-batch `Plain competitor` it overlays;
 - for layout-heavy kernels, make Extension L0 a narrow compileable subpath
   rather than a full-kernel Gluon rewrite. The L0 task should explicitly say
   which index/mask/load/matrix skeleton is in scope and reject leftover plain

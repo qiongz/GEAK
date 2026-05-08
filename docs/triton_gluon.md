@@ -1270,24 +1270,24 @@ for HIP, CK, ASM, FlyDSL, or PyTorch-to-FlyDSL tasks.
 Task frontmatter may include:
 
 ```yaml
-search_set: base | shared | extension
 required_output_dialect: plain_triton | amd_gluon | mixed | any
+search_set: base | shared | extension  # legacy compatibility bucket
 ```
 
 Mapping:
 
 - Base Set:
-  - `search_set = base`
   - `required_output_dialect = plain_triton`
 - Shared transplant:
-  - `search_set = shared`
   - `required_output_dialect = any`
 - True AMD Gluon Extension:
-  - `search_set = extension`
   - `required_output_dialect = amd_gluon`
 - Hybrid dispatch:
-  - `search_set = shared` or `extension`
   - `required_output_dialect = mixed`
+
+`required_output_dialect`, `Implementation layer`, and `Extension layer` are
+the source of truth. `search_set` is retained only as legacy compatibility
+metadata for older audit/reporting paths.
 
 Rules:
 

@@ -128,7 +128,7 @@ def test_required_gluon_task_forces_skill_context_even_if_disabled(tmp_path) -> 
     assert "not the supported import path" in task.task
     assert "Gluon knowledge lookup plan" in task.task
     assert "Gluon implementation plan" in task.task
-    assert "Task search_set: extension" in task.task
+    assert "Task compat_search_set: extension" in task.task
     assert "Task required_output_dialect: amd_gluon" in task.task
     assert "viewed=no" in task.task
     assert "If the implementation plan cannot satisfy the scoped path fields" in task.task
@@ -156,6 +156,10 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
             "required_output_dialect": "amd_gluon",
             "gluon_doc_profile": "memory_lowering",
             "required_gluon_docs": ["gluon_skill_path", "gluon_always_read_path"],
+            "source_base_family": "base_hot_path_streamline",
+            "plain_competitor": "triton-eliminate-redundant-ops-streamline",
+            "implementation_layer": "amd_gluon overlay",
+            "extension_layer": "L1",
             "required_patch_target_symbols": ["target_stage"],
         },
         "Extension task using AMD Gluon.",
@@ -163,10 +167,14 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
 
     task = task_file_to_agent_task(task_path)
 
-    assert "Task search_set: extension" in task.task
+    assert "Task compat_search_set: extension" in task.task
     assert "Task required_output_dialect: amd_gluon" in task.task
     assert "Task gluon_doc_profile: memory_lowering" in task.task
     assert "Task required_gluon_docs: gluon_skill_path, gluon_always_read_path" in task.task
+    assert "Task source_base_family: base_hot_path_streamline" in task.task
+    assert "Task plain_competitor: triton-eliminate-redundant-ops-streamline" in task.task
+    assert "Task implementation_layer: amd_gluon overlay" in task.task
+    assert "Task extension_layer: L1" in task.task
     assert "Task required_patch_target_symbols: target_stage" in task.task
 
 
@@ -384,6 +392,30 @@ def test_required_gluon_extension_groups_into_high_stage(tmp_path) -> None:
             "required_output_dialect": "amd_gluon",
         },
         "Extension task",
+    )
+
+    stages = _group_task_files_by_dispatch_stage([base_task, ext_task])
+    assert stages[0][0] == "high"
+    assert {path.name for path in stages[0][1]} == {"00_base.md", "06_ext.md"}
+
+
+def test_required_gluon_groups_high_without_search_set(tmp_path) -> None:
+    base_task = tmp_path / "00_base.md"
+    ext_task = tmp_path / "06_ext.md"
+    write_task_file(
+        base_task,
+        {"label": "base", "priority": 0, "kernel_type": "triton"},
+        "Base task",
+    )
+    write_task_file(
+        ext_task,
+        {
+            "label": "ext",
+            "priority": 6,
+            "kernel_type": "triton",
+            "required_output_dialect": "amd_gluon",
+        },
+        "Extension layer: L0\nImplementation layer: amd_gluon overlay",
     )
 
     stages = _group_task_files_by_dispatch_stage([base_task, ext_task])
