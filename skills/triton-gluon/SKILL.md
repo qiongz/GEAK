@@ -66,7 +66,12 @@ torch2hip tasks.
      layout objects must not be newly constructed inside `@gluon.jit`;
    - every `tl.*` device scalar/math use in the edited Gluon path and its
      `gl.*` equivalent (`gl.cdiv`, `gl.minimum`, `gl.maximum`, `gl.max`,
-     `gl.sum`, `gl.exp`, `gl.where`, etc.);
+     `gl.sum`, `gl.exp`, `gl.where`, etc.); `tl.sigmoid` must be lowered with
+     documented Gluon math such as `1 / (1 + gl.exp(-x))` if there is no local
+     `gl.sigmoid` evidence;
+   - every `tl.dot` / `tl.dot_scaled` in scope and the full Gluon matrix path:
+     result layout, `DotOperandLayout`s, `convert_layout`, and target op such as
+     `gl.amd.cdna3.mfma`; never leave `tl.dot` inside `@gluon.jit`;
    - for buffer ops, the loaded element dtype, typed `other` value/layout, and
      `stored_value` dtype before using `buffer_load` / `buffer_store`;
    - the performance hypothesis before editing: why this Gluon change might help
@@ -86,7 +91,10 @@ torch2hip tasks.
      successful patch. If you define a new `_..._gluon` helper, wire the host or
      caller so that helper is actually executed; a definition-only helper while
      the dispatch still uses the plain Triton path is not a valid result, even
-     if compile/correctness passes through the unchanged path.
+     if compile/correctness passes through the unchanged path;
+   - whether the patch creates any backup or temporary files. Do not add
+     `.bak`, `.backup`, `.orig`, `.tmp`, or editor-swap copies; patches should
+     contain only the intended source/config changes.
 
 `save_and_test` enforces the required-doc gate for Gluon tasks.
 
@@ -221,6 +229,10 @@ Round 1 L0 overlays must name a same-batch `plain_competitor`; that task's
   `mixed` path?
 - Does every `@gluon.jit` tensor creation use `gl.*` with explicit layouts, not
   leftover `tl.arange`, `tl.zeros`, `tl.full`, `tl.load`, `tl.dot`, or `tl.where`?
+- Does every `@gluon.jit` body avoid leftover `tl.*` math/reductions such as
+  `tl.sigmoid`, `tl.max`, `tl.sum`, and direct `tl.dot`?
+- Does the patch avoid backup/temp files such as `.bak`, `.backup`, `.orig`,
+  `.tmp`, or editor-swap copies?
 - Does a required `mixed` result contain both Base/dispatch and Gluon paths?
 - Did correctness pass for every benchmark shape?
 - Did the patch avoid modifying harness, environment, or benchmark contract?

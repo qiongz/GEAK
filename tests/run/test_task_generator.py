@@ -162,7 +162,8 @@ def test_build_gluon_planning_traits_guidance_includes_candidate_slots(tmp_path:
     assert "`dialect_plain_triton`" in guidance
     assert "`matrix_dot`" in guidance
     assert "Prefer First:" in guidance
-    assert "DotOperandLayout" in guidance
+    assert "use the routed Gluon matrix docs" in guidance
+    assert "DotOperandLayout" not in guidance
     assert "Plain competitor" in guidance
 
 
@@ -1136,6 +1137,9 @@ def test_run_task_agent_plain_triton_auto_prefers_amd_gluon_first(
     assert "Comparison target:" in system_prompt
     assert "Allowed change:" in system_prompt
     assert "non-executed Gluon" in system_prompt
+    assert "API-level Gluon rewrite details" in system_prompt
+    assert "tl.sigmoid" not in system_prompt
+    assert "gl.sum" not in system_prompt
     assert "required_patch_target_symbols" in system_prompt
     assert "skills/triton-gluon/docs/00_always_read.md" in system_prompt
     assert "20_component_traits.md" in system_prompt

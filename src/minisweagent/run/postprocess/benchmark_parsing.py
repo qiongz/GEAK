@@ -455,6 +455,30 @@ def _added_lines(patch_text: str) -> list[str]:
     return [line[1:].strip() for line in patch_text.splitlines() if line.startswith("+") and not line.startswith("+++")]
 
 
+_BACKUP_FILE_SUFFIXES = (".bak", ".backup", ".orig", ".tmp", "~")
+
+
+def _patch_touches_backup_file(patch_text: str) -> bool:
+    for raw_line in patch_text.splitlines():
+        paths: list[str] = []
+        if raw_line.startswith("diff --git "):
+            parts = raw_line.split()
+            paths.extend(parts[2:4])
+        elif raw_line.startswith(("+++ ", "--- ")):
+            paths.append(raw_line[4:].strip())
+
+        for raw_path in paths:
+            path = raw_path
+            if path.startswith(("a/", "b/")):
+                path = path[2:]
+            if path == "/dev/null":
+                continue
+            name = Path(path).name.lower()
+            if name.endswith(_BACKUP_FILE_SUFFIXES):
+                return True
+    return False
+
+
 def _extract_added_gluon_jit_defs(patch_text: str) -> list[str]:
     defs: list[str] = []
     pending_gluon_jit = False
@@ -841,6 +865,9 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         if psz == 0:
             continue
         patch_text = patch_file.read_text(errors="replace")
+        if _patch_touches_backup_file(patch_text):
+            logger.info("Skipping %s because it touches backup or temporary files", name)
+            continue
         if required_patch_target_symbols and not _patch_touches_any_target_symbol(
             patch_text,
             required_patch_target_symbols,
@@ -975,6 +1002,22 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
         try:
             existing = json.loads(existing_path.read_text())
             pf = existing.get("best_patch_file")
+
+            if pf and Path(pf).exists():
+                patch_text = Path(pf).read_text(errors="replace")
+                if _patch_touches_backup_file(patch_text):
+                    logger.warning(
+                        "rewrite_best_results(%s): selected patch touches backup or temporary files.",
+                        patch_dir.name,
+                    )
+                    existing["best_patch_id"] = None
+                    existing["best_patch_file"] = None
+                    existing["best_patch_speedup"] = 0.0
+                    existing["llm_selection_analysis"] = (
+                        existing.get("llm_selection_analysis") or ""
+                    ) + " [Invalidated: selected patch touched backup or temporary files]"
+                    existing_path.write_text(json.dumps(existing, indent=2))
+                    return existing
 
             if pf and Path(pf).exists() and required_patch_target_symbols:
                 patch_text = Path(pf).read_text(errors="replace")

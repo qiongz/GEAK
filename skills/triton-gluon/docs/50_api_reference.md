@@ -198,6 +198,9 @@ Common scalar/math APIs used inside `@gluon.jit` paths:
 
 - use `gl.cdiv`, `gl.minimum`, `gl.maximum`, `gl.exp`, `gl.exp2`, `gl.where`,
   `gl.floor`, `gl.ceil`, `gl.sqrt`, `gl.rsqrt`, and `gl.abs`;
+- if source uses `tl.sigmoid`, do not assume a Gluon helper by name. Use a
+  documented `gl.sigmoid` only if the installed/source API proves it exists;
+  otherwise lower sigmoid with `1 / (1 + gl.exp(-x))` in Gluon math;
 - host-side Python/Triton launch math may still use `triton.cdiv`, but device
   scalar/math in the edited Gluon subpath should stay in the `gl.*` namespace.
 
@@ -225,6 +228,7 @@ Planning implications:
 | `tl.zeros((M, N), dtype=...)` | `gl.zeros((M, N), dtype=..., layout=layout)` | Always; accumulators need explicit layout |
 | `tl.full(...)` | `gl.full(..., layout=layout)` when supported by local Triton | Always for distributed tensors |
 | `tl.cdiv` / `tl.minimum` / `tl.maximum` / `tl.exp` inside device code | `gl.cdiv` / `gl.minimum` / `gl.maximum` / `gl.exp` | Keep host launch math outside `@gluon.jit`; do not leave device scalar/math in `tl.*` |
+| `tl.sigmoid` | documented `gl.sigmoid` if available, otherwise `1 / (1 + gl.exp(-x))` | Do not leave `tl.sigmoid` inside `@gluon.jit`; do not invent undocumented API names |
 | `tl.max` / `tl.sum` reductions | `gl.max` / `gl.sum` with matching layout assumptions | Softmax/reduction paths need API reference and correctness audit |
 | `reshape` / `permute` / `split` / `join` | Gluon shape APIs with layout-aware tensors | Preserve transformation semantics; source-first for unshuffle paths |
 | `tl.atomic_*` | generic `gl.atomic_*` or target-specific buffer atomics | Late-stage only; arch and dtype support must be checked |

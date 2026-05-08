@@ -16,6 +16,7 @@ from minisweagent.debug_runtime import emit_debug_log
 from minisweagent.run.postprocess.benchmark_parsing import (
     _dialect_contract_satisfied,
     _gluon_execution_contract_satisfied,
+    _patch_touches_backup_file,
     _patch_touches_any_target_symbol,
     compute_shape_speedups,
     extract_latency_ms,
@@ -126,6 +127,12 @@ class SaveAndTestTool:
         ctx = self.context
         if not ctx:
             return None
+
+        if _patch_touches_backup_file(patch_content):
+            return (
+                "PATCH_CONTRACT_FAILED: patch includes backup or temporary files "
+                "(.bak/.backup/.orig/.tmp/~). Remove generated copies from the patch."
+            )
 
         required_output = str(ctx.required_output_dialect or "").strip().lower()
         required_symbols = [str(symbol).strip() for symbol in (ctx.required_patch_target_symbols or []) if str(symbol).strip()]

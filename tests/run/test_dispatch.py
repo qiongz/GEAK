@@ -451,6 +451,33 @@ def test_save_and_test_allows_plain_config_only_patch(tmp_path) -> None:
     assert "PATCH_CONTRACT_FAILED" not in result["output"]
 
 
+def test_save_and_test_rejects_backup_file_patch(tmp_path) -> None:
+    tool = SaveAndTestTool()
+    tool._get_patch_content = lambda: "\n".join(  # type: ignore[method-assign]
+        [
+            "diff --git a/kernel.py.bak b/kernel.py.bak",
+            "new file mode 100644",
+            "--- /dev/null",
+            "+++ b/kernel.py.bak",
+            "+import triton.language as tl",
+        ]
+    )
+    tool.set_context(
+        SaveAndTestContext(
+            cwd=str(tmp_path),
+            test_command="true",
+            timeout=5,
+            patch_output_dir=None,
+            required_output_dialect="plain_triton",
+        )
+    )
+
+    result = tool(description="backup file")
+
+    assert result["returncode"] == 1
+    assert "backup or temporary files" in result["output"]
+
+
 def test_save_and_test_rejects_mixed_dead_gluon_helper(tmp_path) -> None:
     tool = SaveAndTestTool()
     tool._get_patch_content = lambda: "\n".join(  # type: ignore[method-assign]
