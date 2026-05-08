@@ -1750,7 +1750,7 @@ def _build_search_space_allocation_guidance(
         "- Round 1 without an existing AMD Gluon input/anchor may produce at most one Extension L0 overlay, not L1 memory/MFMA lowering. If no concrete Gluon overlay reason exists, spend the slot on another plain Triton direction.",
         "- Extension L0 tasks on low-latency kernels or tiny stages must be smallest-anchor tasks. They must reject repeated launch-constant sweeps after a slower correctness pass and record overhead evidence instead of treating L0 as a performance tuning campaign.",
         "- Shared Set tasks must include `Shared source family: <base_family_id>` when they map a Base strategy into a paired comparison.",
-        "- Planner-audited Gluon task fields: `Optimization direction: <main Triton strategy>`, `Source Base family: <family_id>`, `Gluon overlay reason: <reason>`, `Implementation layer: amd_gluon overlay | paired comparison | mixed/hybrid dispatch`, `Measurement boundary: kernel_only | fair_make_inputs_run_kernel | full_operator`, `Comparison target: true_baseline | safe_anchor | anchor_patch`, `Allowed change: <one component or one dispatch decision>`, and `Reject if: <conditions>`.",
+        "- Planner-audited Gluon task fields: `Optimization direction: <main Triton strategy>`, `Source Base family: <family_id>`, `Gluon overlay reason: <reason>`, `Implementation layer: amd_gluon overlay | paired comparison | mixed/hybrid dispatch`, `Performance hypothesis: <why this scoped overlay might help or what slower result would prove>`, `Measurement boundary: kernel_only | fair_make_inputs_run_kernel | full_operator`, `Comparison target: true_baseline | safe_anchor | anchor_patch`, `Allowed change: <one component or one dispatch decision>`, and `Reject if: <conditions>`.",
         "- Extension Set tasks must include `Extension layer: L0`, `Extension layer: L1`, or `Extension layer: Hybrid` in task_prompt.",
         "- Extension L1 tasks must include `Anchor patch: <task>/<patch or input_baseline>`, `Anchor speedup: <number>x`, `Anchor execution: true`, `Comparison target: anchor_patch`, and `Allowed change: <one component>`. If the anchor is slower than 0.5x, has significant per-shape regression, or lacks executed AMD Gluon, emit a smaller L0/diagnostic task instead of L1.",
         "- Stage-specific Extension L1 tasks must include `Target symbol: <function/helper>` in task_prompt and top-level `required_patch_target_symbols`; a patch that only changes a different stage, or only defines `_..._gluon` while dispatch remains on the plain Triton path, is not a valid success.",
@@ -1856,7 +1856,7 @@ def _build_gluon_planning_traits_guidance(
             "- Tasks that mix NVIDIA and AMD layout families, introduce a top-level `gluon` kernel type, or produce an optimized `nv_gluon` output.",
             "",
             "Escalation rules:",
-            "- Round 1 may include at most one L0 minimal AMD Gluon overlay when the Extension quota is 1; do not create a Gluon task without `Optimization direction`, `Source Base family`, and `Gluon overlay reason`.",
+            "- Round 1 may include at most one L0 minimal AMD Gluon overlay when the Extension quota is 1; do not create a Gluon task unless it includes the full planner-audited fields: `Optimization direction:`, `Source Base family:`, `Gluon overlay reason:`, `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`.",
             "- Additional Extension slots may become L1 trait-specific AMD Gluon tasks only after the L0 path is executed and performance-viable, or after local shape/sub-operation evidence shows Gluon beats the safe anchor.",
             "- In later rounds, if Gluon failed, shrink the next attempt to layout-only, translation-only, or memory-only work; if correctness passed but performance regressed, escalate memory/matrix lowering before scheduler or persistent work.",
             "- In later rounds, if either the Base Set or Extension Set wins on only part of the benchmark surface, plan a mixed/hybrid candidate only when it preserves the Base Triton no-regression path and uses host-side dispatch or explicit feature checks to choose between plain Triton and AMD Gluon.",
@@ -2133,7 +2133,11 @@ def _build_output_dialect_guidance(feature_meta: dict[str, Any]) -> str:
         elif input_dialect == "amd_gluon":
             lines.append("- This input is already AMD Gluon. Keep the main optimization path inside AMD Gluon rather than drifting back to plain Triton unless benchmark evidence forces a fallback.")
         else:
-            lines.append("- Generate at most one early Extension L0 task, and only as a same-direction overlay with `Optimization direction`, `Source Base family`, and `Gluon overlay reason`.")
+            lines.append(
+                "- Generate at most one early Extension L0 task, and only as a same-direction overlay with the full planner-audited Gluon fields: "
+                "`Optimization direction:`, `Source Base family:`, `Gluon overlay reason:`, `Implementation layer:`, "
+                "`Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`."
+            )
         lines.append("- Keep a plain Triton fallback path alive when it remains an allowed output. If the kernel structure or benchmark evidence suggests Gluon is unlikely to help, say so and focus the remaining tasks on the fallback path.")
         return "\n".join(lines)
     if policy == REQUIRE_AMD_GLUON_POLICY:

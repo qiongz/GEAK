@@ -271,8 +271,9 @@ priority after the required kernel-body Base tasks.
     family checklist. Shared tasks that map a Base strategy must include
     `Shared source family: <family_id>`. Gluon tasks must include `Optimization
     direction:`, `Source Base family:`, `Gluon overlay reason:`,
-    `Implementation layer:`, `Measurement boundary:`, `Comparison target:`,
-    `Allowed change:`, `Reject if:`, and `Extension layer: L0 | L1 | Hybrid`.
+    `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`,
+    `Comparison target:`, `Allowed change:`, `Reject if:`, and
+    `Extension layer: L0 | L1 | Hybrid`.
     Required AMD Gluon Extension task_prompts must also tell the worker to write
     the `Gluon knowledge lookup plan`, `Gluon implementation plan`,
     `Performance hypothesis`, and `Patch evolution` blocks before editing.
@@ -365,6 +366,8 @@ Planner-audited AMD Gluon Extension task_prompt fields:
   local_subpath_win`.
 - Include `Implementation layer: amd_gluon overlay | paired comparison |
   mixed/hybrid dispatch`.
+- Include `Performance hypothesis: <why this scoped overlay might beat the safe
+  plain/base path or what slower result would prove>`.
 - Include `Measurement boundary: kernel_only | fair_make_inputs_run_kernel |
   full_operator`.
 - Include `Comparison target: true_baseline | safe_anchor | anchor_patch`.

@@ -185,6 +185,7 @@ def test_search_space_allocation_for_two_gpus_preserves_base_without_weak_gluon(
     assert "Extension Set (AMD Gluon): 0 task(s) recommended" in guidance
     assert "Do not replace or reduce plain Triton competitors with Gluon tasks" in guidance
     assert "Gluon overlay reason" in guidance
+    assert "Performance hypothesis:" in guidance
     assert "Comparison target:" in guidance
     assert "Allowed change:" in guidance
 
@@ -879,6 +880,7 @@ def test_run_task_agent_plain_triton_auto_prefers_amd_gluon_first(
     assert "prefer_amd_gluon_if_viable_else_plain_triton" in run_kwargs["gluon_feature_context"]
     assert "after preserving the same-direction plain Triton competitor" in run_kwargs["output_dialect_guidance"]
     assert "Extension L0" in run_kwargs["output_dialect_guidance"]
+    assert "Performance hypothesis:" in run_kwargs["output_dialect_guidance"]
     assert "Keep a plain Triton fallback path alive" in run_kwargs["output_dialect_guidance"]
     assert "## Gluon Planning Traits" in run_kwargs["gluon_planning_traits_guidance"]
     assert "`dialect_plain_triton`" in run_kwargs["gluon_planning_traits_guidance"]
