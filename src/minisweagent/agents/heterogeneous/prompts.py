@@ -317,9 +317,9 @@ metadata. The sub-agent should report the specific metric improvement
 families, each plain Triton competitor needs `Base family: <family_id>`. AMD
 Gluon overlay tasks must include these audited lines: `Extension layer: L0 | L1
 | Hybrid`, `Optimization direction:`, `Source Base family:`, `Plain
-competitor:`, `Gluon overlay reason:`, `Implementation layer:`, `Performance
-hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`,
-and `Reject if:`. Paired tasks should name their source family and
+competitor:`, `Gluon overlay reason:`, `Overlay priority:`,
+`Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`,
+`Comparison target:`, `Allowed change:`, and `Reject if:`. Paired tasks should name their source family and
 implementation layer.
 
 **Dialect contract metadata**: Use `required_output_dialect=amd_gluon` only

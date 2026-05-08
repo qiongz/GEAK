@@ -317,7 +317,7 @@ def test_classify_patch_output_dialect_detects_mixed() -> None:
     )
 
 
-def test_compute_best_patch_accepts_mixed_for_required_amd_gluon(tmp_path: Path) -> None:
+def test_compute_best_patch_rejects_mixed_for_required_amd_gluon(tmp_path: Path) -> None:
     patch_dir = tmp_path / "results" / "round_1" / "ext-mixed-gluon"
     patch_dir.mkdir(parents=True)
     root = patch_dir.parent.parent.parent
@@ -347,11 +347,7 @@ def test_compute_best_patch_accepts_mixed_for_required_amd_gluon(tmp_path: Path)
     )
     (patch_dir / "patch_1_test.txt").write_text("case_a: 0.9000 ms\ncase_b: 0.9000 ms\n")
 
-    best = compute_best_patch(patch_dir)
-    assert best is not None
-    assert best["actual_output_dialect"] == "mixed"
-    assert best["dialect_contract_satisfied"] is True
-    assert best["fallback_used"] is False
+    assert compute_best_patch(patch_dir) is None
 
 
 def test_compute_best_patch_rejects_amd_gluon_for_required_mixed(tmp_path: Path) -> None:
@@ -635,10 +631,10 @@ def test_search_space_allocation_for_one_gpu_serial_interleave() -> None:
         num_gpus=1,
     )
     assert "Scheduling mode: `serial_interleave`" in text
-    assert "Base Set (plain Triton): at least 3 task(s)" in text
-    assert "Extension Set (AMD Gluon): 0 task(s) recommended" in text
+    assert "Plain Triton competitors: at least 3 task(s)" in text
+    assert "AMD Gluon overlay: 0 task(s) recommended" in text
     assert "concrete same-direction Gluon overlay reason" in text
-    assert "slots 2+ may be Extension L1" not in text
+    assert "slots 2+ may be L1" not in text
     assert "run them sequentially on the single GPU" in text
 
 
@@ -660,11 +656,11 @@ def test_search_space_allocation_for_eight_gpus_parallel_mixed_portfolio() -> No
         current_round=2,
     )
     assert "Scheduling mode: `parallel_mixed_portfolio`" in text
-    assert "Base Set (plain Triton): at least 7 task(s)" in text
-    assert "Shared Set (Triton/Gluon common strategies): 2 task(s)" in text
-    assert "Extension Set (AMD Gluon): 3 task(s)" in text
-    assert "slots 2+ may be Extension L1" in text
-    assert "paired same-direction mappings" in text
+    assert "Plain Triton competitors: at least 7 task(s)" in text
+    assert "Paired same-direction mappings: 2 task(s)" in text
+    assert "AMD Gluon overlay: 3 task(s)" in text
+    assert "slots 2+ may be L1" in text
+    assert "Paired same-direction mappings" in text
     assert "mixed/hybrid" in text
     assert "host-side shape/feature checks" in text
 

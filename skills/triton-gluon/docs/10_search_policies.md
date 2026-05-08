@@ -54,6 +54,7 @@ Optimization direction: <main Triton strategy>
 Source Base family: <family_id>
 Plain competitor: <plain Triton task label in this batch>
 Gluon overlay reason: explicit_layout | buffer_path | matrix_lowering | shape_bucket | dialect_specific_memory | local_subpath_win
+Overlay priority: Prefer | high-confidence Consider
 Implementation layer: amd_gluon overlay | paired comparison | mixed/hybrid dispatch
 Performance hypothesis: <why this scoped overlay might beat the safe plain/base path>
 Measurement boundary: kernel_only | fair_make_inputs_run_kernel | full_operator

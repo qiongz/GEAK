@@ -382,6 +382,8 @@ def run_parallel_heterogeneous(
         agent = spec.agent_class(parallel_model, parallel_env, **parallel_agent_config)
         if hasattr(agent, "base_repo_path"):
             agent.base_repo_path = repo_path_resolved
+            if hasattr(agent, "_setup_save_and_test_context"):
+                agent._setup_save_and_test_context()
         if hasattr(agent, "log_file"):
             agent.log_file = log_file
 
@@ -595,6 +597,8 @@ def run_pool(
             agent = task.agent_class(parallel_model, parallel_env, **cfg)
             if hasattr(agent, "base_repo_path"):
                 agent.base_repo_path = repo_path_resolved
+                if hasattr(agent, "_setup_save_and_test_context"):
+                    agent._setup_save_and_test_context()
             if hasattr(agent, "log_file"):
                 agent.log_file = log_file
 

@@ -96,6 +96,13 @@ def select_best_verified_round_evaluation(output_dir: Path) -> Any:
         if verified is None:
             logger.debug("select_best_verified: no verified speedup in %s; skipping.", eval_path.name)
             continue
+        if verified <= 1.0:
+            logger.debug(
+                "select_best_verified: verified speedup %.4fx is not an improvement in %s; keeping as diagnosis only.",
+                verified,
+                eval_path.name,
+            )
+            continue
 
         candidate_ms = round_eval_candidate_ms(round_eval)
         best_patch = str(round_eval.get("best_patch") or "")
@@ -223,16 +230,29 @@ def merge_round_evaluation_into_final_report(
             merged = dict(report)
 
     existing_summary = str(merged.get("summary", ""))
-    merged["round_evaluation"] = round_eval
-    if round_eval.get("best_patch"):
-        merged["best_patch"] = round_eval["best_patch"]
-    if round_eval.get("best_task"):
-        merged["best_task"] = round_eval["best_task"]
-    label = round_eval_label(round_eval)
-    if label:
-        merged["best_round"] = label
-
     verified_speedup_raw = extract_verified_speedup(round_eval)
+    verified_improvement = verified_speedup_raw is not None and verified_speedup_raw > 1.0
+    merged["round_evaluation"] = round_eval
+    if verified_improvement:
+        if round_eval.get("best_patch"):
+            merged["best_patch"] = round_eval["best_patch"]
+        if round_eval.get("best_task"):
+            merged["best_task"] = round_eval["best_task"]
+        label = round_eval_label(round_eval)
+        if label:
+            merged["best_round"] = label
+    else:
+        merged.pop("best_patch", None)
+        merged.pop("best_task", None)
+        merged.pop("best_round", None)
+        if round_eval.get("best_patch"):
+            merged["diagnostic_best_patch"] = round_eval["best_patch"]
+        if round_eval.get("best_task"):
+            merged["diagnostic_best_task"] = round_eval["best_task"]
+        label = round_eval_label(round_eval)
+        if label:
+            merged["diagnostic_round"] = label
+
     if verified_speedup_raw is not None:
         logger.info(
             "merge_round_evaluation: verified_speedup_raw=%.4f from %s.",
@@ -259,7 +279,7 @@ def merge_round_evaluation_into_final_report(
                 f"({verified_speedup_raw:.4f}x raw); clamped to {verified_speedup:.4f}x."
             )
         )
-        best_patch_path = str(merged.get("best_patch") or round_eval.get("best_patch") or "")
+        best_patch_path = str(merged.get("best_patch") or "")
         if best_patch_path and Path(best_patch_path).is_file():
             merged["best_patch_size_bytes"] = Path(best_patch_path).stat().st_size
         bench_section = _get_benchmark_section(round_eval)
@@ -338,7 +358,20 @@ def post_round_evaluate(
                 eval_path.write_text(json.dumps(eval_dict, indent=2, default=str))
             except (json.JSONDecodeError, OSError):
                 pass
-        elif current >= ctx.get("_best_global_speedup", 0):
+            return round_eval
+        shape_regression = _round_eval_has_significant_shape_regression(output_dir, round_num)
+        if current <= 1.0:
+            logger.info(
+                "post_round_evaluate: round %d verified slowdown %.4fx; keeping previous starting_patch.",
+                round_num,
+                current,
+            )
+        elif shape_regression:
+            logger.info(
+                "post_round_evaluate: round %d has significant shape regression; keeping previous starting_patch.",
+                round_num,
+            )
+        elif current >= max(1.0, ctx.get("_best_global_speedup", 1.0)):
             ctx["starting_patch"] = round_eval.best_patch
             ctx["_best_global_speedup"] = current
             logger.info(
@@ -347,6 +380,39 @@ def post_round_evaluate(
                 round_num,
             )
     return round_eval
+
+
+def _round_eval_has_significant_shape_regression(
+    output_dir: Path,
+    round_num: int,
+    *,
+    floor: float = 0.95,
+) -> bool:
+    eval_path = output_dir / f"round_{round_num}_evaluation.json"
+    try:
+        payload = json.loads(eval_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return False
+
+    if payload.get("has_significant_shape_regression") is True:
+        return True
+    for section_key in ("full_benchmark", "benchmark"):
+        section = payload.get(section_key)
+        if not isinstance(section, dict):
+            continue
+        if section.get("has_significant_shape_regression") is True:
+            return True
+        per_shape = section.get("per_shape_speedups")
+        if isinstance(per_shape, dict):
+            for info in per_shape.values():
+                if isinstance(info, dict) and (info.get("speedup") or 0.0) < floor:
+                    return True
+    per_shape = payload.get("per_shape_speedups")
+    if isinstance(per_shape, dict):
+        for info in per_shape.values():
+            if isinstance(info, dict) and (info.get("speedup") or 0.0) < floor:
+                return True
+    return False
 
 
 def _dict_to_final_report(d: dict[str, Any]) -> Any:
@@ -486,7 +552,7 @@ def auto_finalize(
     else:
         summary_text = "No results found across any round."
 
-    _patch_file = best_overall.get("best_patch_file") if best_overall else None
+    _patch_file = best_overall.get("best_patch_file") if best_overall and best_speedup > 1.0 else None
     _patch_sz = -1
     if _patch_file and Path(_patch_file).is_file():
         _patch_sz = Path(_patch_file).stat().st_size

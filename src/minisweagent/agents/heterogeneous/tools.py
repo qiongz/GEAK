@@ -262,8 +262,8 @@ def _required_gluon_tasks_completed(results_dir: Path, task_files: list[Path]) -
     from minisweagent.run.task_file import read_task_file
 
     for task_file in task_files:
-        meta, _ = read_task_file(task_file)
-        if not _is_required_gluon_extension(meta):
+        meta, body = read_task_file(task_file)
+        if not _is_required_gluon_extension(meta, body):
             continue
         label = str(meta.get("label") or task_file.stem)
         task_result_dir = results_dir / label

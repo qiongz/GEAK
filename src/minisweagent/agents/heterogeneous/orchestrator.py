@@ -33,6 +33,15 @@ from minisweagent.run.preprocess.discovery_types import (
 
 logger = logging.getLogger(__name__)
 
+_PLAIN_TRITON_NO_REGRESSION_GUIDANCE = """\
+### Plain Triton No-Regression Contract
+- Keep a plain Triton fallback alive when it remains an allowed output.
+- Treat AMD Gluon as an evidence-backed overlay option on a Triton optimization
+  direction, not as a reason to drop the best plain Triton branch.
+- If profiling or prior round evidence suggests Gluon is unlikely to help,
+  preserve the plain Triton path and route Gluon work to diagnosis or skip it.
+"""
+
 
 # ── LLM step loop ────────────────────────────────────────────────────
 
@@ -333,6 +342,16 @@ def run_heterogeneous_orchestrator(
     except Exception as exc:
         logger.debug("WorkingMemory init failed: %s", exc)
 
+    feature_context = build_gluon_feature_prompt_block(
+        kernel_meta,
+        heading="### Gluon Feature Context",
+    )
+    allowed_dialects = kernel_meta.get("allowed_output_dialects") or []
+    if isinstance(allowed_dialects, str):
+        allowed_dialects = [part.strip() for part in allowed_dialects.split(",") if part.strip()]
+    if {"plain_triton", "amd_gluon"}.issubset({str(item).strip().lower() for item in allowed_dialects}):
+        feature_context = f"{feature_context}\n\n{_PLAIN_TRITON_NO_REGRESSION_GUIDANCE}"
+
     instance_msg = INSTANCE_TEMPLATE.format(
         kernel_path=str(preprocess_ctx.get("kernel_path", "N/A")),
         repo_root=str(preprocess_ctx.get("repo_root", "N/A")),
@@ -342,10 +361,7 @@ def run_heterogeneous_orchestrator(
         codebase_context=codebase_ctx or "Not available",
         baseline_metrics_summary=bm_summary,
         profiling_summary=prof_summary,
-        feature_context=build_gluon_feature_prompt_block(
-            kernel_meta,
-            heading="### Gluon Feature Context",
-        ),
+        feature_context=feature_context,
         commandment_excerpt=cmd_excerpt,
         memory_context=_memory_context,
     )

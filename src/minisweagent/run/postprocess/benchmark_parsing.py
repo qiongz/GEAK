@@ -429,8 +429,26 @@ def _contains_identifier(text: str, symbol: str) -> bool:
     return bool(_identifier_pattern(symbol).search(text))
 
 
+def _diff_code_lines(patch_text: str) -> list[str]:
+    lines: list[str] = []
+    for raw_line in patch_text.splitlines():
+        if raw_line.startswith(("+++", "---", "diff ", "index ", "@@")):
+            continue
+        if raw_line.startswith("-") or raw_line.startswith(" "):
+            continue
+        line = raw_line[1:].strip() if raw_line.startswith("+") else raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        lines.append(line)
+    return lines
+
+
 def _patch_touches_any_target_symbol(patch_text: str, required_symbols: list[str]) -> bool:
-    return any(_contains_identifier(patch_text, symbol) for symbol in required_symbols)
+    code_text = "\n".join(_diff_code_lines(patch_text))
+    return any(
+        _contains_identifier(code_text, symbol) or _patch_edits_target_body(patch_text, symbol)
+        for symbol in required_symbols
+    )
 
 
 def _added_lines(patch_text: str) -> list[str]:
@@ -465,6 +483,208 @@ def _added_line_calls_symbol(patch_text: str, symbol: str) -> bool:
     return False
 
 
+def _patch_calls_symbol(patch_text: str, symbol: str) -> bool:
+    call_pattern = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(symbol)}(?![A-Za-z0-9_])\s*(?:\[|\()")
+    for raw_line in patch_text.splitlines():
+        if raw_line.startswith("-") and not raw_line.startswith("---"):
+            continue
+        line = raw_line[1:].strip() if raw_line.startswith(("+", " ")) else raw_line.strip()
+        if not line or line.startswith(("#", "@", "def ", "class ", "import ", "from ")):
+            continue
+        if call_pattern.search(line):
+            return True
+    return False
+
+
+def _code_line_from_diff(raw_line: str) -> tuple[str, str] | None:
+    if raw_line.startswith(("+++", "---", "diff ", "index ", "@@")):
+        return None
+    prefix = raw_line[0] if raw_line[:1] in {"+", "-", " "} else ""
+    if prefix == "-":
+        return None
+    text = raw_line[1:] if prefix else raw_line
+    if not text.strip() or text.lstrip().startswith("#"):
+        return None
+    return prefix, text.rstrip()
+
+
+def _indent_width(text: str) -> int:
+    return len(text) - len(text.lstrip(" \t"))
+
+
+def _line_defines_symbol(text: str, symbol: str) -> bool:
+    return bool(re.match(rf"\s*(?:async\s+)?def\s+{re.escape(symbol)}\s*\(", text))
+
+
+def _iter_diff_hunks(patch_text: str) -> list[str]:
+    parts = re.split(r"(?m)^(@@.*$)", patch_text)
+    if len(parts) == 1:
+        return [patch_text]
+    hunks: list[str] = []
+    prefix = parts[0]
+    if prefix.strip():
+        hunks.append(prefix)
+    for idx in range(1, len(parts), 2):
+        header = parts[idx]
+        body = parts[idx + 1] if idx + 1 < len(parts) else ""
+        hunks.append(f"{header}\n{body}")
+    return hunks
+
+
+def _hunk_header_defines_target(header: str, target: str) -> tuple[bool, int]:
+    if not header.startswith("@@"):
+        return False, 0
+    remainder = header[2:].strip()
+    suffix = remainder.split("@@", 1)[1].strip() if "@@" in remainder else remainder
+    if _line_defines_symbol(suffix, target):
+        return True, _indent_width(suffix)
+    return False, 0
+
+
+def _hunk_adds_inside_target_body(chunk: str, target: str, helper: str | None = None) -> bool:
+    in_target = False
+    target_indent = 0
+    for raw_line in chunk.splitlines():
+        if raw_line.startswith("@@"):
+            in_target, target_indent = _hunk_header_defines_target(raw_line, target)
+            continue
+        parsed = _code_line_from_diff(raw_line)
+        if parsed is None:
+            continue
+        prefix, text = parsed
+        stripped = text.lstrip()
+        indent = _indent_width(text)
+        if _line_defines_symbol(text, target):
+            in_target = True
+            target_indent = indent
+            if prefix == "+" and helper is None:
+                return True
+            continue
+        if in_target and stripped and indent <= target_indent and not stripped.startswith(("@", ")", ",")):
+            in_target = False
+        if not in_target or prefix != "+":
+            continue
+        if helper is None:
+            return True
+        if re.search(rf"(?<![A-Za-z0-9_]){re.escape(helper)}(?![A-Za-z0-9_])\s*(?:\[|\()", text):
+            return True
+    return False
+
+
+def _patch_edits_target_body(patch_text: str, target: str) -> bool:
+    return any(_hunk_adds_inside_target_body(chunk, target) for chunk in _iter_diff_hunks(patch_text))
+
+
+def _added_line_assigns_symbol(patch_text: str, left: str, right: str) -> bool:
+    pattern = re.compile(
+        rf"(?<![A-Za-z0-9_]){re.escape(left)}(?![A-Za-z0-9_])\s*=\s*"
+        rf"(?<![A-Za-z0-9_]){re.escape(right)}(?![A-Za-z0-9_])"
+    )
+    return any(pattern.search(line) for line in _added_lines(patch_text))
+
+
+def _helper_name_matches_target(helper: str, target: str) -> bool:
+    helper_l = helper.lower()
+    target_l = target.lower()
+    return (
+        helper_l == target_l
+        or helper_l.startswith(f"{target_l}_")
+        or helper_l.endswith(f"_{target_l}")
+        or helper_l == f"{target_l}gluon"
+        or helper_l == f"{target_l}_gluon"
+    )
+
+
+def _hunk_binds_helper_to_target(patch_text: str, helper: str, target: str) -> bool:
+    for chunk in _iter_diff_hunks(patch_text):
+        if _hunk_adds_inside_target_body(chunk, target, helper):
+            return True
+    return False
+
+
+def _helper_associated_with_required_symbols(
+    patch_text: str,
+    helper: str,
+    required_symbols: list[str],
+) -> bool:
+    if not required_symbols:
+        return True
+    for symbol in required_symbols:
+        if _helper_name_matches_target(helper, symbol):
+            return True
+        if _added_line_assigns_symbol(patch_text, symbol, helper) or _added_line_assigns_symbol(patch_text, helper, symbol):
+            return True
+        if _hunk_binds_helper_to_target(patch_text, helper, symbol):
+            return True
+    return False
+
+
+def _has_added_gluon_launch_evidence(patch_text: str) -> bool:
+    launch_pattern = re.compile(r"(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*gluon[A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*_gluon)\s*\[")
+    return any(launch_pattern.search(line) for line in _added_lines(patch_text))
+
+
+def _target_related_launch_pattern(target: str) -> re.Pattern[str]:
+    escaped = re.escape(target)
+    return re.compile(
+        rf"(?<![A-Za-z0-9_])(?:{escaped}(?:_?gluon|_[A-Za-z0-9_]*gluon[A-Za-z0-9_]*)|"
+        rf"[A-Za-z_][A-Za-z0-9_]*_{escaped}_?gluon[A-Za-z0-9_]*)\s*\[",
+        re.IGNORECASE,
+    )
+
+
+def _hunk_adds_target_related_gluon_launch(chunk: str, target: str) -> bool:
+    launch_pattern = re.compile(r"(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_]*gluon[A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*_gluon)\s*\[")
+    target_launch_pattern = _target_related_launch_pattern(target)
+    in_target = False
+    target_indent = 0
+    for raw_line in chunk.splitlines():
+        if raw_line.startswith("@@"):
+            in_target, target_indent = _hunk_header_defines_target(raw_line, target)
+            continue
+        parsed = _code_line_from_diff(raw_line)
+        if parsed is None:
+            continue
+        prefix, text = parsed
+        stripped = text.lstrip()
+        indent = _indent_width(text)
+        if _line_defines_symbol(text, target):
+            in_target = True
+            target_indent = indent
+            continue
+        if in_target and stripped and indent <= target_indent and not stripped.startswith(("@", ")", ",")):
+            in_target = False
+        if prefix != "+":
+            continue
+        if target_launch_pattern.search(text):
+            return True
+        if in_target and launch_pattern.search(text):
+            return True
+    return False
+
+
+def _has_target_related_gluon_launch_evidence(patch_text: str, required_symbols: list[str]) -> bool:
+    if not required_symbols:
+        return _has_added_gluon_launch_evidence(patch_text)
+    chunks = _iter_diff_hunks(patch_text)
+    for symbol in required_symbols:
+        for chunk in chunks:
+            if _hunk_adds_target_related_gluon_launch(chunk, symbol):
+                return True
+    return False
+
+
+def _edits_existing_gluon_jit_context(patch_text: str) -> bool:
+    return any(line.startswith(" ") and "@gluon.jit" in line for line in patch_text.splitlines())
+
+
+def _has_added_gluon_marker(patch_text: str) -> bool:
+    added_text = "\n".join(_added_lines(patch_text))
+    return any(marker in added_text for marker in _AMD_GLUON_PATCH_MARKERS) or bool(
+        re.search(r"\bgl\.(?:load|store|program_id|arange|zeros|full|cdiv|maximum|minimum|exp)\b", added_text)
+    )
+
+
 def _gluon_execution_contract_satisfied(
     patch_text: str,
     *,
@@ -476,25 +696,30 @@ def _gluon_execution_contract_satisfied(
     A patch that only defines ``target_gluon`` while the host still dispatches the
     plain target path should not satisfy a stage-specific AMD Gluon task.
     """
-    if required_output_dialect != "amd_gluon":
+    if required_output_dialect not in {"amd_gluon", "mixed"}:
         return True
     gluon_defs = _extract_added_gluon_jit_defs(patch_text)
     if not gluon_defs:
-        return True
-    exact_targets = {symbol for symbol in required_symbols}
-    for helper in gluon_defs:
-        if helper in exact_targets:
+        if _has_target_related_gluon_launch_evidence(patch_text, required_symbols):
             return True
-        if _added_line_calls_symbol(patch_text, helper):
+        if not required_symbols and _edits_existing_gluon_jit_context(patch_text):
+            return True
+        return not _has_added_gluon_marker(patch_text)
+    for helper in gluon_defs:
+        if not _helper_associated_with_required_symbols(patch_text, helper, required_symbols):
+            continue
+        if _patch_calls_symbol(patch_text, helper) or _added_line_calls_symbol(patch_text, helper):
             return True
     return False
 
 
 def classify_patch_output_dialect(patch_text: str) -> str:
-    has_gluon = any(marker in patch_text for marker in _AMD_GLUON_PATCH_MARKERS) or bool(
-        re.search(r"\bgl\.(?:load|store|program_id|arange|zeros|full|cdiv|maximum|minimum|exp)\b", patch_text)
+    added = _added_lines(patch_text)
+    added_text = "\n".join(added) if added else patch_text
+    has_gluon = any(marker in added_text for marker in _AMD_GLUON_PATCH_MARKERS) or bool(
+        re.search(r"\bgl\.(?:load|store|program_id|arange|zeros|full|cdiv|maximum|minimum|exp)\b", added_text)
     )
-    has_plain_triton = any(marker in patch_text for marker in _PLAIN_TRITON_PATCH_MARKERS)
+    has_plain_triton = any(marker in added_text for marker in _PLAIN_TRITON_PATCH_MARKERS)
     if has_gluon and has_plain_triton:
         return "mixed"
     if has_gluon:
@@ -512,15 +737,11 @@ def _dialect_contract_satisfied(required: str, actual: str) -> bool:
     if required == "mixed":
         return actual == "mixed"
     if required == "amd_gluon":
-        return actual in {"amd_gluon", "mixed"}
+        return actual == "amd_gluon"
     return actual == required
 
 
-def _required_output_dialect(task_meta: dict[str, Any], *, label: str) -> str:
-    required = str(task_meta.get("required_output_dialect") or "").strip().lower()
-    if required:
-        return required
-
+def _layer_required_output_dialect(task_meta: dict[str, Any], *, label: str) -> str:
     label_text = label.lower()
     implementation_layer = str(task_meta.get("implementation_layer") or "").strip().lower()
     extension_layer = str(task_meta.get("extension_layer") or "").strip().lower()
@@ -536,7 +757,18 @@ def _required_output_dialect(task_meta: dict[str, Any], *, label: str) -> str:
         or "ext_l" in label_text
     ) and ("gluon" in label_text or "amd-gluon" in label_text or "amd_gluon" in label_text):
         return "amd_gluon"
-    return "any"
+    return ""
+
+
+def _required_output_dialect(task_meta: dict[str, Any], *, label: str) -> str:
+    required = str(task_meta.get("required_output_dialect") or "").strip().lower()
+    layer_required = _layer_required_output_dialect(task_meta, label=label)
+    if required:
+        if required in {"any", "plain_triton"} and layer_required in {"amd_gluon", "mixed"}:
+            return layer_required
+        return required
+
+    return layer_required or "any"
 
 
 def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
@@ -697,7 +929,7 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         ),
         "per_shape_speedups": best_shape_speedups,
         "objective": "total_shape_latency_ms" if best_shape_speedups else "latency_ms",
-        "improves_true_baseline": best_speedup > 1.0,
+        "improves_true_baseline": (true_baseline_ms / best_candidate_ms) > 1.0 if best_candidate_ms else False,
         "has_significant_shape_regression": best_has_shape_regression,
         "required_output_dialect": required_output_dialect,
         "actual_output_dialect": best_actual_output_dialect,

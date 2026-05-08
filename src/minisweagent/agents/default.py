@@ -60,6 +60,8 @@ class AgentConfig:
     allowed_skill_tiers: list[str] | None = None
     gluon_doc_gate_enabled: bool = False
     gluon_doc_gate_required_paths: list[str] | None = None
+    required_output_dialect: str | None = None
+    required_patch_target_symbols: list[str] | None = None
 
 
 # Unified observation truncation for both bash output and tool call results (head + tail).
@@ -218,6 +220,8 @@ class DefaultAgent:
             viewed_file_paths=getattr(self.toolruntime, "viewed_file_paths", None),
             gluon_doc_gate_enabled=self.config.gluon_doc_gate_enabled,
             gluon_doc_gate_required_paths=self.config.gluon_doc_gate_required_paths,
+            required_output_dialect=self.config.required_output_dialect,
+            required_patch_target_symbols=self.config.required_patch_target_symbols,
         )
 
         save_and_test_tool = self.toolruntime._tool_table.get("save_and_test")

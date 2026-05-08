@@ -175,9 +175,42 @@ def _commandment_test_command(commandment_path: str) -> str | None:
     return str(script_path)
 
 
-def _task_uses_skills(meta: dict[str, Any]) -> bool:
+def _task_body_field(task_body: str, field: str) -> str:
+    pattern = re.compile(rf"^\s*{re.escape(field)}\s*:\s*(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
+    match = pattern.search(task_body or "")
+    return match.group(1).strip() if match else ""
+
+
+def _task_required_output_dialect(meta: dict[str, Any], task_body: str = "") -> str:
+    label_text = str(meta.get("label") or "").strip().lower()
+    required = str(meta.get("required_output_dialect") or "").strip().lower()
+    implementation_layer = str(meta.get("implementation_layer") or _task_body_field(task_body, "Implementation layer")).strip().lower()
+    extension_layer = str(meta.get("extension_layer") or _task_body_field(task_body, "Extension layer")).strip().lower()
+
+    layer_required = ""
+    if "hybrid" in label_text or "mixed" in label_text:
+        layer_required = "mixed"
+    elif "mixed" in implementation_layer or "hybrid" in implementation_layer or extension_layer == "hybrid":
+        layer_required = "mixed"
+    elif "amd_gluon" in implementation_layer or extension_layer in {"l0", "l1"}:
+        layer_required = "amd_gluon"
+    elif (
+        label_text.startswith(("ext-", "extension-"))
+        or "extension-l" in label_text
+        or "ext_l" in label_text
+    ) and ("gluon" in label_text or "amd-gluon" in label_text or "amd_gluon" in label_text):
+        layer_required = "amd_gluon"
+
+    if required:
+        if required in {"any", "plain_triton"} and layer_required in {"amd_gluon", "mixed"}:
+            return layer_required
+        return required
+    return layer_required or "any"
+
+
+def _task_uses_skills(meta: dict[str, Any], task_body: str = "") -> bool:
     """Return whether a task should enable the skill runtime."""
-    if _task_requires_amd_gluon(meta):
+    if _task_requires_amd_gluon(meta, task_body):
         return True
     if "use_skills" in meta:
         raw = meta.get("use_skills")
@@ -187,17 +220,18 @@ def _task_uses_skills(meta: dict[str, Any]) -> bool:
     return str(meta.get("kernel_type", "")).strip().lower() == "triton"
 
 
-def _task_requires_amd_gluon(meta: dict[str, Any]) -> bool:
+def _task_requires_amd_gluon(meta: dict[str, Any], task_body: str = "") -> bool:
     """Return whether task metadata requires an actual AMD Gluon output."""
     return (
         str(meta.get("kernel_type") or "").strip().lower() == "triton"
-        and str(meta.get("required_output_dialect") or "").strip().lower() == "amd_gluon"
+        and _task_required_output_dialect(meta, task_body) == "amd_gluon"
     )
 
 
-def _task_feature_metadata(meta: dict[str, Any]) -> dict[str, Any]:
+def _task_feature_metadata(meta: dict[str, Any], task_body: str = "") -> dict[str, Any]:
     """Rebuild the normalized Gluon feature metadata from task frontmatter."""
     kernel_path = Path(str(meta.get("kernel_path") or "unknown.py"))
+    required_output_dialect = _task_required_output_dialect(meta, task_body)
     feature_meta = build_gluon_feature_metadata(
         kernel_path,
         str(meta.get("kernel_type") or "unknown"),
@@ -214,8 +248,8 @@ def _task_feature_metadata(meta: dict[str, Any]) -> dict[str, Any]:
     )
     if meta.get("search_set"):
         feature_meta["search_set"] = str(meta.get("search_set"))
-    if meta.get("required_output_dialect"):
-        feature_meta["required_output_dialect"] = str(meta.get("required_output_dialect"))
+    if required_output_dialect:
+        feature_meta["required_output_dialect"] = required_output_dialect
     if meta.get("gluon_doc_profile"):
         feature_meta["gluon_doc_profile"] = str(meta.get("gluon_doc_profile"))
     if meta.get("required_gluon_docs"):
@@ -224,10 +258,12 @@ def _task_feature_metadata(meta: dict[str, Any]) -> dict[str, Any]:
         feature_meta["source_base_family"] = str(meta.get("source_base_family"))
     if meta.get("plain_competitor"):
         feature_meta["plain_competitor"] = str(meta.get("plain_competitor"))
-    if meta.get("implementation_layer"):
-        feature_meta["implementation_layer"] = str(meta.get("implementation_layer"))
-    if meta.get("extension_layer"):
-        feature_meta["extension_layer"] = str(meta.get("extension_layer"))
+    implementation_layer = meta.get("implementation_layer") or _task_body_field(task_body, "Implementation layer")
+    extension_layer = meta.get("extension_layer") or _task_body_field(task_body, "Extension layer")
+    if implementation_layer:
+        feature_meta["implementation_layer"] = str(implementation_layer)
+    if extension_layer:
+        feature_meta["extension_layer"] = str(extension_layer)
     if meta.get("required_patch_target_symbols"):
         feature_meta["required_patch_target_symbols"] = meta.get("required_patch_target_symbols")
     return feature_meta
@@ -439,18 +475,28 @@ def task_file_to_agent_task(task_file: Path):
     task_step_limit = int(meta.get("step_limit", 0) or 0)
     effective_step_limit = task_step_limit or inherited_step_limit
 
+    required_output_dialect = _task_required_output_dialect(meta, body)
     cfg: dict = {
         "save_patch": True,
         "step_limit": effective_step_limit,
         "cost_limit": 0.0,
         "mode": "yolo",
         "use_strategy_manager": True,
-        "use_skills": _task_uses_skills(meta),
+        "use_skills": _task_uses_skills(meta, body),
     }
     gluon_doc_gate_paths = _gluon_doc_gate_required_paths(meta, body)
     if gluon_doc_gate_paths:
         cfg["gluon_doc_gate_enabled"] = True
         cfg["gluon_doc_gate_required_paths"] = gluon_doc_gate_paths
+    if required_output_dialect and required_output_dialect != "any":
+        cfg["required_output_dialect"] = required_output_dialect
+    if meta.get("required_patch_target_symbols"):
+        raw_symbols = meta.get("required_patch_target_symbols")
+        cfg["required_patch_target_symbols"] = (
+            [str(item).strip() for item in raw_symbols if str(item).strip()]
+            if isinstance(raw_symbols, list)
+            else [part.strip() for part in str(raw_symbols).split(",") if part.strip()]
+        )
 
     # COMMANDMENT is the single source of truth for test commands.
     # Its SETUP + CORRECTNESS + BENCHMARK sections are executed verbatim.
@@ -496,7 +542,7 @@ def task_file_to_agent_task(task_file: Path):
     if _bb_path and Path(_bb_path).exists():
         benchmark_baseline_text = Path(_bb_path).read_text().strip()
 
-    feature_meta = _task_feature_metadata(meta)
+    feature_meta = _task_feature_metadata(meta, body)
 
     body, cfg = inject_pipeline_context(
         body,
@@ -582,6 +628,11 @@ def run_task_batch(
     tasks = [task_file_to_agent_task(f) for f in task_files]
     labels = [t.label for t in tasks]
     duplicate_labels = sorted(label for label, count in Counter(labels).items() if count > 1)
+    if duplicate_labels:
+        raise ValueError(
+            "Duplicate task labels are not allowed because result directories and task metadata are keyed by label: "
+            + ", ".join(duplicate_labels)
+        )
 
     # Determine repo_path and harness_path from first task's metadata
     meta_0, _ = read_task_file(task_files[0])

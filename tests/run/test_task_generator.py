@@ -21,12 +21,14 @@ from minisweagent.agents.heterogeneous.task_generator import (
     _gluon_extension_strength,
     _extract_kernel_meta,
     _infer_gluon_planning_traits,
+    _is_plain_competitor_task,
     _parse_llm_response,
     _previous_gluon_signal,
     _run_task_agent,
     generate_tasks,
     write_task_files,
 )
+from minisweagent.agents.agent_spec import AgentTask
 from minisweagent.run.task_file import read_task_file
 
 
@@ -98,6 +100,7 @@ def _gluon_overlay_prompt(
         f"Source Base family: {source_family}",
         f"Plain competitor: {plain_competitor}",
         "Gluon overlay reason: explicit_layout",
+        "Overlay priority: Prefer",
         "Implementation layer: amd_gluon overlay",
         "Performance hypothesis: explicit layout may reduce hot-path memory/index overhead",
         "Measurement boundary: kernel_only",
@@ -474,6 +477,76 @@ def test_audit_rejects_l0_overlay_when_plain_competitor_family_mismatches() -> N
     )
 
     with pytest.raises(ValueError, match="does not match Plain competitor"):
+        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+
+
+def test_audit_rejects_l0_overlay_with_low_priority_bucket() -> None:
+    payload = json.dumps(
+        [
+            {
+                "label": "triton-eliminate-redundant-ops-streamline",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nstreamline plain Triton path",
+            },
+            {
+                "label": "amd-gluon-l0-viability",
+                "priority": 8,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": _gluon_overlay_prompt().replace("Overlay priority: Prefer", "Overlay priority: Deprioritize"),
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="invalid L0 Overlay priority"):
+        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+
+
+def test_plain_competitor_requires_plain_triton_contract() -> None:
+    shared_with_base_family = AgentTask(
+        agent_class=FakeAgentClass,
+        label="shared-paired-task",
+        task="Base family: base_hot_path_streamline\nPaired transplant task.",
+        config={"required_output_dialect": "any", "search_set": "shared"},
+    )
+    plain_base = AgentTask(
+        agent_class=FakeAgentClass,
+        label="triton-streamline",
+        task="Base family: base_hot_path_streamline\nPlain Triton competitor.",
+        config={"required_output_dialect": "plain_triton", "search_set": "base"},
+    )
+
+    assert _is_plain_competitor_task(shared_with_base_family) is False
+    assert _is_plain_competitor_task(plain_base) is True
+
+
+def test_audit_treats_body_only_l0_overlay_as_l0_for_priority_and_binding() -> None:
+    payload = json.dumps(
+        [
+            {
+                "label": "triton-eliminate-redundant-ops-streamline",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "plain_triton",
+                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nstreamline plain Triton path",
+            },
+            {
+                "label": "same-direction-gluon-overlay",
+                "priority": 8,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "amd_gluon",
+                "task_prompt": _gluon_overlay_prompt().replace("Extension layer: L0\n", "").replace(
+                    "Overlay priority: Prefer", "Overlay priority: Deprioritize"
+                ),
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="invalid L0 Overlay priority"):
         _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
 
 

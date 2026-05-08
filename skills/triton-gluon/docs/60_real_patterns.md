@@ -133,6 +133,9 @@ Host launcher and layout alignment:
 - fixed compile-time layout can live in the kernel;
 - layout depending on `BLOCK_*`, `num_warps`, target family, or tuning choices
   should be built on the host and passed as `constexpr`;
+- derived layouts such as `SliceLayout` and `DotOperandLayout` should also be
+  built on the host and passed as `constexpr`; do not create layout objects
+  inside `@gluon.jit`;
 - keep launcher in `kernel[grid](...)` form;
 - align `num_warps`, `num_ctas`, target arch, and layout because Gluon IR
   verification checks the launch attributes.
@@ -182,6 +185,10 @@ and exposes layout/memory evidence for later tasks. If L0 is slower than the
 Base path, record the overhead source when visible and avoid repeated launch
 constant tuning unless the next patch has a concrete reason it should remove
 that overhead.
+
+Do not satisfy L0 by adding an unused `@gluon.jit` helper next to an unchanged
+plain Triton path. If the helper is the scoped L0 path, the measured host
+dispatch must launch it and its output must feed the correctness result.
 
 Low-latency / tiny-stage rule:
 

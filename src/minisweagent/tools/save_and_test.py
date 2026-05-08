@@ -14,8 +14,12 @@ from typing import Any
 
 from minisweagent.debug_runtime import emit_debug_log
 from minisweagent.run.postprocess.benchmark_parsing import (
+    _dialect_contract_satisfied,
+    _gluon_execution_contract_satisfied,
+    _patch_touches_any_target_symbol,
     compute_shape_speedups,
     extract_latency_ms,
+    classify_patch_output_dialect,
     parse_shape_latencies_ms,
 )
 from minisweagent.run.utils.generated_artifacts import generated_helper_excludes
@@ -40,6 +44,8 @@ class SaveAndTestContext:
     viewed_file_paths: set[str] | None = None
     gluon_doc_gate_enabled: bool = False
     gluon_doc_gate_required_paths: list[str] | None = None
+    required_output_dialect: str | None = None
+    required_patch_target_symbols: list[str] | None = None
 
 
 class SaveAndTestTool:
@@ -76,6 +82,13 @@ class SaveAndTestTool:
             if not patch_content.strip():
                 self._log("[SaveAndTest] No changes detected, baseline running.")
             else:
+                contract_error = self._check_patch_contract(patch_content)
+                if contract_error:
+                    self._log(f"\n[SaveAndTest] Patch contract failed:\n{contract_error}")
+                    if ctx.patch_output_dir:
+                        self._save_patch_file(patch_name, patch_content)
+                        self._save_test_output(patch_name, contract_error)
+                    return {"output": contract_error, "returncode": 1}
                 self._log(f"[SaveAndTest] Patch {patch_name} captured, running test...")
 
             # Run test
@@ -108,6 +121,41 @@ class SaveAndTestTool:
     def _log(self, message: str):
         if self.context and self.context.log_fn:
             self.context.log_fn(message)
+
+    def _check_patch_contract(self, patch_content: str) -> str | None:
+        ctx = self.context
+        if not ctx:
+            return None
+
+        required_output = str(ctx.required_output_dialect or "").strip().lower()
+        required_symbols = [str(symbol).strip() for symbol in (ctx.required_patch_target_symbols or []) if str(symbol).strip()]
+        if not required_output and not required_symbols:
+            return None
+
+        actual_output = classify_patch_output_dialect(patch_content)
+        if required_output and not _dialect_contract_satisfied(required_output, actual_output):
+            return (
+                "PATCH_CONTRACT_FAILED: "
+                f"required_output_dialect={required_output}, actual_output_dialect={actual_output}. "
+                "A required AMD Gluon task must execute a real Gluon path; plain or mixed fallback is not a valid save_and_test success."
+            )
+
+        if required_symbols and not _patch_touches_any_target_symbol(patch_content, required_symbols):
+            return (
+                "PATCH_CONTRACT_FAILED: patch does not touch any required target symbol: "
+                + ", ".join(required_symbols)
+            )
+
+        if not _gluon_execution_contract_satisfied(
+            patch_content,
+            required_symbols=required_symbols,
+            required_output_dialect=required_output,
+        ):
+            return (
+                "PATCH_CONTRACT_FAILED: patch defines a Gluon helper without executing it "
+                "for the required target path."
+            )
+        return None
 
     @staticmethod
     def _normalize_gate_path(path: str) -> str:
