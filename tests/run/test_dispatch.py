@@ -423,6 +423,34 @@ def test_save_and_test_rejects_required_gluon_plain_fallback(tmp_path) -> None:
     assert "PATCH_CONTRACT_FAILED" in result["output"]
 
 
+def test_save_and_test_allows_plain_config_only_patch(tmp_path) -> None:
+    tool = SaveAndTestTool()
+    tool._get_patch_content = lambda: "\n".join(  # type: ignore[method-assign]
+        [
+            "diff --git a/config.json b/config.json",
+            "--- a/config.json",
+            "+++ b/config.json",
+            "@@",
+            '-  "num_stages": 1,',
+            '+  "num_stages": 2,',
+        ]
+    )
+    tool.set_context(
+        SaveAndTestContext(
+            cwd=str(tmp_path),
+            test_command="true",
+            timeout=5,
+            patch_output_dir=None,
+            required_output_dialect="plain_triton",
+        )
+    )
+
+    result = tool(description="plain config tuning")
+
+    assert result["returncode"] == 0
+    assert "PATCH_CONTRACT_FAILED" not in result["output"]
+
+
 def test_save_and_test_rejects_mixed_dead_gluon_helper(tmp_path) -> None:
     tool = SaveAndTestTool()
     tool._get_patch_content = lambda: "\n".join(  # type: ignore[method-assign]

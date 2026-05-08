@@ -77,6 +77,12 @@ def test_required_amd_gluon_does_not_accept_mixed_output() -> None:
     assert _dialect_contract_satisfied("mixed", "mixed") is True
 
 
+def test_required_plain_triton_accepts_config_only_patch() -> None:
+    assert _dialect_contract_satisfied("plain_triton", "unknown") is True
+    assert _dialect_contract_satisfied("plain_triton", "amd_gluon") is False
+    assert _dialect_contract_satisfied("plain_triton", "mixed") is False
+
+
 def test_classify_patch_output_dialect_ignores_context_lines() -> None:
     patch = "\n".join(
         [
