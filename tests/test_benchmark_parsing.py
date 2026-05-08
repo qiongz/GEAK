@@ -122,6 +122,89 @@ def test_compute_best_patch_reports_regression_against_true_baseline(tmp_path: P
     assert result["objective"] == "total_shape_latency_ms"
 
 
+def test_compute_best_patch_uses_safe_anchor_for_composition_tasks(tmp_path: Path) -> None:
+    root = tmp_path / "generic_kernel"
+    base_dir = root / "results" / "round_1" / "base-best"
+    patch_dir = root / "results" / "round_2" / "hybrid-dispatch"
+    base_dir.mkdir(parents=True)
+    patch_dir.mkdir(parents=True)
+    tasks_dir = root / "tasks" / "round_2"
+    tasks_dir.mkdir(parents=True)
+
+    from minisweagent.run.task_file import write_task_file
+
+    write_task_file(
+        tasks_dir / "06_hybrid-dispatch.md",
+        {
+            "label": "hybrid-dispatch",
+            "required_output_dialect": "mixed",
+        },
+        "\n".join(
+            [
+                "Extension layer: Hybrid",
+                "Safe anchor: round_1/base-best/patch_4",
+                "Comparison target: safe_anchor",
+            ]
+        ),
+    )
+    (root / "benchmark_baseline.txt").write_text("case_small: 1.0 ms\ncase_medium: 1.0 ms\n")
+    (base_dir / "patch_4_test.txt").write_text("case_small: 0.8 ms\ncase_medium: 0.8 ms\n")
+    (patch_dir / "patch_1.patch").write_text(
+        "diff --git a/kernel.py b/kernel.py\n"
+        "+from triton.experimental import gluon\n"
+        "+from triton.experimental.gluon import language as gl\n"
+        "+import triton\n+import triton.language as tl\n"
+        "+@gluon.jit\n+def gluon_k():\n+    x = gl.load(ptr)\n"
+        "+@triton.jit\n+def triton_k():\n+    y = tl.load(ptr)\n"
+    )
+    (patch_dir / "patch_1_test.txt").write_text("case_small: 0.7 ms\ncase_medium: 0.7 ms\n")
+
+    result = compute_best_patch(patch_dir)
+
+    assert result is not None
+    assert result["comparison_target"] == "safe_anchor"
+    assert result["safe_anchor"] == "round_1/base-best/patch_4"
+    assert result["baseline_source"] == "safe_anchor:round_1/base-best/patch_4"
+    assert result["baseline_latency_ms"] == pytest.approx(1.6)
+    assert result["true_baseline_latency_ms"] == pytest.approx(2.0)
+    assert result["candidate_latency_ms"] == pytest.approx(1.4)
+    assert result["best_patch_speedup"] == pytest.approx(1.142857)
+
+
+def test_compute_best_patch_rejects_safe_anchor_shape_regression(tmp_path: Path) -> None:
+    root = tmp_path / "generic_kernel"
+    base_dir = root / "results" / "round_1" / "base-best"
+    patch_dir = root / "results" / "round_2" / "hybrid-dispatch"
+    base_dir.mkdir(parents=True)
+    patch_dir.mkdir(parents=True)
+    tasks_dir = root / "tasks" / "round_2"
+    tasks_dir.mkdir(parents=True)
+
+    from minisweagent.run.task_file import write_task_file
+
+    write_task_file(
+        tasks_dir / "06_hybrid-dispatch.md",
+        {
+            "label": "hybrid-dispatch",
+            "required_output_dialect": "mixed",
+        },
+        "Extension layer: Hybrid\nSafe anchor: round_1/base-best/patch_4\nComparison target: safe_anchor\n",
+    )
+    (root / "benchmark_baseline.txt").write_text("case_small: 1.0 ms\ncase_medium: 1.0 ms\n")
+    (base_dir / "patch_4_test.txt").write_text("case_small: 0.8 ms\ncase_medium: 0.8 ms\n")
+    (patch_dir / "patch_1.patch").write_text(
+        "diff --git a/kernel.py b/kernel.py\n"
+        "+from triton.experimental import gluon\n"
+        "+from triton.experimental.gluon import language as gl\n"
+        "+import triton\n+import triton.language as tl\n"
+        "+@gluon.jit\n+def gluon_k():\n+    x = gl.load(ptr)\n"
+        "+@triton.jit\n+def triton_k():\n+    y = tl.load(ptr)\n"
+    )
+    (patch_dir / "patch_1_test.txt").write_text("case_small: 0.6 ms\ncase_medium: 0.9 ms\n")
+
+    assert compute_best_patch(patch_dir) is None
+
+
 def test_compute_best_patch_enforces_required_target_symbol(tmp_path: Path) -> None:
     root = tmp_path / "generic_kernel"
     patch_dir = root / "results" / "round_1" / "extension-l1-targeted-memory"

@@ -53,7 +53,7 @@ GEAK treats Gluon as a feature extension of Triton:
   debugging;
 - prefer `amd_gluon` when allowed and structurally promising, while keeping
   plain Triton as a benchmarked fallback;
-- choose the optimization direction from the main HIP/Triton strategy first,
+- choose the optimization direction from the main Triton strategy first,
   then decide whether Gluon is a useful implementation layer for that direction;
 - never create a new optimized `nv_gluon` output path.
 

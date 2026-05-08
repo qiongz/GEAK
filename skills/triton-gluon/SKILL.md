@@ -26,7 +26,8 @@ torch2hip tasks.
 - Never produce an optimized `nv_gluon` output path.
 - `mixed` is explicit host-side dispatch between verified `plain_triton` and
   `amd_gluon` paths; it is not an input dialect.
-- Gluon is an additive Extension Set. Do not replace Base Triton coverage.
+- Gluon is an additive implementation overlay for a named optimization
+  direction. Do not replace the plain Triton/Base competitor for that direction.
 - Required AMD Gluon tasks must attempt a real AMD Gluon patch. Pure Triton
   fallback is not a valid success.
 - Compile-only success is not enough; benchmark against the same correctness
@@ -101,12 +102,12 @@ torch2hip tasks.
    - `AMDMFMALayout.instr_shape` form
    - target backend, architecture, `num_warps`, `num_ctas`
    - operator-local support matrix
-4. Choose the smallest valid action path:
-   - Base Triton competitor
-   - Extension L0 AMD Gluon viability
-   - trait-specific Extension L1
-   - Shared transplant
-   - Hybrid/mixed dispatch when evidence justifies it
+4. Choose the smallest valid action path for the named optimization direction:
+   - plain Triton/Base competitor
+   - AMD Gluon L0 overlay viability
+   - trait-specific AMD Gluon L1 overlay
+   - Shared transplant of one portable component
+   - Hybrid/mixed dispatch when per-shape or sub-operation evidence justifies it
 5. Verify correctness and benchmark. Reject per-shape regressions.
 
 ## Required AMD Gluon Implementation Contract
@@ -154,12 +155,14 @@ implementation plan above, then edit only the scoped path.
 
 ## Planner Metadata Contract
 
-Planner-generated Gluon tasks should include:
+Planner-generated Triton-family tasks should include these metadata fields for
+audit and result attribution. They are not the primary planning axis; the
+primary axis is the named optimization direction.
 
 ```yaml
 search_set: base | shared | extension
 required_output_dialect: plain_triton | amd_gluon | mixed | any
-gluon_doc_profile: extension_l0_minimal | nv_to_amd_translation | matrix_lowering | shape_bucketed_dispatch | jit_aot_sensitive | shared_transplant | hybrid_dispatch
+gluon_doc_profile: extension_l0_minimal | nv_to_amd_translation | memory_lowering | matrix_lowering | shape_bucketed_dispatch | jit_aot_sensitive | shared_transplant | gluon_variant_from_anchor | hybrid_dispatch | hybrid_dispatch_from_evidence
 required_gluon_docs:
   - gluon_skill_path
   - gluon_always_read_path
@@ -169,6 +172,10 @@ required_gluon_docs:
 Add `gluon_component_traits_path`, `gluon_architecture_notes_path`,
 `gluon_api_reference_path`, or `gluon_real_patterns_path` when the task route
 requires them. `save_and_test` gates on these paths.
+
+Use `search_set=extension` for AMD Gluon L0/L1 and hybrid/mixed dispatch tasks.
+Use `required_output_dialect=mixed` only for explicit host-side dispatch between
+verified plain Triton and AMD Gluon paths.
 
 ## Read Next
 

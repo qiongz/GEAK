@@ -216,6 +216,12 @@ def _task_feature_metadata(meta: dict[str, Any]) -> dict[str, Any]:
         feature_meta["search_set"] = str(meta.get("search_set"))
     if meta.get("required_output_dialect"):
         feature_meta["required_output_dialect"] = str(meta.get("required_output_dialect"))
+    if meta.get("gluon_doc_profile"):
+        feature_meta["gluon_doc_profile"] = str(meta.get("gluon_doc_profile"))
+    if meta.get("required_gluon_docs"):
+        feature_meta["required_gluon_docs"] = meta.get("required_gluon_docs")
+    if meta.get("required_patch_target_symbols"):
+        feature_meta["required_patch_target_symbols"] = meta.get("required_patch_target_symbols")
     return feature_meta
 
 

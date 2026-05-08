@@ -273,9 +273,10 @@ Composition type: shared_transplant
 Safe anchor: round_1/base-best/patch_N
 Source component: memory_access_policy from round_1/ext-l1-gluon-buffer/patch_M
 Comparison target: safe_anchor
+Allowed change: transplant one portable memory/load component
+Reject if: any shape regresses against the safe anchor or the safe-anchor algorithm changes
 
-Preserve the safe-anchor algorithm. Transplant only the portable memory/load
-component. Reject the patch if any shape regresses against the safe anchor.
+Preserve the safe-anchor algorithm. The output may remain plain Triton.
 ```
 
 The output may remain `plain_triton`. This is Gluon-informed evidence, not a

@@ -262,11 +262,12 @@ priority after the required kernel-body Base tasks.
     task_prompt must include `Base family: <family_id>` when the block lists a
     family checklist. Shared tasks that map a Base strategy must include
     `Shared source family: <family_id>`. Gluon tasks must include `Optimization
-    direction:`, `Source Base family:`, `Gluon overlay reason:`, and `Extension
-    layer: L0 | L1 | Hybrid`. Required AMD Gluon Extension task_prompts must
-    also include `Knowledge lookup contract:`, `Implementation contract:`,
-    `Performance hypothesis:`, `Patch evolution:`, `Measurement boundary:`,
-    `Same ABI comparison:`, and `Reject if:` lines.
+    direction:`, `Source Base family:`, `Gluon overlay reason:`,
+    `Implementation layer:`, `Measurement boundary:`, `Comparison target:`,
+    `Allowed change:`, `Reject if:`, and `Extension layer: L0 | L1 | Hybrid`.
+    Required AMD Gluon Extension task_prompts must also tell the worker to write
+    the `Gluon knowledge lookup plan`, `Gluon implementation plan`,
+    `Performance hypothesis`, and `Patch evolution` blocks before editing.
     For Triton-family task objects, include lightweight metadata when relevant:
     `search_set` (`base`, `shared`, or `extension`) and
     `required_output_dialect` (`plain_triton`, `amd_gluon`, `mixed`, or `any`).
@@ -348,26 +349,31 @@ the prompt must instruct the worker to attempt a real Gluon patch using
 valid availability probe. Plain Triton fallback is only allowed after a real
 Gluon patch is saved/tested and fails with a recorded compile/runtime error.
 
-Required AMD Gluon Extension task_prompt content:
-- Include `Optimization direction: <main HIP/Triton strategy>`.
+Planner-audited AMD Gluon Extension task_prompt fields:
+- Include `Optimization direction: <main Triton strategy>`.
 - Include `Source Base family: <family_id>`.
 - Include `Gluon overlay reason: explicit_layout | buffer_path |
   matrix_lowering | shape_bucket | dialect_specific_memory |
   local_subpath_win`.
 - Include `Implementation layer: amd_gluon overlay | paired comparison |
   mixed/hybrid dispatch`.
-- Include `Knowledge lookup contract: write a Gluon knowledge lookup plan before
-  editing`.
-- Include `Implementation contract: write a Gluon implementation plan before
-  editing`.
+- Include `Measurement boundary: kernel_only | fair_make_inputs_run_kernel |
+  full_operator`.
+- Include `Comparison target: true_baseline | safe_anchor | anchor_patch`.
+- Include `Allowed change: <one component or one dispatch decision>`.
+- Include `Reject if: <conditions that invalidate the patch>`.
+
+Worker pre-edit requirements for AMD Gluon tasks:
+- Tell the worker to write a `Gluon knowledge lookup plan` before editing.
+- Tell the worker to write a `Gluon implementation plan` before editing.
 - Point workers to `skills/triton-gluon/docs/00_always_read.md` for the full
   required plan fields and doc-routing contract before any code edit.
-- Include `Performance hypothesis:` before editing. It must state why this
+- Tell the worker to write `Performance hypothesis:` before editing. It must state why this
   scoped Gluon path might beat the safe Base/plain path; detailed viability
   checks live in `docs/10_search_policies.md` and `docs/60_real_patterns.md`.
-- Include `Measurement boundary:` and `Same ABI comparison:`. End-to-end
+- Tell the worker to write `Same ABI comparison:`. End-to-end
   details live in `docs/10_search_policies.md` and `docs/60_real_patterns.md`.
-- Include `Patch evolution:` and require single-variable patch evolution unless
+- Tell the worker to write `Patch evolution:` and require single-variable patch evolution unless
   `bundle_allowed=true`; detailed fields live in `docs/00_always_read.md` and
   `docs/60_real_patterns.md`.
 - For `Extension layer: L0`, scope layout-heavy kernels to one compileable
@@ -381,11 +387,11 @@ Required AMD Gluon Extension task_prompt content:
 - For stage-specific L1 tasks, include `Target symbol: <function/helper>` in
   task_prompt and top-level `required_patch_target_symbols`. The selected patch
   must touch that exact symbol and execute the intended Gluon path.
-- Include `Reject if:` conditions for non-executed Gluon, missing required plan
-  blocks, target-symbol mismatch, leftover plain Triton device APIs inside the
-  edited `@gluon.jit` path, and bundled unrelated changes without
-  `bundle_allowed=true`. Put the detailed API/layout/buffer/MFMA rejection rules
-  in the routed split docs rather than duplicating them in the prompt.
+- `Reject if:` must cover non-executed Gluon, missing required plan blocks,
+  target-symbol mismatch, leftover plain Triton device APIs inside the edited
+  `@gluon.jit` path, and bundled unrelated changes without
+  `bundle_allowed=true`. Put the detailed API/layout/buffer/MFMA rejection
+  rules in the routed split docs rather than duplicating them in the prompt.
 
 **Gluon documentation gate metadata**: For Triton-family tasks that use Gluon
 guidance, task objects should include optional top-level fields
