@@ -4,6 +4,7 @@ import pytest
 
 from minisweagent.run.postprocess.benchmark_parsing import (
     _dialect_contract_satisfied,
+    _patch_touches_backup_file,
     _required_output_dialect,
     classify_patch_output_dialect,
     compute_best_patch,
@@ -81,6 +82,20 @@ def test_required_plain_triton_accepts_config_only_patch() -> None:
     assert _dialect_contract_satisfied("plain_triton", "unknown") is True
     assert _dialect_contract_satisfied("plain_triton", "amd_gluon") is False
     assert _dialect_contract_satisfied("plain_triton", "mixed") is False
+
+
+def test_patch_touches_backup_file_detects_bak_source_copy() -> None:
+    patch = "\n".join(
+        [
+            "diff --git a/kernel.py.bak b/kernel.py.bak",
+            "new file mode 100644",
+            "--- /dev/null",
+            "+++ b/kernel.py.bak",
+            "+import triton.language as tl",
+        ]
+    )
+
+    assert _patch_touches_backup_file(patch) is True
 
 
 def test_classify_patch_output_dialect_ignores_context_lines() -> None:

@@ -347,9 +347,9 @@ policy, `20_component_traits.md` for component viability, `60_real_patterns.md`
 for end-to-end/source-first/low-latency risk, and `50_api_reference.md` only for
 API-sensitive details. `Reject if:` must cover non-executed Gluon,
 target-symbol mismatch, missing plan blocks, leftover plain Triton device APIs
-inside edited `@gluon.jit` (including reductions such as `tl.max`/`tl.sum` that
-must become `gl.max`/`gl.sum`), and bundled unrelated changes unless
-`bundle_allowed=true`.
+inside edited `@gluon.jit`, backup/temp files, and bundled unrelated changes
+unless `bundle_allowed=true`. API-level Gluon rewrite details belong in the
+routed skill docs, not in the prompt contract.
 
 **Gluon documentation gate metadata**: For Triton-family tasks that use Gluon
 guidance, task objects should include optional top-level fields

@@ -222,8 +222,9 @@ Signal routing examples:
 - `tl.arange`, masks, broadcasts, `[:, None]` -> `20_component_traits.md` /
   `layout_basic` and `layout_slice_broadcast`, plus `50_api_reference.md` /
   `common_rewrite_table` or `slice_broadcast_recipe`.
-- `tl.cdiv`, `tl.minimum`, `tl.maximum`, `tl.max`, `tl.sum`, `tl.exp`, `tl.where` inside
-  `@gluon.jit` -> `20_component_traits.md` / `layout_basic` and
+- `tl.cdiv`, `tl.minimum`, `tl.maximum`, `tl.max`, `tl.sum`, `tl.sigmoid`,
+  `tl.exp`, `tl.where` inside `@gluon.jit` -> `20_component_traits.md` /
+  `layout_basic` and
   `50_api_reference.md` / `common_language_api_surface`; device math should use
   `gl.*`.
 - MFMA, `tl.dot`, `instr_shape` -> `20_component_traits.md` / `matrix_dot`,
@@ -290,6 +291,9 @@ Gluon implementation plan:
   compatible before addition or masking.
 - Matrix path: result layout, operand layouts, `convert_layout`, and target op,
   or `none` if this patch is not doing matrix lowering.
+- Pure-kernel API audit: every `tl.*` still present inside the edited
+  `@gluon.jit` body and its Gluon lowering. Include `tl.sigmoid`, `tl.max`,
+  `tl.sum`, and all `tl.dot` calls explicitly.
 - Buffer path: loaded dtype, `other` dtype/layout, stored value dtype, and
   whether generic `gl.load` / `gl.store` is safer for this patch.
 - Performance hypothesis: why this scoped Gluon path might improve the safe
@@ -304,6 +308,9 @@ Gluon implementation plan:
   If the task names a stage or helper, include `Target symbol: <symbol>` and
   only report success if the patch touches that exact symbol and executes the
   intended Gluon path.
+- Patch hygiene: files that will be modified. Do not create backup or temporary
+  source copies such as `.bak`, `.backup`, `.orig`, `.tmp`, or editor-swap
+  files.
 ```
 
 Rules:
@@ -317,6 +324,13 @@ Rules:
 - Inside the edited Gluon path, also prefer Gluon scalar/math APIs such as
   `gl.cdiv`, `gl.minimum`, `gl.maximum`, `gl.max`, `gl.sum`, and `gl.exp` over `tl.*` equivalents.
   Host-side launch math outside `@gluon.jit` may still use `triton.cdiv`.
+- Do not leave `tl.sigmoid` inside `@gluon.jit`. If the local Gluon API docs do
+  not prove a `gl.sigmoid` exists, lower sigmoid with documented Gluon math
+  such as `1 / (1 + gl.exp(-x))`.
+- Do not leave `tl.dot` inside `@gluon.jit`. A dot path is only valid after the
+  plan names result layout, operand `DotOperandLayout`s, `convert_layout`, and a
+  target matrix op such as `gl.amd.cdna3.mfma`; otherwise reduce scope to a
+  non-dot L0 path.
 - If the plan cannot name the layout for an index, mask, temporary, or matrix
   operand, reduce the task scope before editing.
 - If the plan cannot name the optimization direction or Gluon overlay reason,
@@ -334,6 +348,9 @@ Rules:
   `target` path is not a valid Gluon execution result. The plan must name the
   call/dispatch line that executes the Gluon helper, or directly convert the
   original target function that existing dispatch already calls.
+- Do not create or commit backup files (`*.bak`, `*.backup`, `*.orig`, `*.tmp`,
+  editor swap files). Backup source copies can pollute dialect detection and are
+  invalid patch content.
 - If L1 has no correctness-passing Gluon/mixed anchor, do not attempt MFMA or
   buffer lowering over the full original kernel; shrink to an L0-style smoke
   path and record that no anchor exists.

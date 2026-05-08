@@ -42,8 +42,11 @@ Search policy and task allocation live in `10_search_policies.md`.
   `tl.arange`, `tl.zeros`, `tl.full`, `tl.load`, `tl.where`, or `tl.dot` for
   the same Gluon subpath.
 - Device scalar/math in the edited Gluon subpath should also stay in Gluon
-  namespace: use `gl.cdiv`, `gl.minimum`, `gl.maximum`, `gl.exp`, `gl.where`,
-  etc. Host-side launch math outside `@gluon.jit` may still use `triton.cdiv`.
+  namespace: use `gl.cdiv`, `gl.minimum`, `gl.maximum`, `gl.max`, `gl.sum`,
+  `gl.exp`, `gl.where`, etc. If source uses `tl.sigmoid` and local docs do not
+  prove `gl.sigmoid`, lower it with documented Gluon math such as
+  `1 / (1 + gl.exp(-x))`. Host-side launch math outside `@gluon.jit` may still
+  use `triton.cdiv`.
 - `BlockedLayout.size_per_thread` should be derived from the tile and launch
   contract. Avoid arbitrary values; on current Gluon layouts values are expected
   to be powers of two and to multiply with `threads_per_warp` and
@@ -202,6 +205,8 @@ lowering. Do not add MFMA / WMMA just because Gluon is available.
 5. epilogue correctness.
 
 Do not skip accumulator and operand layout compatibility.
+Leaving `tl.dot(...)` inside an `@gluon.jit` body is not an L0 shortcut; it is a
+mixed/invalid rewrite for a required pure AMD Gluon task.
 
 MFMA-specific checks before editing:
 
