@@ -298,10 +298,27 @@ class SaveAndTestTool:
 
         actual_output = classify_patch_output_dialect(patch_content)
         if required_output and not _dialect_contract_satisfied(required_output, actual_output):
+            if required_output == "amd_gluon":
+                reason = (
+                    "A required pure AMD Gluon task must not save a plain or mixed patch. "
+                    "If actual_output_dialect=mixed, replace leftover `tl.*` device APIs inside `@gluon.jit` "
+                    "with `gl.*` APIs, or use a task whose required_output_dialect is `mixed` for explicit host dispatch."
+                )
+            elif required_output == "mixed":
+                reason = (
+                    "A required mixed task must contain an explicit plain Triton plus AMD Gluon dispatch boundary; "
+                    "pure plain Triton, pure AMD Gluon, or marker-only patches are not valid mixed output."
+                )
+            elif required_output == "plain_triton":
+                reason = (
+                    "A required plain Triton task must not introduce AMD Gluon markers or mixed Gluon dispatch."
+                )
+            else:
+                reason = "Patch output dialect does not satisfy the task contract."
             return (
                 "PATCH_CONTRACT_FAILED: "
                 f"required_output_dialect={required_output}, actual_output_dialect={actual_output}. "
-                "A required AMD Gluon task must execute a real Gluon path; plain or mixed fallback is not a valid save_and_test success."
+                + reason
             )
 
         if required_symbols and not _patch_touches_any_target_symbol(patch_content, required_symbols):

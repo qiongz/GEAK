@@ -347,7 +347,8 @@ policy, `20_component_traits.md` for component viability, `60_real_patterns.md`
 for end-to-end/source-first/low-latency risk, and `50_api_reference.md` only for
 API-sensitive details. `Reject if:` must cover non-executed Gluon,
 target-symbol mismatch, missing plan blocks, leftover plain Triton device APIs
-inside edited `@gluon.jit`, and bundled unrelated changes unless
+inside edited `@gluon.jit` (including reductions such as `tl.max`/`tl.sum` that
+must become `gl.max`/`gl.sum`), and bundled unrelated changes unless
 `bundle_allowed=true`.
 
 **Gluon documentation gate metadata**: For Triton-family tasks that use Gluon

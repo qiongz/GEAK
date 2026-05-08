@@ -65,8 +65,8 @@ torch2hip tasks.
      layout object is constructed on the host and passed as `gl.constexpr`;
      layout objects must not be newly constructed inside `@gluon.jit`;
    - every `tl.*` device scalar/math use in the edited Gluon path and its
-     `gl.*` equivalent (`gl.cdiv`, `gl.minimum`, `gl.maximum`, `gl.exp`,
-     `gl.where`, etc.);
+     `gl.*` equivalent (`gl.cdiv`, `gl.minimum`, `gl.maximum`, `gl.max`,
+     `gl.sum`, `gl.exp`, `gl.where`, etc.);
    - for buffer ops, the loaded element dtype, typed `other` value/layout, and
      `stored_value` dtype before using `buffer_load` / `buffer_store`;
    - the performance hypothesis before editing: why this Gluon change might help

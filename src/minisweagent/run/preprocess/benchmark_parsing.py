@@ -645,6 +645,8 @@ def _dialect_contract_satisfied(required: str, actual: str) -> bool:
         return actual == "mixed"
     if required == "amd_gluon":
         return actual == "amd_gluon"
+    if required == "plain_triton":
+        return actual in {"plain_triton", "unknown"}
     return actual == required
 
 

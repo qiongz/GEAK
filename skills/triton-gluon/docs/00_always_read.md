@@ -222,7 +222,7 @@ Signal routing examples:
 - `tl.arange`, masks, broadcasts, `[:, None]` -> `20_component_traits.md` /
   `layout_basic` and `layout_slice_broadcast`, plus `50_api_reference.md` /
   `common_rewrite_table` or `slice_broadcast_recipe`.
-- `tl.cdiv`, `tl.minimum`, `tl.maximum`, `tl.exp`, `tl.where` inside
+- `tl.cdiv`, `tl.minimum`, `tl.maximum`, `tl.max`, `tl.sum`, `tl.exp`, `tl.where` inside
   `@gluon.jit` -> `20_component_traits.md` / `layout_basic` and
   `50_api_reference.md` / `common_language_api_surface`; device math should use
   `gl.*`.
@@ -312,9 +312,10 @@ Rules:
   `@gluon.jit`.
 - Inside a `@gluon.jit` body, do not leave plain Triton tensor APIs such as
   `tl.arange`, `tl.load`, `tl.store`, `tl.dot`, `tl.where`, `tl.zeros`, or
-  `tl.full` in the edited Gluon path.
+  `tl.full` in the edited Gluon path. Reductions such as `tl.max` and `tl.sum`
+  must also become `gl.max` and `gl.sum`.
 - Inside the edited Gluon path, also prefer Gluon scalar/math APIs such as
-  `gl.cdiv`, `gl.minimum`, `gl.maximum`, and `gl.exp` over `tl.*` equivalents.
+  `gl.cdiv`, `gl.minimum`, `gl.maximum`, `gl.max`, `gl.sum`, and `gl.exp` over `tl.*` equivalents.
   Host-side launch math outside `@gluon.jit` may still use `triton.cdiv`.
 - If the plan cannot name the layout for an index, mask, temporary, or matrix
   operand, reduce the task scope before editing.
