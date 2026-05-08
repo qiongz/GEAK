@@ -79,6 +79,45 @@ def scan_single_round_results(results_dir: Path) -> list[str]:
                     f"- **Best patch**: {best_patch_id}"
                     f" (speedup={speedup}x, baseline={baseline_ms}ms, candidate={candidate_ms}ms)"
                 )
+                required_dialect = br.get("required_output_dialect", "unknown")
+                actual_dialect = br.get("actual_output_dialect", "unknown")
+                dialect_ok = br.get("dialect_contract_satisfied")
+                execution_ok = br.get("gluon_execution_contract_satisfied")
+                target_symbols = br.get("required_patch_target_symbols") or []
+                section.append(
+                    "- Contracts: "
+                    f"required_output_dialect={required_dialect}, "
+                    f"actual_output_dialect={actual_dialect}, "
+                    f"dialect_contract_satisfied={dialect_ok}, "
+                    f"gluon_execution_contract_satisfied={execution_ok}, "
+                    f"required_patch_target_symbols={target_symbols}"
+                )
+                if br.get("has_significant_shape_regression") is not None:
+                    section.append(
+                        "- Shape regression: "
+                        f"has_significant_shape_regression={br.get('has_significant_shape_regression')}"
+                    )
+                per_shape = br.get("per_shape_speedups") or {}
+                if isinstance(per_shape, dict) and per_shape:
+                    shape_parts = []
+                    for shape, info in per_shape.items():
+                        if isinstance(info, dict) and isinstance(info.get("speedup"), (int, float)):
+                            shape_parts.append(f"{shape}={float(info['speedup']):.4f}x")
+                    if shape_parts:
+                        section.append("- Per-shape speedups: " + ", ".join(shape_parts))
+                anchor_viability = "unknown"
+                try:
+                    numeric_speedup = float(speedup)
+                except (TypeError, ValueError):
+                    numeric_speedup = 0.0
+                if actual_dialect in {"amd_gluon", "mixed"} and dialect_ok and execution_ok:
+                    if numeric_speedup >= 1.0 and not br.get("has_significant_shape_regression"):
+                        anchor_viability = "viable_for_l1"
+                    elif numeric_speedup < 0.5 or br.get("has_significant_shape_regression"):
+                        anchor_viability = "not_viable_for_l1"
+                    else:
+                        anchor_viability = "neutral_or_slow_anchor"
+                section.append(f"- Gluon L1 anchor viability: {anchor_viability}")
                 if br.get("llm_selection_analysis"):
                     section.append(f"- Selection: {br['llm_selection_analysis']}")
             except (json.JSONDecodeError, OSError) as exc:

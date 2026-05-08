@@ -285,6 +285,11 @@ Rules:
   speedup. If it is slower than Base, record it as anchor or negative performance
   evidence and do not keep tuning launch constants without a concrete overhead
   hypothesis.
+- For low-latency kernels or tiny stages (roughly sub-100us benchmark cases),
+  L0 must be especially small: one executed subpath, no repeated launch tuning,
+  no `num_warps` / block-size sweep after a slower correctness pass. Record the
+  overhead source and stop escalation unless a later task names a verified anchor
+  and concrete removed overhead.
 - L1 memory/MFMA work must state why the change is performance-plausible before
   editing. If the plan cannot identify the hot path being reduced, the layout
   conversions avoided, and the benchmark path that will execute it, do not

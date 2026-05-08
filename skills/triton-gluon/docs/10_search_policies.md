@@ -194,7 +194,10 @@ Profile guidance:
   `gluon_api_reference_path`. The task must ask the worker for a pre-edit
   layout/API mapping and must scope layout-heavy kernels to one Gluon subpath.
   Treat L0 as an executed correctness anchor; do not describe it as a
-  performance win unless benchmark evidence beats the safe Base/plain path.
+  performance win unless benchmark evidence beats the safe Base/plain path. For
+  low-latency kernels or tiny stages, L0 should not ask for launch tuning or
+  block-size sweeps after a slower correctness pass; it should record overhead
+  evidence and stop as an anchor.
 - `nv_to_amd_translation`: add `gluon_component_traits_path`,
   `gluon_architecture_notes_path`, and `gluon_real_patterns_path`.
 - `memory_lowering`: add `gluon_component_traits_path`,
@@ -243,6 +246,9 @@ Round 1:
 - make the first Gluon patch prove the smallest real executed Gluon path. Later
   patches in the same task should be single-variable experiments so round 2 can
   attribute which component helped or hurt;
+- for low-latency kernels or tiny stages, do not spend L0 follow-up patches on
+  repeated launch-constant sweeps after a slower correctness pass. Record the
+  slower anchor as evidence and keep Base/Shared width;
 - include small Shared probes when budget allows.
 
 Round 2:
@@ -253,6 +259,11 @@ Round 2:
 - make Extension L1 memory/buffer lowering refine the best correctness-passing
   Gluon L0 anchor. If no Gluon anchor passed, shrink the task to a layout or
   memory smoke path instead of restarting from plain Triton.
+- every Extension L1 task must include `Anchor patch`, `Anchor speedup`,
+  `Anchor execution: true`, `Comparison target: anchor_patch`, `Allowed change`,
+  and `Reject if`. Do not emit L1 when the anchor is below `0.5x`, has material
+  per-shape regression, or lacks executed AMD Gluon; emit anchor diagnosis or a
+  smaller L0 repair instead.
 - make Extension L1 matrix/MFMA lowering refine a verified Gluon layout anchor.
   If the planner cannot name the anchor and operand/result layouts, do not emit
   an MFMA task yet.

@@ -642,6 +642,8 @@ def _task_generation_audit_inputs(
             _gluon_extension_strength(traits),
             previous_signal,
             shape_profile=str(feature_meta.get("shape_coverage_profile") or DEFAULT_SHAPE_COVERAGE_PROFILE).lower(),
+            current_round=current_round,
+            input_dialect=str(feature_meta.get("input_dialect") or ""),
         )
     return required_families, extension_slots
 
@@ -1504,6 +1506,9 @@ def _base_extension_quotas(
     strength: str,
     previous_signal: str,
     shape_profile: str = SHAPE_COVERAGE_UNKNOWN,
+    *,
+    current_round: int = 1,
+    input_dialect: str = "plain_triton",
 ) -> tuple[int, int, int]:
     """Return recommended Base/Shared/Extension candidate counts.
 
@@ -1547,6 +1552,12 @@ def _base_extension_quotas(
             extension = max(extension, 2)
         if shape_profile == SHAPE_COVERAGE_BUCKETED and budget >= 5:
             extension = max(extension, 2)
+
+    input_dialect = str(input_dialect or "").strip().lower()
+    if int(current_round or 1) <= 1 and input_dialect != "amd_gluon":
+        # Round 1 has no verified AMD Gluon anchor for plain/nv Triton inputs.
+        # Keep Extension work at L0; L1 memory/MFMA needs an executed anchor.
+        extension = 1
 
     shared = min(shared, 2)
     extension = min(extension, 3)
@@ -1616,6 +1627,7 @@ def _build_search_space_allocation_guidance(
     baseline_metrics: dict[str, Any] | None = None,
     previous_results_text: str = "",
     previous_tasks_text: str = "",
+    current_round: int = 1,
 ) -> str:
     """Return Base/Shared/Extension search-space allocation guidance."""
     if not traits or not feature_uses_gluon_guidance_from_meta(feature_meta):
@@ -1633,7 +1645,12 @@ def _build_search_space_allocation_guidance(
         feature_meta.get("shape_coverage_profile") or DEFAULT_SHAPE_COVERAGE_PROFILE
     ).lower()
     base_slots, shared_slots, extension_slots = _base_extension_quotas(
-        num_gpus, strength, previous_signal, shape_profile=shape_profile,
+        num_gpus,
+        strength,
+        previous_signal,
+        shape_profile=shape_profile,
+        current_round=current_round,
+        input_dialect=str(feature_meta.get("input_dialect") or ""),
     )
     required_base_families = _base_triton_mandatory_families(
         feature_meta,
@@ -1679,9 +1696,11 @@ def _build_search_space_allocation_guidance(
         "- Do not replace or reduce Base Set tasks with Gluon tasks; Extension and Shared slots are additive.",
         "- Keep the same correctness and benchmark contract for all sets.",
         "- Layering order: Base Set -> Extension L0 viability -> Shared paired mapping -> Extension L1 trait-specific lowering -> later-round Hybrid/Mixed dispatch.",
-        "- Round 1 with only one Extension slot should produce exactly one L0 minimal viability task, not multiple Gluon tasks.",
+        "- Round 1 without an existing AMD Gluon input/anchor must produce exactly one Extension L0 minimal viability task, not L1 memory/MFMA lowering.",
+        "- Extension L0 tasks on low-latency kernels or tiny stages must be smallest-anchor tasks. They must reject repeated launch-constant sweeps after a slower correctness pass and record overhead evidence instead of treating L0 as a performance tuning campaign.",
         "- Shared Set tasks must include `Shared source family: <base_family_id>` when they map a Base strategy into a paired comparison.",
         "- Extension Set tasks must include `Extension layer: L0`, `Extension layer: L1`, or `Extension layer: Hybrid` in task_prompt.",
+        "- Extension L1 tasks must include `Anchor patch: <task>/<patch or input_baseline>`, `Anchor speedup: <number>x`, `Anchor execution: true`, `Comparison target: anchor_patch`, and `Allowed change: <one component>`. If the anchor is slower than 0.5x, has significant per-shape regression, or lacks executed AMD Gluon, emit a smaller L0/diagnostic task instead of L1.",
         "- Stage-specific Extension L1 tasks must include `Target symbol: <function/helper>` in task_prompt and top-level `required_patch_target_symbols`; a patch that only changes a different stage, or only defines `_..._gluon` while dispatch remains on the plain Triton path, is not a valid success.",
         "- AMD Gluon tasks must include `Knowledge lookup contract`, `Implementation contract`, `Performance hypothesis:`, and `Patch evolution:` blocks before editing; detailed fields live in `skills/triton-gluon/docs/00_always_read.md`, with trait-specific rules in `20_component_traits.md`, `50_api_reference.md`, and `60_real_patterns.md`.",
         "- AMD Gluon tasks must reject non-executed Gluon, target-symbol mismatch, leftover plain Triton device APIs inside the edited `@gluon.jit` path, and bundled unrelated changes without `bundle_allowed=true`; defer detailed layout/buffer/MFMA rejection rules to the routed split docs.",
@@ -1818,6 +1837,7 @@ def _build_gluon_task_generation_guidance(feature_meta: dict[str, Any]) -> str:
         "  6. persistent scheduling, atomics, or work-stealing last",
         "- Favor early tasks that keep the original algorithm recognizable, make layout decisions explicit, and preserve correctness with the smallest possible semantic delta.",
         "- Treat the first passing AMD Gluon candidate as a platform for later aggressive optimizations, not as a final answer.",
+        "- For low-latency kernels or tiny stages, treat L0 as a smallest executed anchor. If it passes correctness but is slower than Base, record overhead evidence and stop launch-constant sweeps unless the next task names a specific overhead to remove.",
         "- Treat correctness-passing but slower AMD Gluon as neutral/slower evidence: it can provide layout/source information but should not trigger `gluon_variant` or `hybrid_dispatch` without a shape/sub-operation where Gluon beats the safe anchor.",
         "- Mixed/hybrid optimization is a later-round strategy: combine plain Triton and AMD Gluon only after both sides have benchmark evidence, and keep a Base or Shared competitor alive for no-regression.",
     ]
@@ -2352,6 +2372,7 @@ def _run_task_agent(
             baseline_metrics=_bm_dict,
             previous_results_text=prev_results_summary,
             previous_tasks_text=prev_tasks_summary,
+            current_round=current_round,
         )
         template_vars["shape_coverage_guidance"] = _build_shape_coverage_guidance(
             feature_meta,
@@ -2508,6 +2529,37 @@ def _has_l0_extension_tag(task: AgentTask) -> bool:
     return "extension layer: l0" in text or " l0 " in f" {text} " or "-l0-" in text
 
 
+def _has_l1_extension_tag(task: AgentTask) -> bool:
+    text = f"{task.label}\n{task.task}".lower()
+    return "extension layer: l1" in text or " l1 " in f" {text} " or "-l1-" in text
+
+
+def _l1_anchor_contract_errors(task: AgentTask) -> list[str]:
+    text = f"{task.label}\n{task.task}"
+    lower = text.lower()
+    if not _is_gluon_extension_task(task) or not _has_l1_extension_tag(task):
+        return []
+
+    missing: list[str] = []
+    for field in (
+        "Anchor patch:",
+        "Anchor speedup:",
+        "Anchor execution:",
+        "Comparison target:",
+        "Allowed change:",
+        "Reject if:",
+    ):
+        if field.lower() not in lower:
+            missing.append(field)
+    if "comparison target: anchor_patch" not in lower:
+        missing.append("Comparison target: anchor_patch")
+    if "anchor execution: true" not in lower:
+        missing.append("Anchor execution: true")
+    if missing:
+        return [f"{task.label} missing L1 anchor contract fields: {', '.join(missing)}"]
+    return []
+
+
 def _audit_base_family_coverage(
     tasks: list[AgentTask],
     required_families: list[str],
@@ -2532,6 +2584,8 @@ def _audit_base_family_coverage(
             )
         elif not _has_l0_extension_tag(extension_tasks[0]):
             extension_errors.append("single AMD Gluon Extension task must be tagged `Extension layer: L0`")
+    for task in extension_tasks:
+        extension_errors.extend(_l1_anchor_contract_errors(task))
 
     errors = []
     if missing:
@@ -2541,6 +2595,8 @@ def _audit_base_family_coverage(
         return
 
     message = "Task-generation coverage audit failed: " + "; ".join(errors)
+    if extension_errors:
+        raise ValueError(message)
     if _strict_base_family_audit_enabled():
         raise ValueError(message)
     logger.warning(message)

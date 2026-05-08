@@ -200,7 +200,12 @@ def test_compute_best_patch_infers_gluon_extension_contract_without_metadata(tmp
     (patch_dir / "patch_2.patch").write_text("diff --git a/kernel.py b/kernel.py\n+\n+\n")
     (patch_dir / "patch_2_test.txt").write_text("case_a: 0.1 ms\ncase_b: 0.1 ms\n")
     (patch_dir / "patch_3.patch").write_text(
-        "diff --git a/kernel.py b/kernel.py\n+from triton.experimental import gluon\n+@gluon.jit\n+def kernel_gluon(x):\n+    return x\n"
+        "diff --git a/kernel.py b/kernel.py\n"
+        "+from triton.experimental import gluon\n"
+        "+@gluon.jit\n"
+        "+def kernel_gluon(x):\n"
+        "+    return x\n"
+        "+kernel_gluon[grid](x)\n"
     )
     (patch_dir / "patch_3_test.txt").write_text("case_a: 0.8 ms\ncase_b: 0.8 ms\n")
 
@@ -210,6 +215,60 @@ def test_compute_best_patch_infers_gluon_extension_contract_without_metadata(tmp
     assert result["best_patch_id"] == "patch_3"
     assert result["required_output_dialect"] == "amd_gluon"
     assert result["actual_output_dialect"] == "amd_gluon"
+
+
+def test_compute_best_patch_infers_target_symbol_from_task_body(tmp_path: Path) -> None:
+    root = tmp_path / "generic_kernel"
+    patch_dir = root / "results" / "round_1" / "extension-l1-gluon-stage1-rope"
+    patch_dir.mkdir(parents=True)
+    tasks_dir = root / "tasks" / "round_1"
+    tasks_dir.mkdir(parents=True)
+
+    from minisweagent.run.task_file import write_task_file
+
+    write_task_file(
+        tasks_dir / "06_extension-l1-gluon-stage1-rope.md",
+        {
+            "label": "extension-l1-gluon-stage1-rope",
+            "required_output_dialect": "amd_gluon",
+        },
+        "Extension L1\nTarget symbol: target_stage_kernel\n",
+    )
+    (root / "benchmark_baseline.txt").write_text("case_a: 1.0 ms\ncase_b: 1.0 ms\n")
+    (patch_dir / "patch_1.patch").write_text(
+        "\n".join(
+            [
+                "diff --git a/kernel.py b/kernel.py",
+                "+from triton.experimental import gluon",
+                "+@gluon.jit",
+                "+def target_stage_kernel_gluon(x):",
+                "+    return x",
+                "+# launcher still calls target_stage_kernel",
+            ]
+        )
+    )
+    (patch_dir / "patch_1_test.txt").write_text("case_a: 0.2 ms\ncase_b: 0.2 ms\n")
+    (patch_dir / "patch_2.patch").write_text(
+        "\n".join(
+            [
+                "diff --git a/kernel.py b/kernel.py",
+                "+from triton.experimental import gluon",
+                "+@gluon.jit",
+                "+def target_stage_kernel_gluon(x):",
+                "+    return x",
+                "+target_stage_kernel = target_stage_kernel_gluon",
+                "+target_stage_kernel_gluon[grid](x)",
+            ]
+        )
+    )
+    (patch_dir / "patch_2_test.txt").write_text("case_a: 0.8 ms\ncase_b: 0.8 ms\n")
+
+    result = compute_best_patch(patch_dir)
+
+    assert result is not None
+    assert result["best_patch_id"] == "patch_2"
+    assert result["required_patch_target_symbols"] == ["target_stage_kernel"]
+    assert result["gluon_execution_contract_satisfied"] is True
 
 
 def test_compute_best_patch_rejects_definition_only_gluon_helper(tmp_path: Path) -> None:

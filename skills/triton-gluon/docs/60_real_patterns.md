@@ -177,6 +177,18 @@ Base path, record the overhead source when visible and avoid repeated launch
 constant tuning unless the next patch has a concrete reason it should remove
 that overhead.
 
+Low-latency / tiny-stage rule:
+
+- If the benchmark case or scoped stage is already very short (roughly sub-100us),
+  explicit Gluon layout and launch overhead can dominate. L0 should be the
+  smallest executed anchor, not a tuning campaign.
+- After a slower correctness-passing L0 on such a path, do not keep sweeping
+  `num_warps`, block size, `num_stages`, or dispatch guards. Record
+  `overhead_source`, `observed_speedup`, and `not_viable_for_l1` when the
+  evidence shows regression or material per-shape loss.
+- A later task may revisit the anchor only if it names the overhead it removes;
+  otherwise spend the search width on Base or Shared candidates.
+
 Patch evolution model:
 
 - `patch_0`: smallest real executed Gluon path that can compile and pass
@@ -204,6 +216,23 @@ ops, identify the verified Gluon anchor:
 - its parent layouts for each logical expression;
 - its host-created layouts and `constexpr` launch contract;
 - its known slow path or memory-bound section.
+- its measured speedup against the true baseline and whether it has material
+  per-shape regression.
+
+The task prompt must include:
+
+```text
+Anchor patch: <task>/<patch or input_baseline>
+Anchor speedup: <number>x
+Anchor execution: true
+Comparison target: anchor_patch
+Allowed change: <one memory/matrix/layout/dispatch component>
+Reject if: <conditions that invalidate this L1 patch>
+```
+
+If the anchor is below `0.5x`, has significant per-shape regression, or did not
+execute AMD Gluon, do not add L1 memory/MFMA lowering. First shrink or diagnose
+the anchor overhead.
 
 Rules:
 
