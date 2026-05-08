@@ -237,8 +237,9 @@ Planner task prompts and worker strategy notes have different contracts:
 
 - Planner-audited Gluon prompt fields: `Extension layer`, `Optimization
   direction`, `Source Base family`, `Plain competitor`, `Gluon overlay reason`,
-  `Implementation layer`, `Performance hypothesis`, `Measurement boundary`,
-  `Comparison target`, `Allowed change`, and `Reject if`.
+  `Overlay priority`, `Implementation layer`, `Performance hypothesis`,
+  `Measurement boundary`, `Comparison target`, `Allowed change`, and
+  `Reject if`.
 - Worker pre-edit plan fields: the full `Gluon knowledge lookup plan` and
   `Gluon implementation plan` below. These are written in strategy notes before
   code edits; they do not all need to appear as top-level planner prompt fields.
@@ -250,7 +251,7 @@ before changing code:
 Gluon implementation plan:
 - Scope: L0 | L1 | Hybrid, and the single subpath/component allowed by this task.
 - Direction binding: optimization direction, Source Base family, Plain
-  competitor, Implementation layer, and Gluon overlay reason.
+  competitor, Gluon overlay reason, Overlay priority, and Implementation layer.
 - Measurement boundary: kernel_only | fair_make_inputs_run_kernel |
   full_operator; include whether integration cost is in scope.
 - Same ABI comparison: how the Gluon candidate is compared to the plain Triton

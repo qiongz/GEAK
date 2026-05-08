@@ -1795,7 +1795,7 @@ def _build_search_space_allocation_guidance(
         "- Keep a plain Triton competitor for every high-value direction unless AMD Gluon is explicitly required. Layering order: plain Triton -> optional L0/paired mapping -> L1 from viable/local-win evidence -> later Hybrid/Mixed.",
         "- Round 1 plain Triton input may have at most one L0 overlay. Generate it only when `overlay_priority_routing` is Prefer/high-confidence Consider; otherwise spend the slot on another plain Triton direction.",
         "- Required Gluon docs for priority: `00_always_read.md`, `10_search_policies.md` (`optimization_direction_dialect_overlay`, `overlay_priority_routing`), plus `20_component_traits.md` / `60_real_patterns.md` / `50_api_reference.md` only when their routed details apply.",
-        "- AMD Gluon overlay prompts must include `Extension layer: L0|L1|Hybrid`, `Optimization direction:`, `Source Base family:`, `Plain competitor:`, `Gluon overlay reason:`, `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`.",
+        "- AMD Gluon overlay prompts must include `Extension layer: L0|L1|Hybrid`, `Optimization direction:`, `Source Base family:`, `Plain competitor:`, `Gluon overlay reason:`, `Overlay priority: Prefer|Consider`, `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`.",
         "- Required Gluon worker contract: ask for `Gluon knowledge lookup plan`, `Gluon implementation plan`, `Performance hypothesis:`, `Same ABI comparison:`, and `Patch evolution:` before editing; reject non-executed Gluon, target-symbol mismatch, leftover plain Triton device APIs inside edited `@gluon.jit`, and bundled unrelated changes without `bundle_allowed=true`.",
         "- L1 tasks additionally require an executed Gluon/mixed anchor (`Anchor patch`, `Anchor speedup`, `Anchor execution: true`, `Comparison target: anchor_patch`) and stage-specific tasks require `Target symbol` plus top-level `required_patch_target_symbols`.",
         "- If a plain Triton candidate wins, accept it as the best result rather than forcing more Gluon work.",
@@ -1897,7 +1897,7 @@ def _build_gluon_planning_traits_guidance(
             "- Tasks that mix NVIDIA and AMD layout families, introduce a top-level `gluon` kernel type, or produce an optimized `nv_gluon` output.",
             "",
             "Escalation rules:",
-            "- Round 1 may include at most one L0 minimal AMD Gluon overlay when the priority docs place it in the Prefer or high-confidence Consider bucket; do not create a Gluon task unless it includes the full planner-audited fields: `Optimization direction:`, `Source Base family:`, `Plain competitor:`, `Gluon overlay reason:`, `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`.",
+            "- Round 1 may include at most one L0 minimal AMD Gluon overlay when the priority docs place it in the Prefer or high-confidence Consider bucket; do not create a Gluon task unless it includes the full planner-audited fields: `Optimization direction:`, `Source Base family:`, `Plain competitor:`, `Gluon overlay reason:`, `Overlay priority:`, `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`.",
             "- Additional overlay layers may become L1 trait-specific AMD Gluon tasks only after the L0 path is executed and performance-viable, or after local shape/sub-operation evidence shows Gluon beats the safe anchor.",
             "- In later rounds, if Gluon failed, shrink the next attempt to layout-only, translation-only, or memory-only work; if correctness passed but performance regressed, escalate memory/matrix lowering before scheduler or persistent work.",
             "- In later rounds, if either the plain Triton competitor or AMD Gluon overlay wins on only part of the benchmark surface, plan a mixed/hybrid candidate only when it preserves the plain Triton no-regression path and uses host-side dispatch or explicit feature checks to choose between plain Triton and AMD Gluon.",
@@ -2176,7 +2176,7 @@ def _build_output_dialect_guidance(feature_meta: dict[str, Any]) -> str:
         else:
             lines.append(
                 "- Generate at most one early L0 AMD Gluon overlay task, and only as a same-direction overlay from the `overlay_priority_routing` Prefer/high-confidence Consider buckets with the full planner-audited Gluon fields: "
-                "`Optimization direction:`, `Source Base family:`, `Plain competitor:`, `Gluon overlay reason:`, `Implementation layer:`, "
+                "`Optimization direction:`, `Source Base family:`, `Plain competitor:`, `Gluon overlay reason:`, `Overlay priority:`, `Implementation layer:`, "
                 "`Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`."
             )
         lines.append("- Keep a plain Triton fallback path alive when it remains an allowed output. If the kernel structure or benchmark evidence suggests Gluon is unlikely to help, say so and focus the remaining tasks on the fallback path.")
@@ -2616,7 +2616,17 @@ def _is_plain_competitor_task(task: AgentTask) -> bool:
     if _is_gluon_extension_task(task):
         return False
     required_output = str(task.config.get("required_output_dialect") or "").strip().lower()
-    return required_output not in {"amd_gluon", "mixed"}
+    search_set = str(task.config.get("search_set") or "").strip().lower()
+    implementation_layer = str(task.config.get("implementation_layer") or "").strip().lower()
+    extension_layer = str(task.config.get("extension_layer") or "").strip().lower()
+    if required_output != "plain_triton":
+        return False
+    if "amd_gluon" in implementation_layer or "mixed" in implementation_layer or extension_layer in {"l0", "l1", "hybrid"}:
+        return False
+    text = f"{task.label}\n{task.task}".lower()
+    if "extension layer:" in text or "implementation layer: amd_gluon" in text:
+        return False
+    return search_set == "base" or "base family:" in text
 
 
 def _is_gluon_extension_task(task: AgentTask) -> bool:
@@ -2638,6 +2648,21 @@ def _is_gluon_extension_task(task: AgentTask) -> bool:
 def _has_l0_extension_tag(task: AgentTask) -> bool:
     text = f"{task.label}\n{task.task}".lower()
     return "extension layer: l0" in text or " l0 " in f" {text} " or "-l0-" in text
+
+
+def _is_l0_gluon_overlay_task(task: AgentTask) -> bool:
+    if not _is_gluon_extension_task(task):
+        return False
+    extension_layer = str(task.config.get("extension_layer") or "").strip().lower()
+    implementation_layer = str(task.config.get("implementation_layer") or "").strip().lower()
+    required_output = str(task.config.get("required_output_dialect") or "").strip().lower()
+    if extension_layer == "l0":
+        return True
+    if extension_layer in {"l1", "hybrid"}:
+        return False
+    if _has_l0_extension_tag(task):
+        return True
+    return required_output == "amd_gluon" and "amd_gluon" in implementation_layer and "overlay" in implementation_layer
 
 
 def _has_l1_extension_tag(task: AgentTask) -> bool:
@@ -2686,6 +2711,7 @@ def _gluon_overlay_contract_errors(task: AgentTask) -> list[str]:
             "Source Base family",
             "Plain competitor",
             "Gluon overlay reason",
+            "Overlay priority",
             "Implementation layer",
             "Performance hypothesis",
             "Measurement boundary",
@@ -2700,9 +2726,25 @@ def _gluon_overlay_contract_errors(task: AgentTask) -> list[str]:
     return []
 
 
+def _gluon_overlay_priority_errors(task: AgentTask) -> list[str]:
+    if not _is_l0_gluon_overlay_task(task):
+        return []
+    text = f"{task.label}\n{task.task}"
+    priority = (_parse_prompt_field_value(text, "Overlay priority") or "").strip().lower()
+    if not priority:
+        return [f"{task.label} missing Overlay priority"]
+    if priority.startswith("prefer"):
+        return []
+    if "consider" in priority and any(
+        marker in priority for marker in ("high", "strong", "confidence", "confident")
+    ):
+        return []
+    return [f"{task.label} has invalid L0 Overlay priority `{priority}`; expected Prefer or high-confidence Consider"]
+
+
 def _gluon_overlay_binding_errors(task: AgentTask, tasks: list[AgentTask]) -> list[str]:
     """Require Round-1 L0 overlays to bind to a concrete plain competitor task."""
-    if not _is_gluon_extension_task(task) or not _has_l0_extension_tag(task):
+    if not _is_l0_gluon_overlay_task(task):
         return []
 
     text = f"{task.label}\n{task.task}"
@@ -2745,10 +2787,11 @@ def _audit_base_family_coverage(
         extension_errors.append(
             f"expected at most {expected_extension_slots} AMD Gluon Extension task(s), found {len(extension_tasks)}"
         )
-    if expected_extension_slots == 1 and len(extension_tasks) == 1 and not _has_l0_extension_tag(extension_tasks[0]):
-        extension_errors.append("single AMD Gluon Extension task must be tagged `Extension layer: L0`")
+    if expected_extension_slots == 1 and len(extension_tasks) == 1 and not _is_l0_gluon_overlay_task(extension_tasks[0]):
+        extension_errors.append("single AMD Gluon Extension task must be an L0 AMD Gluon overlay")
     for task in extension_tasks:
         extension_errors.extend(_gluon_overlay_contract_errors(task))
+        extension_errors.extend(_gluon_overlay_priority_errors(task))
         extension_errors.extend(_gluon_overlay_binding_errors(task, tasks))
         extension_errors.extend(_l1_anchor_contract_errors(task))
 

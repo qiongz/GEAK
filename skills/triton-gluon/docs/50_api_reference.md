@@ -73,6 +73,14 @@ Wiring rules before coding:
   callable Gluon device helper.
 - Keep host-only layout construction, arch checks, and Python dispatch outside
   `@gluon.jit`; pass layouts and constants as `constexpr`.
+- This includes derived layouts such as `gl.SliceLayout(...)` and
+  `gl.DotOperandLayout(...)`. Build them in a Python layout factory, add them to
+  the launcher signature as `gl.constexpr`, and use the received constexpr
+  values directly inside the kernel body.
+- A Gluon helper is not an executed L0 anchor until the host dispatch or an
+  already-executed kernel path calls `helper[grid](...)` and the helper's result
+  contributes to the measured output. Definition-only helpers are invalid even
+  when compile/correctness succeeds through the plain Triton path.
 
 ```python
 import triton
@@ -255,10 +263,14 @@ expr = idx_x_xy[:, None] * stride_x + idx_z_xz[None, :]
 Good pattern:
 
 ```python
+# Host/layout-factory code, not inside the @gluon.jit body.
 # Both 1D tensors are slices of the same [X, Y] parent layout and are expanded
 # before combining into a 2D offset.
 slice_x_xy: gl.constexpr = gl.SliceLayout(1, blocked_xy)
 slice_y_xy: gl.constexpr = gl.SliceLayout(0, blocked_xy)
+
+# Inside @gluon.jit, use the constexpr layout arguments; do not assign
+# slice_x_xy = gl.SliceLayout(...) in the kernel body.
 idx_x_xy = gl.arange(0, X, layout=slice_x_xy)
 idx_y_xy = gl.arange(0, Y, layout=slice_y_xy)
 offset_xy = base + idx_x_xy[:, None] * stride_x + idx_y_xy[None, :]
@@ -267,9 +279,12 @@ offset_xy = base + idx_x_xy[:, None] * stride_x + idx_y_xy[None, :]
 Good pattern:
 
 ```python
+# Host/layout-factory code, not inside the @gluon.jit body.
 # Both 1D tensors are slices of the same [X, Z] parent layout.
 slice_x_xz: gl.constexpr = gl.SliceLayout(1, blocked_xz)
 slice_z_xz: gl.constexpr = gl.SliceLayout(0, blocked_xz)
+
+# Inside @gluon.jit, use the constexpr layout arguments.
 idx_x_xz = gl.arange(0, X, layout=slice_x_xz)
 idx_z_xz = gl.arange(0, Z, layout=slice_z_xz)
 expr = idx_x_xz[:, None] * stride_x + idx_z_xz[None, :]

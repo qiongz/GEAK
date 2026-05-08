@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
-from minisweagent.agents.heterogeneous.tools import _group_task_files_by_dispatch_stage
-from minisweagent.run.dispatch import task_file_to_agent_task
+import pytest
+
+from minisweagent.agents.heterogeneous.tools import _group_task_files_by_dispatch_stage, _required_gluon_tasks_completed
+from minisweagent.run.dispatch import run_task_batch, task_file_to_agent_task
 from minisweagent.run.task_file import write_task_file
 from minisweagent.tools.save_and_test import SaveAndTestContext, SaveAndTestTool
 
@@ -176,6 +178,34 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
     assert "Task implementation_layer: amd_gluon overlay" in task.task
     assert "Task extension_layer: L1" in task.task
     assert "Task required_patch_target_symbols: target_stage" in task.task
+
+
+def test_worker_context_infers_required_gluon_from_body_layer_contract(tmp_path) -> None:
+    task_path = tmp_path / "body_layer_contract.md"
+    write_task_file(
+        task_path,
+        {
+            "label": "gluon-l0-explicit-layout-attention",
+            "priority": 6,
+            "kernel_type": "triton",
+            "kernel_path": str(tmp_path / "kernel.py"),
+            "repo_root": str(tmp_path),
+            "input_dialect": "plain_triton",
+            "gluon_feature_mode": "auto",
+            "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+            "required_output_dialect": "any",
+            "use_skills": False,
+        },
+        "Extension layer: L0\nImplementation layer: amd_gluon overlay\n",
+    )
+
+    task = task_file_to_agent_task(task_path)
+
+    assert task.config["use_skills"] is True
+    assert task.config["required_output_dialect"] == "amd_gluon"
+    assert "Task required_output_dialect: amd_gluon" in task.task
+    assert "Task implementation_layer: amd_gluon overlay" in task.task
+    assert "Task extension_layer: L0" in task.task
 
 
 def test_required_gluon_docs_metadata_overrides_heuristic_gate(tmp_path) -> None:
@@ -374,6 +404,75 @@ def test_save_and_test_accepts_worktree_view_for_base_repo_required_doc(tmp_path
     assert "GLUON_DOC_GATE_FAILED" not in result["output"]
 
 
+def test_save_and_test_rejects_required_gluon_plain_fallback(tmp_path) -> None:
+    tool = SaveAndTestTool()
+    tool._get_patch_content = lambda: "diff --git a/kernel.py b/kernel.py\n+import triton.language as tl\n+x = tl.arange(0, 16)\n"  # type: ignore[method-assign]
+    tool.set_context(
+        SaveAndTestContext(
+            cwd=str(tmp_path),
+            test_command="true",
+            timeout=5,
+            patch_output_dir=None,
+            required_output_dialect="amd_gluon",
+        )
+    )
+
+    result = tool(description="plain fallback")
+
+    assert result["returncode"] == 1
+    assert "PATCH_CONTRACT_FAILED" in result["output"]
+
+
+def test_save_and_test_rejects_mixed_dead_gluon_helper(tmp_path) -> None:
+    tool = SaveAndTestTool()
+    tool._get_patch_content = lambda: "\n".join(  # type: ignore[method-assign]
+        [
+            "diff --git a/kernel.py b/kernel.py",
+            "+from triton.experimental import gluon",
+            "+from triton.experimental.gluon import language as gl",
+            "+import triton.language as tl",
+            "+@gluon.jit",
+            "+def hybrid_gluon_helper(x):",
+            "+    return gl.load(x)",
+            "+y = tl.load(ptr)",
+        ]
+    )
+    tool.set_context(
+        SaveAndTestContext(
+            cwd=str(tmp_path),
+            test_command="true",
+            timeout=5,
+            patch_output_dir=None,
+            required_output_dialect="mixed",
+        )
+    )
+
+    result = tool(description="mixed dead helper")
+
+    assert result["returncode"] == 1
+    assert "PATCH_CONTRACT_FAILED" in result["output"]
+
+
+def test_run_task_batch_rejects_duplicate_labels(tmp_path) -> None:
+    first = tmp_path / "tasks" / "00_dup.md"
+    second = tmp_path / "tasks" / "01_dup.md"
+    first.parent.mkdir()
+    for path in (first, second):
+        write_task_file(
+            path,
+            {
+                "label": "dup-task",
+                "priority": 1,
+                "kernel_type": "triton",
+                "repo_root": str(tmp_path),
+            },
+            "Optimize.",
+        )
+
+    with pytest.raises(ValueError, match="Duplicate task labels"):
+        run_task_batch([first, second], gpu_ids=[0], output_dir=tmp_path / "results", model_factory=lambda: None)
+
+
 def test_required_gluon_extension_groups_into_high_stage(tmp_path) -> None:
     base_task = tmp_path / "00_base.md"
     ext_task = tmp_path / "06_ext.md"
@@ -397,6 +496,26 @@ def test_required_gluon_extension_groups_into_high_stage(tmp_path) -> None:
     stages = _group_task_files_by_dispatch_stage([base_task, ext_task])
     assert stages[0][0] == "high"
     assert {path.name for path in stages[0][1]} == {"00_base.md", "06_ext.md"}
+
+
+def test_required_gluon_completion_uses_body_layer_contract(tmp_path) -> None:
+    results_dir = tmp_path / "results"
+    ext_task = tmp_path / "06_ext.md"
+    write_task_file(
+        ext_task,
+        {
+            "label": "ext",
+            "priority": 6,
+            "kernel_type": "triton",
+        },
+        "Extension layer: L0\nImplementation layer: amd_gluon overlay",
+    )
+
+    assert _required_gluon_tasks_completed(results_dir, [ext_task]) is False
+
+    (results_dir / "ext").mkdir(parents=True)
+    (results_dir / "ext" / "patch_0.patch").write_text("diff --git a/kernel.py b/kernel.py\n+from triton.experimental import gluon\n")
+    assert _required_gluon_tasks_completed(results_dir, [ext_task]) is True
 
 
 def test_required_gluon_groups_high_without_search_set(tmp_path) -> None:

@@ -31,6 +31,10 @@ Search policy and task allocation live in `10_search_policies.md`.
   family, and coalesced dimension.
 - Construct layouts on the host when they depend on launch configuration.
 - Pass host-created layouts as `constexpr`.
+- Do not instantiate `BlockedLayout`, `SliceLayout`, `DotOperandLayout`, or
+  other layout objects inside the `@gluon.jit` body. Creating
+  `sl = gl.SliceLayout(...)` inside the kernel can be lowered as a tensor value
+  and fail with errors like `cannot convert SliceLayout(...) to tensor`.
 - Do not omit layout on `gl.arange`, `gl.zeros`, or similar Gluon tensors.
 - In the edited `@gluon.jit` path, replace the whole planned tensor-creation
   chain. Do not mix a `gl.arange(..., layout=...)` for one axis with leftover
@@ -53,6 +57,9 @@ Search policy and task allocation live in `10_search_policies.md`.
 - Every broadcast expression has a parent-layout invariant: the 1D tensors that
   become `x[:, None]` and `y[None, :]` must be derived from `SliceLayout`
   objects of the same 2D parent layout used by that expression.
+- Create those `SliceLayout(axis, parent)` objects in the host layout factory
+  and pass them to the kernel as `gl.constexpr`; do not construct new
+  `SliceLayout` objects inside `@gluon.jit`.
 - `SliceLayout` creates 1D tensors. Do not directly add or combine two 1D slice
   tensors with different lengths to build a 2D offset. First expand them with
   `[:, None]` and `[None, :]` so both operands broadcast into the same parent

@@ -21,8 +21,10 @@ from pathlib import Path
 from typing import Any
 
 from minisweagent.run.postprocess.benchmark_parsing import (
+    compute_shape_speedups,
     extract_benchmark_config_lines,
     extract_latency_ms,
+    parse_shape_latencies_ms,
     parse_shape_count,
     parse_total_kernel_time_ms,
 )
@@ -407,6 +409,8 @@ def run_correctness_and_benchmark(
     pp_dir: Path,
     round_eval: dict[str, Any],
     round_num: int,
+    comparison_baseline_text: str | None = None,
+    comparison_baseline_source: str | None = None,
 ) -> None:
     """Run CORRECTNESS then FULL_BENCHMARK, compute verified speedup.
 
@@ -528,7 +532,14 @@ def run_correctness_and_benchmark(
 
         _check_config_mismatch(candidate_stdout, baseline_text, round_eval, section_key)
         if not round_eval[section_key].get("config_mismatch"):
-            _compute_verified_speedup(candidate_stdout, baseline_text, round_eval, section_key)
+            _compute_verified_speedup(
+                candidate_stdout,
+                baseline_text,
+                round_eval,
+                section_key,
+                comparison_baseline_text=comparison_baseline_text,
+                comparison_baseline_source=comparison_baseline_source,
+            )
 
         logger.info("%s: PASS", baseline_section_name)
         break
@@ -543,6 +554,9 @@ def _compute_verified_speedup(
     baseline_text: str,
     round_eval: dict[str, Any],
     section_key: str,
+    *,
+    comparison_baseline_text: str | None = None,
+    comparison_baseline_source: str | None = None,
 ) -> None:
     """Compute verified speedup from latency measurements.
 
@@ -554,7 +568,9 @@ def _compute_verified_speedup(
     through to ``RoundEvaluation.full_benchmark.failure_reason``.
     """
     candidate_ms = extract_latency_ms(candidate_stdout)
-    baseline_ms = extract_latency_ms(baseline_text)
+    true_baseline_ms = extract_latency_ms(baseline_text)
+    comparison_text = comparison_baseline_text or baseline_text
+    baseline_ms = extract_latency_ms(comparison_text)
 
     if candidate_ms is None or baseline_ms is None:
         msg = f"latency parse failed (candidate_ms={candidate_ms}, baseline_ms={baseline_ms})"
@@ -578,7 +594,27 @@ def _compute_verified_speedup(
     round_eval[section_key]["verified_speedup"] = round(verified_speedup, 4)
     round_eval[section_key]["candidate_ms"] = candidate_ms
     round_eval[section_key]["baseline_ms"] = baseline_ms
-    logger.info(f"  Verified speedup: {verified_speedup:.4f}x ({baseline_ms:.4f} ms -> {candidate_ms:.4f} ms)")
+    round_eval[section_key]["comparison_baseline_source"] = comparison_baseline_source or "preprocess_baseline"
+
+    if true_baseline_ms and true_baseline_ms > 0:
+        true_speedup = true_baseline_ms / candidate_ms
+        round_eval[section_key]["true_baseline_ms"] = true_baseline_ms
+        round_eval[section_key]["true_baseline_speedup"] = round(true_speedup, 4)
+
+    baseline_shapes = parse_shape_latencies_ms(comparison_text)
+    candidate_shapes = parse_shape_latencies_ms(candidate_stdout)
+    if baseline_shapes and candidate_shapes:
+        round_eval[section_key]["per_shape_speedups"] = compute_shape_speedups(baseline_shapes, candidate_shapes)
+        round_eval[section_key]["baseline_shape_latency_ms"] = baseline_shapes
+        round_eval[section_key]["candidate_shape_latency_ms"] = candidate_shapes
+
+    logger.info(
+        "  Verified speedup: %.4fx (%s: %.4f ms -> %.4f ms)",
+        verified_speedup,
+        comparison_baseline_source or "preprocess_baseline",
+        baseline_ms,
+        candidate_ms,
+    )
 
 
 def _check_config_mismatch(
@@ -855,6 +891,12 @@ def evaluate_round_best(
                 "per_shape_speedups": br.get("per_shape_speedups") or {},
                 "baseline_shape_latency_ms": br.get("baseline_shape_latency_ms") or {},
                 "candidate_shape_latency_ms": br.get("candidate_shape_latency_ms") or {},
+                "comparison_target": br.get("comparison_target") or "true_baseline",
+                "baseline_source": br.get("baseline_source"),
+                "safe_anchor": br.get("safe_anchor"),
+                "safe_anchor_source": br.get("safe_anchor_source"),
+                "safe_anchor_latency_ms": br.get("safe_anchor_latency_ms"),
+                "true_baseline_latency_ms": br.get("true_baseline_latency_ms"),
             }
         )
 
@@ -928,6 +970,12 @@ def evaluate_round_best(
         "best_patch": best_patch_file,
         "best_task": best_task,
         "benchmark_speedup": best_speedup,
+        "comparison_target": best.get("comparison_target") or "true_baseline",
+        "baseline_source": best.get("baseline_source"),
+        "safe_anchor": best.get("safe_anchor"),
+        "safe_anchor_source": best.get("safe_anchor_source"),
+        "safe_anchor_latency_ms": best.get("safe_anchor_latency_ms"),
+        "true_baseline_latency_ms": best.get("true_baseline_latency_ms"),
     }
     if best.get("per_shape_speedups"):
         round_eval["per_shape_speedups"] = best["per_shape_speedups"]
@@ -957,6 +1005,36 @@ def evaluate_round_best(
     gpu_id = ctx.get("gpu_ids", [0])[0]
 
     # --- Resolve worktree, run benchmark + profile, clean up ---
+    comparison_baseline_text = None
+    comparison_baseline_source = None
+    if str(best.get("comparison_target") or "").strip().lower() == "safe_anchor":
+        safe_anchor_source = str(best.get("safe_anchor_source") or "").strip()
+        if safe_anchor_source:
+            anchor_path = Path(safe_anchor_source)
+            if anchor_path.is_file():
+                comparison_baseline_text = anchor_path.read_text(errors="replace")
+                comparison_baseline_source = f"safe_anchor:{safe_anchor_source}"
+            else:
+                logger.warning("safe_anchor_source missing for round evaluation: %s", safe_anchor_source)
+        if not comparison_baseline_text:
+            round_eval["status"] = "comparison_anchor_unavailable"
+            round_eval["verification_error"] = (
+                "comparison_target=safe_anchor but safe_anchor_source is missing or unreadable"
+            )
+            eval_path = output_dir / f"round_{round_num}_evaluation.json"
+            eval_path.write_text(json.dumps(round_eval, indent=2, default=str))
+            from minisweagent.run.pipeline_types import FullBenchmarkResult, RoundEvaluation
+
+            return RoundEvaluation(
+                round=round_num,
+                best_patch=best_patch_file or "",
+                best_task=best_task,
+                benchmark_speedup=best_speedup,
+                full_benchmark=FullBenchmarkResult(
+                    failure_reason=round_eval["verification_error"],
+                ),
+            )
+
     try:
         eval_worktree, eval_env = resolve_eval_worktree(
             repo_root,
@@ -982,7 +1060,16 @@ def evaluate_round_best(
         )
 
     try:
-        run_correctness_and_benchmark(eval_worktree, eval_env, commandment_path, pp_dir, round_eval, round_num)
+        run_correctness_and_benchmark(
+            eval_worktree,
+            eval_env,
+            commandment_path,
+            pp_dir,
+            round_eval,
+            round_num,
+            comparison_baseline_text=comparison_baseline_text,
+            comparison_baseline_source=comparison_baseline_source,
+        )
         run_profile(eval_worktree, eval_env, commandment_path, pp_dir, round_eval, round_num, results_dir)
     finally:
         cleanup_eval_worktree(repo_root, eval_worktree)

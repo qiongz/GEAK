@@ -61,6 +61,9 @@ torch2hip tasks.
      `gl.full(..., layout=...)`;
    - every broadcast or `[:, None]` / `[None, :]` expression and its matching
      `SliceLayout(axis, parent)`;
+   - where each `BlockedLayout`, `SliceLayout`, `DotOperandLayout`, or other
+     layout object is constructed on the host and passed as `gl.constexpr`;
+     layout objects must not be newly constructed inside `@gluon.jit`;
    - every `tl.*` device scalar/math use in the edited Gluon path and its
      `gl.*` equivalent (`gl.cdiv`, `gl.minimum`, `gl.maximum`, `gl.exp`,
      `gl.where`, etc.);
@@ -78,7 +81,8 @@ torch2hip tasks.
      `Target symbol: <symbol>` and do not modify a different stage as the
      successful patch. If you define a new `_..._gluon` helper, wire the host or
      caller so that helper is actually executed; a definition-only helper while
-     the dispatch still uses the plain Triton path is not a valid result.
+     the dispatch still uses the plain Triton path is not a valid result, even
+     if compile/correctness passes through the unchanged path.
 
 `save_and_test` enforces the required-doc gate for Gluon tasks.
 

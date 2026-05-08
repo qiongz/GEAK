@@ -538,12 +538,62 @@ def _has_significant_shape_regression(
     return any((info.get("speedup") or 0.0) < floor for info in shape_speedups.values())
 
 
+def _added_lines(patch_text: str) -> list[str]:
+    return [line[1:].strip() for line in patch_text.splitlines() if line.startswith("+") and not line.startswith("+++")]
+
+
+def _extract_added_gluon_jit_defs(patch_text: str) -> list[str]:
+    defs: list[str] = []
+    pending_gluon_jit = False
+    for line in _added_lines(patch_text):
+        if line.startswith("@gluon.jit"):
+            pending_gluon_jit = True
+            continue
+        match = re.match(r"def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", line)
+        if match:
+            if pending_gluon_jit:
+                defs.append(match.group(1))
+            pending_gluon_jit = False
+            continue
+        if line and not line.startswith("@"):
+            pending_gluon_jit = False
+    return defs
+
+
+def _patch_calls_symbol(patch_text: str, symbol: str) -> bool:
+    call_pattern = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(symbol)}(?![A-Za-z0-9_])\s*(?:\[|\()")
+    for raw_line in patch_text.splitlines():
+        if raw_line.startswith("-") and not raw_line.startswith("---"):
+            continue
+        line = raw_line[1:].strip() if raw_line.startswith(("+", " ")) else raw_line.strip()
+        if not line or line.startswith(("#", "@", "def ", "class ", "import ", "from ")):
+            continue
+        if call_pattern.search(line):
+            return True
+    return False
+
+
+def _gluon_execution_contract_satisfied(
+    patch_text: str,
+    *,
+    required_output_dialect: str,
+) -> bool:
+    if required_output_dialect not in {"amd_gluon", "mixed"}:
+        return True
+    gluon_defs = _extract_added_gluon_jit_defs(patch_text)
+    if not gluon_defs:
+        return True
+    return any(_patch_calls_symbol(patch_text, helper) for helper in gluon_defs)
+
+
 def classify_patch_output_dialect(patch_text: str) -> str:
     """Classify whether a patch appears to implement plain Triton, AMD Gluon, or both."""
-    has_gluon = any(marker in patch_text for marker in _AMD_GLUON_PATCH_MARKERS) or bool(
-        re.search(r"\bgl\.(?:load|store|program_id|arange|zeros|full)\b", patch_text)
+    added = _added_lines(patch_text)
+    added_text = "\n".join(added) if added else patch_text
+    has_gluon = any(marker in added_text for marker in _AMD_GLUON_PATCH_MARKERS) or bool(
+        re.search(r"\bgl\.(?:load|store|program_id|arange|zeros|full)\b", added_text)
     )
-    has_plain_triton = any(marker in patch_text for marker in _PLAIN_TRITON_PATCH_MARKERS)
+    has_plain_triton = any(marker in added_text for marker in _PLAIN_TRITON_PATCH_MARKERS)
     if has_gluon and has_plain_triton:
         return "mixed"
     if has_gluon:
@@ -571,7 +621,15 @@ def _find_task_metadata_for_patch_dir(patch_dir: Path) -> dict[str, Any]:
     try:
         from minisweagent.run.task_file import read_task_file
 
-        meta, _body = read_task_file(candidates[0])
+        meta, body = read_task_file(candidates[0])
+        implementation_layer = _parse_tagged_task_value(body, "Implementation layer")
+        extension_layer = _parse_tagged_task_value(body, "Extension layer")
+        if implementation_layer or extension_layer:
+            meta = dict(meta)
+            if implementation_layer:
+                meta["implementation_layer"] = implementation_layer
+            if extension_layer:
+                meta["extension_layer"] = extension_layer
         return meta
     except Exception as exc:
         logger.debug("Could not read task metadata for %s: %s", patch_dir, exc)
@@ -586,8 +644,34 @@ def _dialect_contract_satisfied(required: str, actual: str) -> bool:
     if required == "mixed":
         return actual == "mixed"
     if required == "amd_gluon":
-        return actual in {"amd_gluon", "mixed"}
+        return actual == "amd_gluon"
     return actual == required
+
+
+def _parse_tagged_task_value(task_body: str, tag: str) -> str | None:
+    match = re.search(rf"^\s*{re.escape(tag)}\s*:\s*(.+?)\s*$", task_body, re.IGNORECASE | re.MULTILINE)
+    if not match:
+        return None
+    return match.group(1).strip().strip("`")
+
+
+def _required_output_dialect(task_meta: dict[str, Any], *, label: str) -> str:
+    required = str(task_meta.get("required_output_dialect") or "").strip().lower()
+    implementation_layer = str(task_meta.get("implementation_layer") or "").strip().lower()
+    extension_layer = str(task_meta.get("extension_layer") or "").strip().lower()
+    layer_required = ""
+    label_text = label.lower()
+    if "hybrid" in label_text or "mixed" in label_text:
+        layer_required = "mixed"
+    elif "mixed" in implementation_layer or "hybrid" in implementation_layer or extension_layer == "hybrid":
+        layer_required = "mixed"
+    elif "amd_gluon" in implementation_layer or extension_layer in {"l0", "l1"}:
+        layer_required = "amd_gluon"
+    if required:
+        if required in {"any", "plain_triton"} and layer_required in {"amd_gluon", "mixed"}:
+            return layer_required
+        return required
+    return layer_required or "any"
 
 
 def _find_original_baseline_ms(patch_dir: Path) -> float | None:
@@ -656,7 +740,7 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
     best_candidate_shape_geomean: float | None = None
     baseline_shape_geomean = _geomean_ms(baseline_shape_latencies)
     task_meta = _find_task_metadata_for_patch_dir(patch_dir)
-    required_output_dialect = str(task_meta.get("required_output_dialect") or "any").strip().lower() or "any"
+    required_output_dialect = _required_output_dialect(task_meta, label=patch_dir.name)
 
     for test_file in sorted(patch_dir.glob("patch_*_test.txt")):
         name = test_file.stem.replace("_test", "")
@@ -682,6 +766,12 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
                 required_output_dialect,
                 actual_output_dialect,
             )
+            continue
+        if not _gluon_execution_contract_satisfied(
+            patch_text,
+            required_output_dialect=required_output_dialect,
+        ):
+            logger.info("Skipping %s because it defines a Gluon helper without executing it.", name)
             continue
         shape_speedups = compute_shape_speedups(baseline_shape_latencies, candidate_shape_latencies)
         if shape_speedups and _has_significant_shape_regression(shape_speedups):
@@ -732,10 +822,7 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
             required_output_dialect,
             best_actual_output_dialect,
         ),
-        "fallback_used": (
-            required_output_dialect == "amd_gluon"
-            and best_actual_output_dialect not in {"amd_gluon", "mixed"}
-        ),
+        "fallback_used": required_output_dialect == "amd_gluon" and best_actual_output_dialect != "amd_gluon",
         "llm_selection_analysis": (
             f"Deterministic: baseline={baseline_ms:.4f}ms ({baseline_source}), "
             f"candidate={best_candidate_ms:.4f}ms from {best_patch_id}. "
@@ -793,7 +880,7 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
             existing = json.loads(existing_path.read_text())
             pf = existing.get("best_patch_file")
             task_meta = _find_task_metadata_for_patch_dir(patch_dir)
-            required_output_dialect = str(task_meta.get("required_output_dialect") or "any").strip().lower() or "any"
+            required_output_dialect = _required_output_dialect(task_meta, label=patch_dir.name)
 
             if not pf:
                 invalid = _invalidate_existing_best_result(
@@ -824,7 +911,8 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
                 existing_path.write_text(json.dumps(invalid, indent=2))
                 return invalid
 
-            actual_output_dialect = classify_patch_output_dialect(patch_path.read_text(errors="replace"))
+            patch_text = patch_path.read_text(errors="replace")
+            actual_output_dialect = classify_patch_output_dialect(patch_text)
             if not _dialect_contract_satisfied(required_output_dialect, actual_output_dialect):
                 invalid = _invalidate_existing_best_result(
                     existing,
@@ -832,6 +920,18 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
                         f"required_output_dialect={required_output_dialect} "
                         f"but patch classified as {actual_output_dialect}"
                     ),
+                    required_output_dialect=required_output_dialect,
+                    actual_output_dialect=actual_output_dialect,
+                )
+                existing_path.write_text(json.dumps(invalid, indent=2))
+                return invalid
+            if not _gluon_execution_contract_satisfied(
+                patch_text,
+                required_output_dialect=required_output_dialect,
+            ):
+                invalid = _invalidate_existing_best_result(
+                    existing,
+                    reason="Gluon helper was defined but not executed",
                     required_output_dialect=required_output_dialect,
                     actual_output_dialect=actual_output_dialect,
                 )
