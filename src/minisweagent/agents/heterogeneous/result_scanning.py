@@ -97,6 +97,15 @@ def scan_single_round_results(results_dir: Path) -> list[str]:
                         "- Shape regression: "
                         f"has_significant_shape_regression={br.get('has_significant_shape_regression')}"
                     )
+                else:
+                    section.append("- Shape regression: has_significant_shape_regression=unknown")
+                comparison_target = br.get("comparison_target")
+                if comparison_target:
+                    section.append(
+                        "- Comparison target: "
+                        f"{comparison_target}"
+                        + (f", safe_anchor={br.get('safe_anchor')}" if br.get("safe_anchor") else "")
+                    )
                 per_shape = br.get("per_shape_speedups") or {}
                 if isinstance(per_shape, dict) and per_shape:
                     shape_parts = []
@@ -110,21 +119,22 @@ def scan_single_round_results(results_dir: Path) -> list[str]:
                     numeric_speedup = float(speedup)
                 except (TypeError, ValueError):
                     numeric_speedup = 0.0
+                shape_regression = br.get("has_significant_shape_regression")
                 if actual_dialect in {"amd_gluon", "mixed"} and dialect_ok and execution_ok:
-                    if numeric_speedup >= 1.0 and not br.get("has_significant_shape_regression"):
+                    if numeric_speedup >= 1.0 and shape_regression is False:
                         anchor_viability = "viable_for_l1"
-                    elif numeric_speedup < 0.5 or br.get("has_significant_shape_regression"):
+                    elif numeric_speedup < 0.5 or shape_regression is True:
                         anchor_viability = "not_viable_for_l1"
-                    else:
+                    elif shape_regression is False:
                         anchor_viability = "neutral_or_slow_anchor"
                 section.append(f"- Gluon L1 anchor viability: {anchor_viability}")
                 attribution = "unknown"
                 if actual_dialect in {"amd_gluon", "mixed"} and dialect_ok and execution_ok:
-                    if numeric_speedup >= 1.0 and not br.get("has_significant_shape_regression"):
+                    if numeric_speedup >= 1.0 and shape_regression is False:
                         attribution = "Gluon-positive"
-                    elif numeric_speedup > 0.0:
+                    elif numeric_speedup > 0.0 and (shape_regression is not None or numeric_speedup < 1.0):
                         attribution = "Gluon-slower"
-                elif required_dialect == "any" and actual_dialect == "plain_triton":
+                elif br.get("gluon_informed") is True and actual_dialect == "plain_triton":
                     attribution = "Gluon-informed"
                 elif required_dialect == "amd_gluon" and actual_dialect == "plain_triton":
                     attribution = "invalid-gluon-fallback"

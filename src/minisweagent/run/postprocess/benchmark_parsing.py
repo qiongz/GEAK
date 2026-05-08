@@ -318,9 +318,17 @@ def _find_task_metadata_for_patch_dir(patch_dir: Path) -> dict[str, Any]:
 
         meta, body = read_task_file(candidates[0])
         inferred_targets = _infer_required_patch_target_symbols(body, meta)
+        comparison_target = _parse_tagged_task_value(body, "Comparison target")
+        safe_anchor = _parse_tagged_task_value(body, "Safe anchor")
         if inferred_targets:
             meta = dict(meta)
             meta["required_patch_target_symbols"] = inferred_targets
+        if comparison_target or safe_anchor:
+            meta = dict(meta)
+            if comparison_target:
+                meta["comparison_target"] = comparison_target
+            if safe_anchor:
+                meta["safe_anchor"] = safe_anchor
         return meta
     except Exception as exc:
         logger.debug("Could not read task metadata for %s: %s", patch_dir, exc)
@@ -333,6 +341,62 @@ def _metadata_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     return []
+
+
+def _parse_tagged_task_value(task_body: str, tag: str) -> str | None:
+    match = re.search(rf"^\s*{re.escape(tag)}\s*:\s*(.+?)\s*$", task_body, re.IGNORECASE | re.MULTILINE)
+    if not match:
+        return None
+    return match.group(1).strip().strip("`")
+
+
+def _resolve_anchor_text(patch_dir: Path, anchor: str) -> tuple[str, str] | None:
+    anchor = str(anchor or "").strip()
+    if not anchor:
+        return None
+
+    candidates: list[Path] = []
+    raw_path = Path(anchor)
+    roots = [patch_dir, patch_dir.parent, patch_dir.parent.parent]
+    if raw_path.is_absolute():
+        candidates.append(raw_path)
+    else:
+        candidates.extend(root / raw_path for root in roots)
+
+    for candidate in list(candidates):
+        if candidate.suffix == ".patch":
+            candidates.append(candidate.with_name(f"{candidate.stem}_test.txt"))
+        elif candidate.suffix == ".txt":
+            pass
+        elif candidate.name.startswith("patch_"):
+            candidates.append(candidate.with_name(f"{candidate.name}_test.txt"))
+
+    for candidate in candidates:
+        if candidate.is_dir():
+            best_path = candidate / "best_results.json"
+            if best_path.is_file():
+                try:
+                    best = json.loads(best_path.read_text())
+                except (json.JSONDecodeError, OSError):
+                    best = {}
+                for key in ("best_patch_test_output", "best_patch_file"):
+                    value = best.get(key)
+                    if not value:
+                        continue
+                    anchor_file = Path(value)
+                    if key == "best_patch_file" and anchor_file.suffix == ".patch":
+                        anchor_file = anchor_file.with_name(f"{anchor_file.stem}_test.txt")
+                    if anchor_file.is_file():
+                        return anchor_file.read_text(errors="replace"), str(anchor_file)
+                patch_id = best.get("best_patch_id")
+                if patch_id:
+                    anchor_file = candidate / f"{patch_id}_test.txt"
+                    if anchor_file.is_file():
+                        return anchor_file.read_text(errors="replace"), str(anchor_file)
+            continue
+        if candidate.is_file():
+            return candidate.read_text(errors="replace"), str(candidate)
+    return None
 
 
 def _infer_required_patch_target_symbols(task_body: str, task_meta: dict[str, Any]) -> list[str]:
@@ -502,6 +566,26 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
     task_meta = _find_task_metadata_for_patch_dir(patch_dir)
     required_patch_target_symbols = _metadata_list(task_meta.get("required_patch_target_symbols"))
     required_output_dialect = _required_output_dialect(task_meta, label=patch_dir.name)
+    true_baseline_ms = baseline_ms
+    true_baseline_shape_latencies = dict(baseline_shape_latencies)
+    comparison_target = str(task_meta.get("comparison_target") or "true_baseline").strip().lower()
+    safe_anchor_ref = str(task_meta.get("safe_anchor") or "").strip()
+    safe_anchor_source: str | None = None
+    safe_anchor_ms: float | None = None
+    if comparison_target == "safe_anchor":
+        resolved_anchor = _resolve_anchor_text(patch_dir, safe_anchor_ref)
+        if resolved_anchor is None:
+            logger.debug("compute_best_patch(%s): Comparison target is safe_anchor but anchor was not found: %s", patch_dir.name, safe_anchor_ref)
+            return None
+        anchor_text, safe_anchor_source = resolved_anchor
+        safe_anchor_ms = extract_latency_ms(anchor_text)
+        if safe_anchor_ms is None or safe_anchor_ms <= 0:
+            logger.debug("compute_best_patch(%s): safe_anchor has no valid latency: %s", patch_dir.name, safe_anchor_source)
+            return None
+        baseline_ms = safe_anchor_ms
+        baseline_source = f"safe_anchor:{safe_anchor_ref or safe_anchor_source}"
+        baseline_shape_latencies = parse_shape_latencies_ms(anchor_text)
+        baseline_shape_geomean = _geomean_ms(baseline_shape_latencies)
 
     for test_file in sorted(patch_dir.glob("patch_*_test.txt")):
         name = test_file.stem.replace("_test", "")
@@ -550,6 +634,14 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
             continue
         candidate_shape_latencies = parse_shape_latencies_ms(candidate_text)
         shape_speedups = compute_shape_speedups(baseline_shape_latencies, candidate_shape_latencies)
+        has_shape_regression = _has_significant_shape_regression(shape_speedups) if shape_speedups else False
+        if comparison_target == "safe_anchor" and has_shape_regression:
+            logger.info(
+                "Skipping %s because it regresses at least one shape versus safe anchor: %s",
+                name,
+                shape_speedups,
+            )
+            continue
 
         speedup = baseline_ms / candidate_ms
         if speedup > best_speedup:
@@ -562,10 +654,10 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
             best_candidate_shape_latencies = candidate_shape_latencies
             best_candidate_shape_geomean = _geomean_ms(candidate_shape_latencies)
             best_shape_speedups = shape_speedups
-            best_has_shape_regression = _has_significant_shape_regression(shape_speedups) if shape_speedups else False
+            best_has_shape_regression = has_shape_regression
             best_actual_output_dialect = actual_output_dialect
 
-    if best_patch_id is None:
+    if best_patch_id is None or (comparison_target == "safe_anchor" and best_speedup <= 1.0):
         logger.debug(
             "compute_best_patch(%s): no eligible patch found.",
             patch_dir.name,
@@ -581,6 +673,12 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         "baseline_latency_ms": round(baseline_ms, 6),
         "candidate_latency_ms": round(best_candidate_ms, 6),
         "baseline_source": baseline_source,
+        "comparison_target": comparison_target,
+        "safe_anchor": safe_anchor_ref or None,
+        "safe_anchor_source": safe_anchor_source,
+        "safe_anchor_latency_ms": round(safe_anchor_ms, 6) if safe_anchor_ms else None,
+        "true_baseline_latency_ms": round(true_baseline_ms, 6),
+        "true_baseline_shape_latency_ms": true_baseline_shape_latencies,
         "baseline_shape_latency_ms": baseline_shape_latencies,
         "candidate_shape_latency_ms": best_candidate_shape_latencies,
         "baseline_shape_geomean_ms": round(baseline_shape_geomean, 6) if baseline_shape_geomean else None,
@@ -616,6 +714,8 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
     task_meta = _find_task_metadata_for_patch_dir(patch_dir)
     required_patch_target_symbols = _metadata_list(task_meta.get("required_patch_target_symbols"))
     required_output_dialect = _required_output_dialect(task_meta, label=patch_dir.name)
+    comparison_target = str(task_meta.get("comparison_target") or "true_baseline").strip().lower()
+    safe_anchor = str(task_meta.get("safe_anchor") or "").strip()
 
     if det is not None:
         existing_path.write_text(json.dumps(det, indent=2))
@@ -704,18 +804,21 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
 
             if original_bl is not None:
                 logger.info(
-                    "rewrite_best_results(%s): no eligible patch found against true baseline %.4f ms.",
+                    "rewrite_best_results(%s): no eligible patch found against %s.",
                     patch_dir.name,
-                    original_bl,
+                    comparison_target,
                 )
                 existing["best_patch_speedup"] = 0.0
                 existing["best_patch_id"] = None
                 existing["best_patch_file"] = None
                 existing["baseline_latency_ms"] = original_bl
                 existing["baseline_source"] = "benchmark_baseline.txt"
+                existing["comparison_target"] = comparison_target
+                if safe_anchor:
+                    existing["safe_anchor"] = safe_anchor
                 existing["llm_selection_analysis"] = (
                     existing.get("llm_selection_analysis") or ""
-                ) + f" [Invalidated: no eligible patch against true baseline {original_bl:.4f}ms]"
+                ) + f" [Invalidated: no eligible patch against {comparison_target}]"
                 existing_path.write_text(json.dumps(existing, indent=2))
                 return existing
 

@@ -128,13 +128,46 @@ def test_required_gluon_task_forces_skill_context_even_if_disabled(tmp_path) -> 
     assert "not the supported import path" in task.task
     assert "Gluon knowledge lookup plan" in task.task
     assert "Gluon implementation plan" in task.task
+    assert "Task search_set: extension" in task.task
+    assert "Task required_output_dialect: amd_gluon" in task.task
     assert "viewed=no" in task.task
-    assert "If the implementation plan cannot name a layout" in task.task
+    assert "If the implementation plan cannot satisfy the scoped path fields" in task.task
     assert task.config["gluon_doc_gate_enabled"] is True
     assert any(path.endswith("skills/triton-gluon/docs/00_always_read.md") for path in task.config["gluon_doc_gate_required_paths"])
     assert any(path.endswith("skills/triton-gluon/docs/50_api_reference.md") for path in task.config["gluon_doc_gate_required_paths"])
     assert "## REQUIRED BEFORE EDITING OR SAVE_AND_TEST" in task.task
     assert "GLUON_DOC_GATE_FAILED" in task.task
+
+
+def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
+    task_path = tmp_path / "contract_metadata.md"
+    write_task_file(
+        task_path,
+        {
+            "label": "ext-l1-gluon",
+            "priority": 6,
+            "kernel_type": "triton",
+            "kernel_path": str(tmp_path / "kernel.py"),
+            "repo_root": str(tmp_path),
+            "input_dialect": "plain_triton",
+            "gluon_feature_mode": "auto",
+            "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+            "search_set": "extension",
+            "required_output_dialect": "amd_gluon",
+            "gluon_doc_profile": "memory_lowering",
+            "required_gluon_docs": ["gluon_skill_path", "gluon_always_read_path"],
+            "required_patch_target_symbols": ["target_stage"],
+        },
+        "Extension task using AMD Gluon.",
+    )
+
+    task = task_file_to_agent_task(task_path)
+
+    assert "Task search_set: extension" in task.task
+    assert "Task required_output_dialect: amd_gluon" in task.task
+    assert "Task gluon_doc_profile: memory_lowering" in task.task
+    assert "Task required_gluon_docs: gluon_skill_path, gluon_always_read_path" in task.task
+    assert "Task required_patch_target_symbols: target_stage" in task.task
 
 
 def test_required_gluon_docs_metadata_overrides_heuristic_gate(tmp_path) -> None:
@@ -299,6 +332,35 @@ def test_save_and_test_allows_after_required_gluon_doc_views(tmp_path) -> None:
     )
 
     result = tool(description="docs viewed")
+
+    assert result["returncode"] == 0
+    assert "GLUON_DOC_GATE_FAILED" not in result["output"]
+
+
+def test_save_and_test_accepts_worktree_view_for_base_repo_required_doc(tmp_path) -> None:
+    base = tmp_path / "repo"
+    worktree = tmp_path / "worktree"
+    required = base / "skills" / "triton-gluon" / "docs" / "00_always_read.md"
+    viewed = worktree / "skills" / "triton-gluon" / "docs" / "00_always_read.md"
+    required.parent.mkdir(parents=True)
+    viewed.parent.mkdir(parents=True)
+    required.write_text("# base doc\n")
+    viewed.write_text("# worktree doc\n")
+    tool = SaveAndTestTool()
+    tool.set_context(
+        SaveAndTestContext(
+            cwd=str(worktree),
+            test_command="true",
+            timeout=5,
+            patch_output_dir=None,
+            base_repo_path=base,
+            viewed_file_paths={str(viewed)},
+            gluon_doc_gate_enabled=True,
+            gluon_doc_gate_required_paths=[str(required)],
+        )
+    )
+
+    result = tool(description="docs viewed in worktree")
 
     assert result["returncode"] == 0
     assert "GLUON_DOC_GATE_FAILED" not in result["output"]

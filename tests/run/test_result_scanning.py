@@ -42,3 +42,57 @@ def test_scan_results_surfaces_gluon_contract_and_anchor_viability(tmp_path: Pat
     assert "case_small=0.0250x" in text
     assert "Gluon L1 anchor viability: not_viable_for_l1" in text
     assert "Gluon result attribution: Gluon-slower" in text
+
+
+def test_scan_results_keeps_missing_shape_regression_unknown(tmp_path: Path) -> None:
+    task_dir = tmp_path / "round_1" / "ext-l0-gluon-anchor"
+    task_dir.mkdir(parents=True)
+    (task_dir / "patch_0.patch").write_text("diff --git a/kernel.py b/kernel.py\n+@gluon.jit\n")
+    (task_dir / "patch_0_test.txt").write_text("case_small: 1.0 ms\n")
+    (task_dir / "best_results.json").write_text(
+        json.dumps(
+            {
+                "best_patch_id": "patch_0",
+                "best_patch_speedup": 1.05,
+                "baseline_latency_ms": 1.0,
+                "candidate_latency_ms": 0.95,
+                "required_output_dialect": "amd_gluon",
+                "actual_output_dialect": "amd_gluon",
+                "dialect_contract_satisfied": True,
+                "gluon_execution_contract_satisfied": True,
+            }
+        )
+    )
+
+    text = "\n".join(scan_single_round_results(tmp_path / "round_1"))
+
+    assert "Shape regression: has_significant_shape_regression=unknown" in text
+    assert "Gluon L1 anchor viability: unknown" in text
+    assert "Gluon result attribution: unknown" in text
+
+
+def test_scan_results_does_not_mark_plain_any_as_gluon_informed(tmp_path: Path) -> None:
+    task_dir = tmp_path / "round_1" / "shared-plain-cleanup"
+    task_dir.mkdir(parents=True)
+    (task_dir / "patch_0.patch").write_text("diff --git a/kernel.py b/kernel.py\n+tl.load(x)\n")
+    (task_dir / "patch_0_test.txt").write_text("case_small: 1.0 ms\n")
+    (task_dir / "best_results.json").write_text(
+        json.dumps(
+            {
+                "best_patch_id": "patch_0",
+                "best_patch_speedup": 1.05,
+                "baseline_latency_ms": 1.0,
+                "candidate_latency_ms": 0.95,
+                "required_output_dialect": "any",
+                "actual_output_dialect": "plain_triton",
+                "dialect_contract_satisfied": True,
+                "gluon_execution_contract_satisfied": True,
+                "has_significant_shape_regression": False,
+            }
+        )
+    )
+
+    text = "\n".join(scan_single_round_results(tmp_path / "round_1"))
+
+    assert "Gluon result attribution: unknown" in text
+    assert "Gluon-informed" not in text

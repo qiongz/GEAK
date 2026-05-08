@@ -280,6 +280,31 @@ class SaveAndTestTool:
         except (OSError, RuntimeError):
             return str(path)
 
+    def _gate_path_aliases(self, path: str) -> set[str]:
+        aliases = {self._normalize_gate_path(path)}
+        ctx = self.context
+        if not ctx:
+            return aliases
+        try:
+            p = Path(path).expanduser()
+            if not p.is_absolute():
+                p = Path(ctx.cwd) / p
+            resolved = p.resolve()
+        except (OSError, RuntimeError):
+            return aliases
+
+        cwd = Path(ctx.cwd).resolve()
+        base = ctx.base_repo_path.resolve() if ctx.base_repo_path else None
+        aliases.add(str(resolved))
+        if base is not None:
+            for root, counterpart_root in ((base, cwd), (cwd, base)):
+                try:
+                    rel = resolved.relative_to(root)
+                except ValueError:
+                    continue
+                aliases.add(str((counterpart_root / rel).resolve()))
+        return aliases
+
     def _check_gluon_doc_gate(self) -> str | None:
         ctx = self.context
         if not ctx or not ctx.gluon_doc_gate_enabled:
@@ -291,12 +316,11 @@ class SaveAndTestTool:
         ]
         if not required:
             return None
-        viewed = {
-            self._normalize_gate_path(path)
-            for path in (ctx.viewed_file_paths or set())
-            if str(path or "").strip()
-        }
-        missing = [path for path in required if path not in viewed]
+        viewed_aliases: set[str] = set()
+        for path in ctx.viewed_file_paths or set():
+            if str(path or "").strip():
+                viewed_aliases.update(self._gate_path_aliases(str(path)))
+        missing = [path for path in required if not (self._gate_path_aliases(path) & viewed_aliases)]
         if not missing:
             return None
         lines = [

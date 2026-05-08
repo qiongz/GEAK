@@ -723,6 +723,11 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
         feature_meta.get("shape_coverage_profile") or DEFAULT_SHAPE_COVERAGE_PROFILE
     )
     shape_count_val = feature_meta.get("benchmark_shape_count")
+    search_set = feature_meta.get("search_set")
+    required_output_dialect = feature_meta.get("required_output_dialect")
+    gluon_doc_profile = feature_meta.get("gluon_doc_profile")
+    required_docs = feature_meta.get("required_gluon_docs")
+    target_symbols = feature_meta.get("required_patch_target_symbols")
 
     lines = [
         heading,
@@ -736,6 +741,24 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
         f"- Shape coverage profile: {shape_profile}"
         + (f" ({int(shape_count_val)} cases)" if isinstance(shape_count_val, int) and shape_count_val > 0 else ""),
     ]
+    if search_set:
+        lines.append(f"- Task search_set: {search_set}")
+    if required_output_dialect:
+        lines.append(f"- Task required_output_dialect: {required_output_dialect}")
+    if gluon_doc_profile:
+        lines.append(f"- Task gluon_doc_profile: {gluon_doc_profile}")
+    if required_docs:
+        if isinstance(required_docs, str):
+            docs_text = required_docs
+        else:
+            docs_text = ", ".join(str(item) for item in required_docs)
+        lines.append(f"- Task required_gluon_docs: {docs_text}")
+    if target_symbols:
+        if isinstance(target_symbols, str):
+            symbols_text = target_symbols
+        else:
+            symbols_text = ", ".join(str(item) for item in target_symbols)
+        lines.append(f"- Task required_patch_target_symbols: {symbols_text}")
 
     if search_policy == PREFER_AMD_GLUON_IF_VIABLE_POLICY:
         lines.append("- Prefer AMD Gluon only as a same-direction implementation overlay when it looks structurally promising for this Triton-family input.")

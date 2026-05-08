@@ -185,6 +185,8 @@ def test_search_space_allocation_for_two_gpus_preserves_base_without_weak_gluon(
     assert "Extension Set (AMD Gluon): 0 task(s) recommended" in guidance
     assert "Do not replace or reduce plain Triton competitors with Gluon tasks" in guidance
     assert "Gluon overlay reason" in guidance
+    assert "Comparison target:" in guidance
+    assert "Allowed change:" in guidance
 
 
 def test_search_space_allocation_for_large_budget_keeps_full_base() -> None:
@@ -528,6 +530,56 @@ def test_parse_llm_response_infers_mixed_for_hybrid_before_extension_default() -
     assert tasks[0].config["required_output_dialect"] == "mixed"
 
 
+def test_parse_llm_response_normalizes_contradictory_hybrid_metadata() -> None:
+    tasks = _parse_llm_response(
+        json.dumps(
+            [
+                {
+                    "label": "hybrid-dispatch-from-evidence",
+                    "priority": 6,
+                    "agent_type": "strategy_agent",
+                    "kernel_language": "python",
+                    "search_set": "base",
+                    "required_output_dialect": "plain_triton",
+                    "task_prompt": _gluon_overlay_prompt(
+                        "Hybrid",
+                        [
+                            "Composition type: hybrid_dispatch",
+                            "Safe anchor: round_1/base-best/patch_4",
+                        ],
+                    ),
+                }
+            ]
+        ),
+        FakeAgentClass,
+    )
+
+    assert tasks[0].config["search_set"] == "extension"
+    assert tasks[0].config["required_output_dialect"] == "mixed"
+
+
+def test_parse_llm_response_normalizes_extension_plain_output_contract() -> None:
+    tasks = _parse_llm_response(
+        json.dumps(
+            [
+                {
+                    "label": "ext-l0-gluon-anchor",
+                    "priority": 6,
+                    "agent_type": "strategy_agent",
+                    "kernel_language": "python",
+                    "search_set": "extension",
+                    "required_output_dialect": "plain_triton",
+                    "task_prompt": _gluon_overlay_prompt(),
+                }
+            ]
+        ),
+        FakeAgentClass,
+    )
+
+    assert tasks[0].config["search_set"] == "extension"
+    assert tasks[0].config["required_output_dialect"] == "amd_gluon"
+
+
 def test_parse_llm_response_infers_memory_lowering_profile_for_l1_buffer_task() -> None:
     tasks = _parse_llm_response(
         json.dumps(
@@ -835,12 +887,14 @@ def test_run_task_agent_plain_triton_auto_prefers_amd_gluon_first(
     assert "low-latency kernels or tiny stages" in run_kwargs["search_space_allocation_guidance"]
     assert "Round 1 may include at most one L0 minimal AMD Gluon overlay" in run_kwargs["gluon_planning_traits_guidance"]
     system_prompt = mock_default_agent.call_args.kwargs["system_template"]
-    assert "Knowledge lookup contract: write a Gluon knowledge lookup plan before" in system_prompt
-    assert "Implementation contract: write a Gluon implementation plan before" in system_prompt
+    assert "Gluon knowledge lookup plan" in system_prompt
+    assert "Gluon implementation plan" in system_prompt
     assert "Performance hypothesis:" in system_prompt
     assert "Patch evolution:" in system_prompt
     assert "Optimization direction:" in system_prompt
     assert "Measurement boundary:" in system_prompt
+    assert "Comparison target:" in system_prompt
+    assert "Allowed change:" in system_prompt
     assert "non-executed Gluon" in system_prompt
     assert "required_patch_target_symbols" in system_prompt
     assert "skills/triton-gluon/docs/00_always_read.md" in system_prompt
