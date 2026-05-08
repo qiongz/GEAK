@@ -41,3 +41,4 @@ def test_scan_results_surfaces_gluon_contract_and_anchor_viability(tmp_path: Pat
     assert "required_patch_target_symbols=['target_stage']" in text
     assert "case_small=0.0250x" in text
     assert "Gluon L1 anchor viability: not_viable_for_l1" in text
+    assert "Gluon result attribution: Gluon-slower" in text

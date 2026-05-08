@@ -7,7 +7,9 @@ Implementation details live in `20_component_traits.md`.
 ## Internal Index
 
 - `### Search policy: base_shared_extension`
+- `### Search policy: optimization_direction_dialect_overlay`
 - `### Search policy: evidence_anchored_composition`
+- `### Search policy: measurement_boundary_policy`
 - `### Search policy: dialect_contract_metadata`
 - `gluon_doc_gate_metadata`
 - `trait_policy_separation`
@@ -16,16 +18,23 @@ Implementation details live in `20_component_traits.md`.
 
 ### Search policy: base_shared_extension
 
-GEAK plans Triton-family optimization as three sets:
+GEAK stores Triton-family optimization metadata in three sets:
 
-- **Base Set**: plain Triton search that must preserve no-regression coverage.
-- **Shared Set**: a strategy valid in both plain Triton and AMD Gluon, or a
-  transplant of an insight from one side to the other.
-- **Extension Set**: AMD-Gluon-only exploration, including L0 viability and L1
-  trait-specific lowering.
+- **Base Set**: a plain Triton implementation of an optimization direction.
+- **Shared Set**: a paired comparison or transplant for the same optimization
+  direction across dialects.
+- **Extension Set**: an AMD Gluon implementation of an optimization direction,
+  including L0 viability and L1 trait-specific lowering.
 
-Base Set is mandatory. Extension and Shared tasks are additive and must not
-replace Base Triton coverage.
+These sets are not mutually exclusive optimization directions. They are
+metadata used for audit, result attribution, and selector contracts. The primary
+planning axis is the optimization direction: split/decomposition, fusion,
+memory/layout cleanup, shape specialization, persistent/launch amortization, or
+another HIP/Triton family from the main planner.
+
+Plain Triton coverage is mandatory for every high-value direction. Gluon is an
+additional implementation option, not a reason to remove the plain Triton
+competitor.
 
 Base Set task prompts should include:
 
@@ -42,8 +51,40 @@ Shared source family: <base_family_id>
 Extension Set task prompts should include:
 
 ```text
+Optimization direction: <main HIP/Triton strategy>
+Source Base family: <family_id>
+Gluon overlay reason: explicit_layout | buffer_path | matrix_lowering | shape_bucket | dialect_specific_memory | local_subpath_win
 Extension layer: L0 | L1 | Hybrid
 ```
+
+### Search policy: optimization_direction_dialect_overlay
+
+Use the standard HIP/Triton priority order to choose what to optimize first.
+Then decide which implementation layer should try that direction:
+
+- `plain_triton`: the default implementation layer and required no-regression
+  competitor.
+- `amd_gluon`: use only when the same direction has a concrete Gluon mechanism:
+  explicit layout control, AMD buffer path, matrix/MFMA lowering, shape-bucketed
+  dispatch, or prior local sub-operation evidence.
+- `paired comparison`: use when the same strategy can be implemented in both
+  dialects and the benchmark should decide which layer wins.
+- `mixed` / `hybrid`: use only after evidence shows different winners by shape
+  or sub-operation.
+
+Examples:
+
+- `split-K` may have a plain Triton split/decomposition task and, only with a
+  real matrix/layout reason, an AMD Gluon split/decomposition variant.
+- `memory/layout cleanup` may have a plain Triton pointer/mask simplification
+  and an AMD Gluon explicit-layout or buffer-load overlay.
+- `persistent / launch amortization` is usually plain Triton/HIP first. Add
+  Gluon only when kernel-only or sub-operation evidence shows that explicit
+  layout removes more overhead than it adds.
+
+Do not emit a generic "rewrite to Gluon" task. A Gluon task must name the
+optimization direction it implements and the single allowed component it changes
+in the next patch.
 
 ### Search policy: evidence_anchored_composition
 
@@ -119,6 +160,35 @@ L2 / composition constraints:
   changes launcher/constexpr contract without saying so, drops the safe anchor,
   or regresses any benchmark shape.
 
+### Search policy: measurement_boundary_policy
+
+For end-to-end or wrapper-heavy kernels, a task must state the benchmark
+boundary before editing:
+
+```text
+Measurement boundary: kernel_only | fair_make_inputs_run_kernel | full_operator
+Integration cost in scope: yes | no
+Same ABI comparison: required
+```
+
+Rules:
+
+- `kernel_only`: evaluates the hot kernel body with inputs already prepared.
+  Kernel-only wins do not automatically justify fair/full-operator replacement.
+- `fair_make_inputs_run_kernel`: includes input preparation plus kernel launch.
+  Use this when pack/unpack, cache format conversion, or host dispatch is part of
+  the product cost.
+- `full_operator`: includes the entire operator path. Attribute wins carefully;
+  wrapper, packing, and artifact lookup may dominate the measured result.
+- Compare plain Triton and AMD Gluon under the same ABI. If an optimized path
+  changes cache layout, packing, or input preparation, report that as an
+  integration change rather than a pure kernel-body win.
+- If Gluon wins `kernel_only` but loses `fair_make_inputs_run_kernel`, the next
+  task should target integration cost or same-ABI pairing, not more Gluon kernel
+  tuning.
+- If `fair_make_inputs_run_kernel` wins while `kernel_only` loses, attribute the
+  win to integration/ABI effects unless the kernel-only evidence is repaired.
+
 ## trait_policy_separation
 
 Planner traits are internal signals. They are not user-facing requirements and
@@ -132,7 +202,8 @@ Use this separation:
   `layout_or_indexing`, `matrix_lowering`, `launch_or_dispatch_policy`,
   `scheduler_or_persistent_policy`, and `dtype_or_precision_policy`.
 - Search policies tell the planner how to allocate and combine tasks:
-  `base_shared_extension`, `evidence_anchored_composition`, and
+  `base_shared_extension`, `optimization_direction_dialect_overlay`,
+  `measurement_boundary_policy`, `evidence_anchored_composition`, and
   `dialect_contract_metadata`.
 
 Do not treat `evidence_anchored_composition` as a component trait. It chooses a
@@ -237,8 +308,9 @@ schematic example. Examples are not common context.
 
 Round 1:
 
-- fill mandatory Base families;
-- include one Extension L0 if AMD Gluon is allowed;
+- choose optimization directions from the standard HIP/Triton priority order;
+- fill mandatory plain Triton competitors for high-value directions;
+- include at most one Extension L0 when a concrete Gluon overlay reason exists;
 - for layout-heavy kernels, make Extension L0 a narrow compileable subpath
   rather than a full-kernel Gluon rewrite. The L0 task should explicitly say
   which index/mask/load/matrix skeleton is in scope and reject leftover plain
@@ -249,16 +321,18 @@ Round 1:
 - for low-latency kernels or tiny stages, do not spend L0 follow-up patches on
   repeated launch-constant sweeps after a slower correctness pass. Record the
   slower anchor as evidence and keep Base/Shared width;
-- include small Shared probes when budget allows.
+- include paired probes for the same optimization direction when budget allows.
 
 Round 2:
 
 - refine the safe Base anchor;
 - add shared transplants from useful Extension / Shared evidence;
-- create Gluon variants only when traits or evidence justify them;
-- make Extension L1 memory/buffer lowering refine the best correctness-passing
-  Gluon L0 anchor. If no Gluon anchor passed, shrink the task to a layout or
-  memory smoke path instead of restarting from plain Triton.
+- create Gluon variants only when traits or evidence justify the same
+  optimization direction;
+- make Extension L1 memory/buffer lowering refine an executed and
+  performance-viable or locally-winning Gluon anchor. If no Gluon anchor passed,
+  shrink the task to a layout or memory smoke path instead of restarting from
+  plain Triton.
 - every Extension L1 task must include `Anchor patch`, `Anchor speedup`,
   `Anchor execution: true`, `Comparison target: anchor_patch`, `Allowed change`,
   and `Reject if`. Do not emit L1 when the anchor is below `0.5x`, has material
@@ -285,5 +359,7 @@ Round 3:
 - `Gluon-informed`: final best is `plain_triton`, but includes a component
   first validated in Shared or Extension evidence.
 - `Gluon-neutral`: Gluon candidates ran but final best uses only Base evidence.
+- `Gluon-slower`: Gluon candidates executed and passed correctness but lost to
+  the safe anchor or had material shape regression.
 - `Blocked`: baseline correctness or benchmark contract fails before GEAK
   optimization.

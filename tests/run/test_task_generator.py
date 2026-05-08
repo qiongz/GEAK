@@ -84,6 +84,25 @@ def _gluon_feature_meta(
     }
 
 
+def _gluon_overlay_prompt(layer: str = "L0", extra: list[str] | None = None) -> str:
+    lines = [
+        "Extension Set task",
+        f"Extension layer: {layer}",
+        "Optimization direction: memory/layout cleanup",
+        "Source Base family: base_memory_layout_cleanup",
+        "Gluon overlay reason: explicit_layout",
+        "Implementation layer: amd_gluon overlay",
+        "Performance hypothesis: explicit layout may reduce hot-path memory/index overhead",
+        "Measurement boundary: kernel_only",
+        "Same ABI comparison: required",
+        "Comparison target: true_baseline",
+        "Allowed change: one layout or memory component",
+        "Reject if: non-executed Gluon or shape regression",
+    ]
+    lines.extend(extra or [])
+    return "\n".join(lines)
+
+
 def test_infer_gluon_planning_traits_for_plain_triton_dot() -> None:
     traits = _infer_gluon_planning_traits(
         _gluon_feature_meta("plain_triton"),
@@ -134,7 +153,7 @@ def test_build_gluon_planning_traits_guidance_includes_candidate_slots(tmp_path:
     assert "`matrix_dot`" in guidance
     assert "Prefer First:" in guidance
     assert "DotOperandLayout" in guidance
-    assert "Fallback candidate" in guidance
+    assert "Plain competitor" in guidance
 
 
 def test_build_gluon_planning_traits_guidance_for_nv_gluon_translation(tmp_path: Path) -> None:
@@ -154,7 +173,7 @@ def test_build_gluon_planning_traits_guidance_for_nv_gluon_translation(tmp_path:
     assert "do not rename APIs mechanically" in guidance
 
 
-def test_search_space_allocation_for_two_gpus_preserves_base_and_extension() -> None:
+def test_search_space_allocation_for_two_gpus_preserves_base_without_weak_gluon() -> None:
     guidance = _build_search_space_allocation_guidance(
         _gluon_feature_meta("plain_triton"),
         traits=["semantics_contract", "dialect_plain_triton", "layout_basic", "matrix_none"],
@@ -163,9 +182,9 @@ def test_search_space_allocation_for_two_gpus_preserves_base_and_extension() -> 
 
     assert "## Search Space Allocation" in guidance
     assert "Base Set (plain Triton): at least 3 task(s)" in guidance
-    assert "Extension Set (AMD Gluon): 1 task(s)" in guidance
-    assert "Do not replace or reduce Base Set tasks with Gluon tasks" in guidance
-    assert "Extension L0: minimal AMD Gluon viability" in guidance
+    assert "Extension Set (AMD Gluon): 0 task(s) recommended" in guidance
+    assert "Do not replace or reduce plain Triton competitors with Gluon tasks" in guidance
+    assert "Gluon overlay reason" in guidance
 
 
 def test_search_space_allocation_for_large_budget_keeps_full_base() -> None:
@@ -235,6 +254,7 @@ def test_search_space_allocation_lists_base_family_checklist() -> None:
     assert "`base_hot_path_streamline`" in guidance
     assert "`base_small_matrix_persistent_or_launch_amortization`" in guidance
     assert "Base family: <family_id>" in guidance
+    assert "Gluon overlay reasons by family" in guidance
 
 
 def test_search_space_allocation_includes_evidence_anchored_composition() -> None:
@@ -272,7 +292,7 @@ def test_search_space_allocation_degrades_after_gluon_failure() -> None:
 
     assert "Previous Gluon signal: failed" in guidance
     assert "Extension Set (AMD Gluon): 1 task(s)" in guidance
-    assert "Extension L0: minimal AMD Gluon viability" in guidance
+    assert "Extension L0" in guidance
     assert "layout-only, translation-only, or memory-only" in guidance
 
 
@@ -315,7 +335,7 @@ def test_audit_rejects_missing_split_k_or_persistent_base_family() -> None:
                 "priority": 8,
                 "agent_type": "strategy_agent",
                 "kernel_language": "python",
-                "task_prompt": "Extension Set task\nExtension layer: L0\nminimal gluon viability",
+                "task_prompt": _gluon_overlay_prompt(),
             },
         ]
     )
@@ -378,7 +398,7 @@ def test_audit_accepts_main_like_five_base_plus_gluon_l0() -> None:
                 "priority": 8,
                 "agent_type": "strategy_agent",
                 "kernel_language": "python",
-                "task_prompt": "Extension Set task\nExtension layer: L0\nminimal AMD Gluon viability",
+                "task_prompt": _gluon_overlay_prompt(),
             },
         ]
     )
@@ -427,17 +447,16 @@ def test_audit_accepts_l1_with_anchor_contract() -> None:
                 "priority": 8,
                 "agent_type": "strategy_agent",
                 "kernel_language": "python",
-                "task_prompt": "Extension Set task\nExtension layer: L0\nminimal AMD Gluon viability",
+                "task_prompt": _gluon_overlay_prompt(),
             },
             {
                 "label": "ext-l1-gluon-one-buffer-load",
                 "priority": 9,
                 "agent_type": "strategy_agent",
                 "kernel_language": "python",
-                "task_prompt": "\n".join(
+                "task_prompt": _gluon_overlay_prompt(
+                    "L1",
                     [
-                        "Extension Set task",
-                        "Extension layer: L1",
                         "Anchor patch: ext-l0-gluon-anchor/patch_2",
                         "Anchor speedup: 1.04x",
                         "Anchor execution: true",
@@ -445,7 +464,7 @@ def test_audit_accepts_l1_with_anchor_contract() -> None:
                         "Allowed change: one KV buffer_load",
                         "Reject if: changes MFMA or dispatch",
                         "Target symbol: target_stage",
-                    ]
+                    ],
                 ),
             },
         ]
@@ -614,7 +633,7 @@ def test_extension_audit_does_not_count_shared_gluon_variant_as_extension() -> N
                     "priority": 8,
                     "agent_type": "strategy_agent",
                     "kernel_language": "python",
-                    "task_prompt": "Extension Set task\nExtension layer: L0\nminimal AMD Gluon viability",
+                "task_prompt": _gluon_overlay_prompt(),
                 },
             ]
         ),
@@ -806,20 +825,22 @@ def test_run_task_agent_plain_triton_auto_prefers_amd_gluon_first(
     assert run_kwargs["knowledge_base_path"] == str(general_kb)
     assert "Preferred output dialect order: amd_gluon, plain_triton" in run_kwargs["gluon_feature_context"]
     assert "prefer_amd_gluon_if_viable_else_plain_triton" in run_kwargs["gluon_feature_context"]
-    assert "after preserving the Base Set plain-Triton quota" in run_kwargs["output_dialect_guidance"]
+    assert "after preserving the same-direction plain Triton competitor" in run_kwargs["output_dialect_guidance"]
     assert "Extension L0" in run_kwargs["output_dialect_guidance"]
     assert "Keep a plain Triton fallback path alive" in run_kwargs["output_dialect_guidance"]
     assert "## Gluon Planning Traits" in run_kwargs["gluon_planning_traits_guidance"]
     assert "`dialect_plain_triton`" in run_kwargs["gluon_planning_traits_guidance"]
-    assert "Base Set (plain Triton): at least 5 task(s)" in run_kwargs["search_space_allocation_guidance"]
-    assert "Extension L0: minimal AMD Gluon viability" in run_kwargs["search_space_allocation_guidance"]
+    assert "Base Set (plain Triton): at least 3 task(s)" in run_kwargs["search_space_allocation_guidance"]
+    assert "Extension Set (AMD Gluon): 1 task(s)" in run_kwargs["search_space_allocation_guidance"]
     assert "low-latency kernels or tiny stages" in run_kwargs["search_space_allocation_guidance"]
-    assert "Round 1 should include one L0 minimal AMD Gluon viability task" in run_kwargs["gluon_planning_traits_guidance"]
+    assert "Round 1 may include at most one L0 minimal AMD Gluon overlay" in run_kwargs["gluon_planning_traits_guidance"]
     system_prompt = mock_default_agent.call_args.kwargs["system_template"]
     assert "Knowledge lookup contract: write a Gluon knowledge lookup plan before" in system_prompt
     assert "Implementation contract: write a Gluon implementation plan before" in system_prompt
     assert "Performance hypothesis:" in system_prompt
     assert "Patch evolution:" in system_prompt
+    assert "Optimization direction:" in system_prompt
+    assert "Measurement boundary:" in system_prompt
     assert "non-executed Gluon" in system_prompt
     assert "required_patch_target_symbols" in system_prompt
     assert "skills/triton-gluon/docs/00_always_read.md" in system_prompt

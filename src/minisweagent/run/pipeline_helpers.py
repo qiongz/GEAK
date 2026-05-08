@@ -848,7 +848,7 @@ def _build_gluon_working_set(feature_metadata: dict[str, Any] | None) -> list[st
         "- Before editing, write a `Gluon knowledge lookup plan` in your strategy notes: task signals, exact split-doc files/headings, viewed=yes/no for each, source sections viewed, and missing details.",
         "- Do not start implementation while a required lookup row is still `viewed=no`; either view that section or record the exact missing-doc route.",
         "- Preserve launcher shape, indexing, masks, correctness behavior, and benchmark intent before changing algorithms.",
-        "- Before editing a Gluon path, write a `Gluon implementation plan`, `Performance hypothesis`, and `Patch evolution` plan. Use `00_always_read.md` for required fields, `20_component_traits.md` for layout/memory/matrix traits, `50_api_reference.md` for exact API patterns, `60_real_patterns.md` for L0/L1 evolution, and `10_search_policies.md` for round composition rules.",
+        "- Before editing a Gluon path, write a `Gluon implementation plan`, `Performance hypothesis`, and `Patch evolution` plan. It must name `Optimization direction`, `Implementation layer`, `Gluon overlay reason`, `Measurement boundary`, `Same ABI comparison`, `Comparison target`, and `Allowed change`; detailed fields live in `00_always_read.md`, `10_search_policies.md`, and `60_real_patterns.md`.",
         "- Required AMD Gluon patches must be real executed Gluon paths, not import-only, helper-only, empty, or plain Triton fallbacks.",
         "- Keep task scope narrow: one subpath/component unless `bundle_allowed=true`; use the docs for detailed rejection conditions and fix order.",
         "- For low-latency kernels or tiny stages, L0 is a smallest executed anchor. If a correctness-passing L0 is slower than Base, record the overhead evidence and avoid repeated `num_warps`, block-size, or launch-constant sweeps.",
@@ -870,7 +870,7 @@ def _build_gluon_working_set(feature_metadata: dict[str, Any] | None) -> list[st
     else:
         lines.extend(
             [
-                "- For `plain_triton -> amd_gluon`, first obtain a minimal compileable and correctness-passing amd_gluon baseline before trying persistent scheduling, split-K, or atomics.",
+                "- For `plain_triton -> amd_gluon`, only create a Gluon patch as a same-direction overlay with a concrete Gluon reason; keep the plain Triton competitor for that optimization direction.",
             ]
         )
 
