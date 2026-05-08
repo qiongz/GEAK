@@ -1795,7 +1795,7 @@ def _build_search_space_allocation_guidance(
         "- Keep a plain Triton competitor for every high-value direction unless AMD Gluon is explicitly required. Layering order: plain Triton -> optional L0/paired mapping -> L1 from viable/local-win evidence -> later Hybrid/Mixed.",
         "- Round 1 plain Triton input may have at most one L0 overlay. Generate it only when `overlay_priority_routing` is Prefer/high-confidence Consider; otherwise spend the slot on another plain Triton direction.",
         "- Required Gluon docs for priority: `00_always_read.md`, `10_search_policies.md` (`optimization_direction_dialect_overlay`, `overlay_priority_routing`), plus `20_component_traits.md` / `60_real_patterns.md` / `50_api_reference.md` only when their routed details apply.",
-        "- AMD Gluon overlay prompts must include `Extension layer: L0|L1|Hybrid`, `Optimization direction:`, `Source Base family:`, `Plain competitor:`, `Gluon overlay reason:`, `Overlay priority: Prefer|Consider`, `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`.",
+        "- AMD Gluon overlay prompts must include `Extension layer: L0|L1|Hybrid`, `Optimization direction:`, `Source Base family:`, `Plain competitor:`, `Gluon overlay reason:`, `Overlay priority: Prefer` or `Overlay priority: high-confidence Consider`, `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`. Do not write plain `Overlay priority: Consider` for Round-1 L0.",
         "- Required Gluon worker contract: ask for `Gluon knowledge lookup plan`, `Gluon implementation plan`, `Performance hypothesis:`, `Same ABI comparison:`, and `Patch evolution:` before editing; reject non-executed Gluon, target-symbol mismatch, leftover plain Triton device APIs inside edited `@gluon.jit`, and bundled unrelated changes without `bundle_allowed=true`.",
         "- L1 tasks additionally require an executed Gluon/mixed anchor (`Anchor patch`, `Anchor speedup`, `Anchor execution: true`, `Comparison target: anchor_patch`) and stage-specific tasks require `Target symbol` plus top-level `required_patch_target_symbols`.",
         "- If a plain Triton candidate wins, accept it as the best result rather than forcing more Gluon work.",
@@ -2629,6 +2629,67 @@ def _is_plain_competitor_task(task: AgentTask) -> bool:
     return search_set == "base" or "base family:" in text
 
 
+def _plain_family_label(family: str, existing_labels: set[str]) -> str:
+    stem = "triton-" + family.removeprefix("base_").replace("_", "-")
+    label = stem
+    idx = 2
+    while label in existing_labels:
+        label = f"{stem}-{idx}"
+        idx += 1
+    return label
+
+
+def _plain_family_prompt(family: str) -> str:
+    detail = _BASE_FAMILY_DETAILS.get(family, "plain Triton optimization direction")
+    return "\n".join(
+        [
+            "Plain Triton competitor task",
+            f"Base family: {family}",
+            "Implementation layer: plain_triton",
+            "Required output dialect: plain_triton",
+            f"Optimization direction: {detail}",
+            "Measurement boundary: kernel_only",
+            "Comparison target: true_baseline",
+            "Allowed change: one focused plain Triton optimization for this family",
+            "Reject if: correctness fails, output falls back to AMD Gluon, or any benchmark shape has a significant regression",
+        ]
+    )
+
+
+def _ensure_mandatory_plain_families(
+    tasks: list[AgentTask],
+    required_families: list[str],
+    *,
+    agent_class: type,
+) -> list[AgentTask]:
+    if not required_families:
+        return tasks
+
+    repaired = list(tasks)
+    existing_labels = {task.label for task in repaired}
+    for family in required_families:
+        if any(_is_plain_competitor_task(task) and _task_matches_base_family(task, family) for task in repaired):
+            continue
+        label = _plain_family_label(family, existing_labels)
+        existing_labels.add(label)
+        repaired.append(
+            AgentTask(
+                agent_class=agent_class,
+                task=_plain_family_prompt(family),
+                label=label,
+                priority=0,
+                kernel_language="python",
+                config={
+                    "search_set": "base",
+                    "required_output_dialect": "plain_triton",
+                    "implementation_layer": "plain_triton",
+                },
+            )
+        )
+        logger.warning("Planner omitted mandatory plain Triton family %s; added fallback task %s.", family, label)
+    return repaired
+
+
 def _is_gluon_extension_task(task: AgentTask) -> bool:
     required_output = str(task.config.get("required_output_dialect") or "").strip().lower()
     if required_output in {"amd_gluon", "mixed"}:
@@ -2740,6 +2801,25 @@ def _gluon_overlay_priority_errors(task: AgentTask) -> list[str]:
     ):
         return []
     return [f"{task.label} has invalid L0 Overlay priority `{priority}`; expected Prefer or high-confidence Consider"]
+
+
+def _has_valid_l0_overlay_priority(task: AgentTask) -> bool:
+    return not _gluon_overlay_priority_errors(task)
+
+
+def _filter_low_priority_l0_overlays(tasks: list[AgentTask]) -> list[AgentTask]:
+    filtered: list[AgentTask] = []
+    for task in tasks:
+        priority = _parse_prompt_field_value(f"{task.label}\n{task.task}", "Overlay priority")
+        if _is_l0_gluon_overlay_task(task) and priority and not _has_valid_l0_overlay_priority(task):
+            logger.warning(
+                "Dropping low-priority AMD Gluon L0 overlay %s before task write: %s",
+                task.label,
+                "; ".join(_gluon_overlay_priority_errors(task)),
+            )
+            continue
+        filtered.append(task)
+    return filtered
 
 
 def _gluon_overlay_binding_errors(task: AgentTask, tasks: list[AgentTask]) -> list[str]:
@@ -2923,6 +3003,12 @@ def _parse_llm_response(
     if not tasks:
         raise ValueError("LLM response contained no valid tasks")
 
+    tasks = _filter_low_priority_l0_overlays(tasks)
+    tasks = _ensure_mandatory_plain_families(
+        tasks,
+        required_base_families or [],
+        agent_class=agent_class,
+    )
     sorted_tasks = sorted(tasks, key=lambda t: t.priority)
     _audit_base_family_coverage(
         sorted_tasks,
