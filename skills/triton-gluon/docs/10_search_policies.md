@@ -333,6 +333,46 @@ doc gate.
 Do not include `gluon_examples_doc_path` unless the task explicitly needs a
 schematic example. Examples are not common context.
 
+## l0_scope_classification
+
+Before emitting a Round-1 L0 overlay, classify the proposed scope:
+
+- Is this the smallest executable, attributable, low-coupling subpath?
+- Does it contain layout-heavy risk such as RoPE, online softmax, multiple dot
+  paths, multiple 2D layout parents, nested `SliceLayout`, last-token logic, or
+  split-boundary control flow?
+- Can the candidate execute and feed measured output without translating the
+  whole algorithm?
+- Is the expected outcome `execution_anchor` or `performance_candidate`?
+
+L0 scope ladder:
+
+1. scalar or 1D stage;
+2. one load/store subpath;
+3. one index/mask layout smoke path;
+4. one source-first layout contract extraction;
+5. one matrix subpath only after an executed anchor, or when that matrix subpath
+   is explicitly the smallest viable component.
+
+Round-1 L0 overlays must bind to the same component and same optimization
+direction as `Plain competitor`, not merely the same broad `Source Base family`.
+Use `Target component:` / `Target symbol:` when the component is narrower than a
+whole helper.
+
+Optional metadata:
+
+```yaml
+extension_intent: execution_anchor | performance_candidate
+expected_outcome: correctness_anchor_not_speedup | possible_speedup
+not_viable_for_l1_if_slower_than_base: true
+overhead_source_to_record: launch_layout_overhead | conversion_overhead | memory_path_overhead
+target_symbol: <symbol or helper>
+target_component: <scoped component description>
+```
+
+These fields are optional and may be inferred from task prompt tags. Do not add
+them to plain Triton tasks or to Gluon tasks where they would be noise.
+
 ## round_progression
 
 Round 1:

@@ -732,6 +732,11 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
     implementation_layer = feature_meta.get("implementation_layer")
     extension_layer = feature_meta.get("extension_layer")
     target_symbols = feature_meta.get("required_patch_target_symbols")
+    extension_intent = feature_meta.get("extension_intent")
+    expected_outcome = feature_meta.get("expected_outcome")
+    overhead_source = feature_meta.get("overhead_source_to_record")
+    target_symbol = feature_meta.get("target_symbol")
+    target_component = feature_meta.get("target_component")
 
     lines = [
         heading,
@@ -771,6 +776,16 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
         else:
             symbols_text = ", ".join(str(item) for item in target_symbols)
         lines.append(f"- Task required_patch_target_symbols: {symbols_text}")
+    if extension_intent:
+        lines.append(f"- Task extension_intent: {extension_intent}")
+    if expected_outcome:
+        lines.append(f"- Task expected_outcome: {expected_outcome}")
+    if overhead_source:
+        lines.append(f"- Task overhead_source_to_record: {overhead_source}")
+    if target_symbol:
+        lines.append(f"- Task target_symbol: {target_symbol}")
+    if target_component:
+        lines.append(f"- Task target_component: {target_component}")
 
     if search_policy == PREFER_AMD_GLUON_IF_VIABLE_POLICY:
         lines.append("- Prefer AMD Gluon only as a same-direction implementation overlay when it looks structurally promising for this Triton-family input.")

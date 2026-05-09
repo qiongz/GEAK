@@ -223,10 +223,19 @@ Layout-heavy signals include:
 
 Prefer one of these L0 scopes:
 
+- scalar or 1D stage that feeds the measured output;
 - index and mask layout smoke path for one logical 2D expression;
 - one load/store subpath with explicit layout;
 - one small matrix-layout skeleton without full epilogue;
 - one source-first extraction of layout contracts and host launcher alignment.
+
+Anti-example pattern:
+
+- A decode-attention stage containing RoPE, last-token replacement, multiple QK
+  or PV dot paths, online softmax, split-boundary logic, and K/V indirection is
+  not a good Round-1 full-stage L0 target. Prefer a smaller reduction, one
+  isolated load/store, or one index/mask layout probe that executes and feeds the
+  measured output.
 
 For the chosen L0 scope, fully convert that subpath to Gluon. Do not leave a
 plain Triton island such as `tl.arange(0, BLOCK_R)` in a RoPE or mask branch
@@ -239,6 +248,12 @@ and exposes layout/memory evidence for later tasks. If L0 is slower than the
 Base path, record the overhead source when visible and avoid repeated launch
 constant tuning unless the next patch has a concrete reason it should remove
 that overhead.
+
+If `extension_intent=execution_anchor` and L0 passes correctness but is slower
+on every benchmark shape, record `observed_speedup`, `overhead_source`, and
+`not_viable_for_l1=true` unless the next task names a concrete removable
+overhead. Do not automatically generate same-scope MFMA, buffer, shared-memory,
+or scheduler follow-up.
 
 Do not satisfy L0 by adding an unused `@gluon.jit` helper next to an unchanged
 plain Triton path. If the helper is the scoped L0 path, the measured host

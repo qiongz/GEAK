@@ -154,6 +154,16 @@ _BASE_FAMILY_LABEL_MARKERS: dict[str, tuple[str, ...]] = {
     _BASE_FAMILY_GENERIC_MEMORY: ("memory", "coalesc", "layout"),
 }
 
+_OPTIONAL_GLUON_TASK_METADATA_FIELDS: tuple[tuple[str, str], ...] = (
+    ("extension_intent", "Extension intent"),
+    ("expected_outcome", "Expected outcome"),
+    ("not_viable_for_l1_if_slower_than_base", "Not viable for L1 if slower than Base"),
+    ("overhead_source_to_record", "Overhead source to record"),
+    ("target_symbol", "Target symbol"),
+    ("target_component", "Target component"),
+    ("forbidden_change", "Forbidden change"),
+)
+
 _VALID_SEARCH_SETS = {"base", "shared", "extension"}
 _VALID_REQUIRED_OUTPUT_DIALECTS = {"plain_triton", "amd_gluon", "mixed", "any"}
 
@@ -782,6 +792,9 @@ def write_task_files(
                 metadata["extension_layer"] = t.config["extension_layer"]
             if t.config.get("required_patch_target_symbols"):
                 metadata["required_patch_target_symbols"] = list(t.config["required_patch_target_symbols"])
+            for key, _tag in _OPTIONAL_GLUON_TASK_METADATA_FIELDS:
+                if key in t.config and t.config.get(key) not in (None, ""):
+                    metadata[key] = t.config[key]
         body = f"# {t.label}\n\n{t.task}\n"
         write_task_file(task_path, metadata, body)
         paths.append(task_path)
@@ -1140,6 +1153,34 @@ def _parse_prompt_field_value(text: str, field: str) -> str | None:
         return None
     value = match.group(1).strip().strip("`")
     return value or None
+
+
+def _normalize_optional_task_metadata_value(value: Any) -> Any:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value
+    text = str(value or "").strip().strip("`")
+    if not text:
+        return None
+    lowered = text.lower()
+    if lowered in {"true", "yes", "on"}:
+        return True
+    if lowered in {"false", "no", "off"}:
+        return False
+    return text
+
+
+def _optional_task_metadata_from_item_or_prompt(
+    item: dict[str, Any],
+    task_prompt: str,
+    key: str,
+    tag: str,
+) -> Any:
+    if key in item:
+        return _normalize_optional_task_metadata_value(item.get(key))
+    tagged = _parse_prompt_field_value(task_prompt, tag)
+    return _normalize_optional_task_metadata_value(tagged)
 
 
 def _is_shared_like_task_text(label: str, task_prompt: str) -> bool:
@@ -1889,10 +1930,14 @@ def _build_search_space_allocation_guidance(
         "- `required_output_dialect` and `Implementation layer` are the output contract; `search_set` is optional compatibility metadata and must not drive planning.",
         "- Keep a plain Triton competitor for every high-value direction unless AMD Gluon is explicitly required. Layering order: plain Triton -> optional L0/paired mapping -> L1 from viable/local-win evidence -> later Hybrid/Mixed.",
         "- Round 1 plain Triton input may have at most one L0 overlay. Generate it only when `overlay_priority_routing` is Prefer/high-confidence Consider; otherwise spend the slot on another plain Triton direction.",
+        "- Before emitting a Round-1 L0 overlay, perform `Gluon L0 scope classification`: is the candidate layout-heavy, does it include RoPE/online softmax/multiple dot paths/multiple 2D parents/nested SliceLayout/last-token or split-boundary logic, can one exact subpath execute without translating the whole algorithm, and is the expected outcome `execution_anchor` or `performance_candidate`?",
+        "- L0 scope ladder is generic across kernels: prefer the smallest executable, attributable, low-coupling subpath (scalar/1D stage, one load/store, one index/mask layout smoke path). Consider matrix/MFMA subpaths only after an executed anchor or when the task explicitly proves the matrix subpath is the smallest viable component.",
         "- Required Gluon docs for priority: `00_always_read.md`, `10_search_policies.md` (`optimization_direction_dialect_overlay`, `overlay_priority_routing`), plus `20_component_traits.md` / `60_real_patterns.md` / `50_api_reference.md` only when their routed details apply.",
         "- AMD Gluon overlay prompts must include `Extension layer: L0|L1|Hybrid`, `Optimization direction:`, `Source Base family:`, `Plain competitor:`, `Gluon overlay reason:`, `Overlay priority: Prefer` or `Overlay priority: high-confidence Consider`, `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`. Do not write plain `Overlay priority: Consider` for Round-1 L0.",
+        "- Optional L0 metadata may be top-level fields or task body tags: `extension_intent: execution_anchor|performance_candidate`, `expected_outcome: correctness_anchor_not_speedup|possible_speedup`, `not_viable_for_l1_if_slower_than_base: true`, `overhead_source_to_record: ...`, `Target symbol:`, and `Target component:`. Do not add these fields to tasks that do not need them.",
         "- Required Gluon worker contract: ask for `Gluon knowledge lookup plan`, `Gluon implementation plan`, `Performance hypothesis:`, `Same ABI comparison:`, and `Patch evolution:` before editing; stage/helper/local-expression scoped tasks must include `Target symbol:` or `Target component:` and wrap local target names in backticks inside `Allowed change`; reject non-executed Gluon, target-symbol mismatch, leftover plain Triton device APIs inside edited `@gluon.jit`, backup/temp files, and bundled unrelated changes without `bundle_allowed=true`. Keep API-level Gluon rewrite details in the routed skills/docs.",
         "- L0 overlay prompts must not ask the worker to convert an entire stage/helper/kernel just to prove Gluon. Scope L0 to one named subpath/component, such as a load/store, layout, mask, or matrix subpath; only use a whole helper as the target when the task explicitly explains why the helper is the smallest viable component.",
+        "- Round-1 L0 overlays must bind to the same component and same optimization direction as `Plain competitor`, not merely to the same broad `Source Base family`. Use `Target component:` to make that binding auditable.",
         "- L1 tasks additionally require an executed Gluon/mixed anchor (`Anchor patch`, `Anchor speedup`, `Anchor execution: true`, `Comparison target: anchor_patch`) and stage-specific tasks require target metadata such as `Target symbol` / `Target component` plus top-level `required_patch_target_symbols` when available.",
         "- If a plain Triton candidate wins, accept it as the best result rather than forcing more Gluon work.",
         "- If a Triton strategy wins and maps cleanly to Gluon traits, a later round may create an AMD Gluon variant of that winning strategy only with a concrete performance hypothesis.",
@@ -1994,6 +2039,8 @@ def _build_gluon_planning_traits_guidance(
             "",
             "Escalation rules:",
             "- Round 1 may include at most one L0 minimal AMD Gluon overlay when the priority docs place it in the Prefer or high-confidence Consider bucket; do not create a Gluon task unless it includes the full planner-audited fields: `Optimization direction:`, `Source Base family:`, `Plain competitor:`, `Gluon overlay reason:`, `Overlay priority:`, `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`.",
+            "- Round 1 L0 is an execution anchor or one-subpath probe. Classify the scope before emitting it: avoid full-stage rewrites when the candidate includes RoPE, online softmax, multiple dot paths, multiple 2D parents, nested SliceLayout, last-token/split-boundary logic, or a tiny sub-100us stage.",
+            "- Prefer the smallest executable target component for L0: scalar/1D stage, one load/store, one index/mask layout smoke path, or another explicitly smaller subpath. Do not hardcode any sample-specific stage name as the default.",
             "- L0 prompts must name one target component and must not instruct the worker to convert a full multi-stage kernel/helper unless that whole helper is explicitly the smallest viable component.",
             "- Additional overlay layers may become L1 trait-specific AMD Gluon tasks only after the L0 path is executed and performance-viable, or after local shape/sub-operation evidence shows Gluon beats the safe anchor.",
             "- In later rounds, if Gluon failed, shrink the next attempt to layout-only, translation-only, or memory-only work; if correctness passed but performance regressed, escalate memory/matrix lowering before scheduler or persistent work.",
@@ -2940,6 +2987,30 @@ def _gluon_overlay_binding_errors(task: AgentTask, tasks: list[AgentTask]) -> li
         return [
             f"{task.label} Source Base family `{source_family}` does not match Plain competitor `{plain_ref}`"
         ]
+    plain_component = _parse_prompt_field_value(plain_task.task, "Target component") or _parse_prompt_field_value(plain_task.task, "Allowed change") or ""
+    gluon_component = (
+        str(task.config.get("target_component") or "")
+        or _parse_prompt_field_value(task.task, "Target component")
+        or _parse_prompt_field_value(task.task, "Allowed change")
+        or ""
+    )
+    def component_tokens(value: str) -> set[str]:
+        tokens = set(target_symbols_from_scoped_text(value))
+        stripped = str(value or "").strip().strip("`")
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", stripped):
+            tokens.add(stripped)
+        return tokens
+
+    plain_tokens = component_tokens(plain_component)
+    gluon_tokens = component_tokens(gluon_component)
+    if plain_tokens and gluon_tokens and plain_tokens.isdisjoint(gluon_tokens):
+        logger.warning(
+            "Gluon overlay component audit warning: %s Target component `%s` does not obviously match Plain competitor component `%s`.",
+            task.label,
+            gluon_component,
+            plain_component,
+        )
+        return []
     return []
 
 
@@ -3087,6 +3158,10 @@ def _parse_llm_response(
         required_patch_target_symbols = _infer_required_patch_target_symbols(task_prompt, item)
         if required_patch_target_symbols:
             cfg["required_patch_target_symbols"] = required_patch_target_symbols
+        for key, tag in _OPTIONAL_GLUON_TASK_METADATA_FIELDS:
+            value = _optional_task_metadata_from_item_or_prompt(item, task_prompt, key, tag)
+            if value not in (None, ""):
+                cfg[key] = value
 
         tasks.append(
             AgentTask(

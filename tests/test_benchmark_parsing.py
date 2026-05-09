@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from minisweagent.run.preprocess import benchmark_parsing as preprocess_benchmark_parsing
 from minisweagent.run.postprocess.benchmark_parsing import (
     _dialect_contract_satisfied,
     _has_added_generic_gluon_dot,
@@ -511,6 +512,192 @@ def test_compute_best_patch_infers_target_symbol_from_task_body(tmp_path: Path) 
     assert result["best_patch_id"] == "patch_2"
     assert result["required_patch_target_symbols"] == ["target_stage_kernel"]
     assert result["gluon_execution_contract_satisfied"] is True
+
+
+def test_compute_best_patch_marks_slower_execution_anchor_not_viable_for_l1(tmp_path: Path) -> None:
+    root = tmp_path / "generic_kernel"
+    patch_dir = root / "results" / "round_1" / "extension-l0-gluon-anchor"
+    patch_dir.mkdir(parents=True)
+    tasks_dir = root / "tasks" / "round_1"
+    tasks_dir.mkdir(parents=True)
+
+    from minisweagent.run.task_file import write_task_file
+
+    write_task_file(
+        tasks_dir / "06_extension-l0-gluon-anchor.md",
+        {
+            "label": "extension-l0-gluon-anchor",
+            "required_output_dialect": "amd_gluon",
+            "extension_intent": "execution_anchor",
+            "expected_outcome": "correctness_anchor_not_speedup",
+            "not_viable_for_l1_if_slower_than_base": True,
+            "overhead_source_to_record": "launch_layout_overhead",
+            "target_component": "one 1D subpath",
+        },
+        "Extension L0\nTarget component: one 1D subpath\n",
+    )
+    (root / "benchmark_baseline.txt").write_text("case_a: 1.0 ms\ncase_b: 1.0 ms\n")
+    (patch_dir / "patch_1.patch").write_text(
+        "diff --git a/kernel.py b/kernel.py\n+from triton.experimental import gluon\n+@gluon.jit\n+def kernel_gluon(x):\n+    return x\n+kernel_gluon[grid](x)\n"
+    )
+    (patch_dir / "patch_1_test.txt").write_text("case_a: 1.2 ms\ncase_b: 1.2 ms\n")
+
+    result = compute_best_patch(patch_dir)
+
+    assert result is not None
+    assert result["extension_intent"] == "execution_anchor"
+    assert result["expected_outcome"] == "correctness_anchor_not_speedup"
+    assert result["target_component"] == "one 1D subpath"
+    assert result["gluon_l1_anchor_viability"] == "not_viable_for_l1"
+    assert result["not_viable_for_l1"] is True
+    assert result["overhead_source"] == "launch_layout_overhead"
+
+
+def test_compute_best_patch_keeps_performance_candidate_as_evidence_not_global_block(tmp_path: Path) -> None:
+    root = tmp_path / "generic_kernel"
+    patch_dir = root / "results" / "round_1" / "extension-l0-performance-candidate"
+    patch_dir.mkdir(parents=True)
+    tasks_dir = root / "tasks" / "round_1"
+    tasks_dir.mkdir(parents=True)
+
+    from minisweagent.run.task_file import write_task_file
+
+    write_task_file(
+        tasks_dir / "06_extension-l0-performance-candidate.md",
+        {
+            "label": "extension-l0-performance-candidate",
+            "required_output_dialect": "amd_gluon",
+            "extension_intent": "performance_candidate",
+            "expected_outcome": "possible_speedup",
+            "overhead_source_to_record": "conversion_overhead",
+        },
+        "Extension L0\n",
+    )
+    (root / "benchmark_baseline.txt").write_text("case_a: 1.0 ms\ncase_b: 1.0 ms\n")
+    (patch_dir / "patch_1.patch").write_text(
+        "diff --git a/kernel.py b/kernel.py\n+from triton.experimental import gluon\n+@gluon.jit\n+def kernel_gluon(x):\n+    return x\n+kernel_gluon[grid](x)\n"
+    )
+    (patch_dir / "patch_1_test.txt").write_text("case_a: 1.1 ms\ncase_b: 1.1 ms\n")
+
+    result = compute_best_patch(patch_dir)
+
+    assert result is not None
+    assert result["extension_intent"] == "performance_candidate"
+    assert result["gluon_l1_anchor_viability"] == "neutral_or_slow_anchor"
+    assert result["not_viable_for_l1"] is False
+    assert result["overhead_source"] == "conversion_overhead"
+
+
+def test_compute_best_patch_plain_task_has_no_positive_gluon_execution_contract(tmp_path: Path) -> None:
+    root = tmp_path / "generic_kernel"
+    patch_dir = root / "results" / "round_1" / "plain-streamline"
+    patch_dir.mkdir(parents=True)
+    tasks_dir = root / "tasks" / "round_1"
+    tasks_dir.mkdir(parents=True)
+
+    from minisweagent.run.task_file import write_task_file
+
+    write_task_file(
+        tasks_dir / "00_plain-streamline.md",
+        {
+            "label": "plain-streamline",
+            "required_output_dialect": "plain_triton",
+        },
+        "Base Set task\n",
+    )
+    (root / "benchmark_baseline.txt").write_text("case_a: 1.0 ms\ncase_b: 1.0 ms\n")
+    (patch_dir / "patch_1.patch").write_text("diff --git a/kernel.py b/kernel.py\n+import triton.language as tl\n+x = tl.arange(0, 16)\n")
+    (patch_dir / "patch_1_test.txt").write_text("case_a: 0.8 ms\ncase_b: 0.8 ms\n")
+
+    result = compute_best_patch(patch_dir)
+
+    assert result is not None
+    assert result["required_output_dialect"] == "plain_triton"
+    assert result["gluon_execution_contract_satisfied"] is False
+    assert result["gluon_l1_anchor_viability"] == "not_applicable"
+
+
+def test_preprocess_and_postprocess_preserve_gluon_anchor_metadata(tmp_path: Path) -> None:
+    root = tmp_path / "generic_kernel"
+    patch_dir = root / "results" / "round_1" / "extension-l0-gluon-anchor"
+    patch_dir.mkdir(parents=True)
+    tasks_dir = root / "tasks" / "round_1"
+    tasks_dir.mkdir(parents=True)
+
+    from minisweagent.run.task_file import write_task_file
+
+    write_task_file(
+        tasks_dir / "06_extension-l0-gluon-anchor.md",
+        {
+            "label": "extension-l0-gluon-anchor",
+            "required_output_dialect": "amd_gluon",
+            "extension_intent": "execution_anchor",
+            "expected_outcome": "correctness_anchor_not_speedup",
+            "not_viable_for_l1_if_slower_than_base": True,
+            "overhead_source_to_record": "launch_layout_overhead",
+            "target_component": "one 1D subpath",
+        },
+        "Extension L0\nTarget component: one 1D subpath\n",
+    )
+    (root / "benchmark_baseline.txt").write_text("case_a: 1.0 ms\ncase_b: 1.0 ms\n")
+    (patch_dir / "patch_1.patch").write_text(
+        "diff --git a/kernel.py b/kernel.py\n+from triton.experimental import gluon\n+@gluon.jit\n+def kernel_gluon(x):\n+    return x\n+kernel_gluon[grid](x)\n"
+    )
+    (patch_dir / "patch_1_test.txt").write_text("case_a: 0.8 ms\ncase_b: 0.8 ms\n")
+
+    post = compute_best_patch(patch_dir)
+    pre = preprocess_benchmark_parsing.compute_best_patch(patch_dir)
+
+    assert post is not None
+    assert pre is not None
+    for result in (post, pre):
+        assert result["required_output_dialect"] == "amd_gluon"
+        assert result["extension_intent"] == "execution_anchor"
+        assert result["expected_outcome"] == "correctness_anchor_not_speedup"
+        assert result["target_component"] == "one 1D subpath"
+        assert result["gluon_execution_contract_satisfied"] is True
+        assert result["gluon_l1_anchor_viability"] == "viable_for_l1"
+
+
+def test_preprocess_preserves_slower_gluon_execution_anchor_evidence(tmp_path: Path) -> None:
+    root = tmp_path / "generic_kernel"
+    patch_dir = root / "results" / "round_1" / "extension-l0-gluon-anchor"
+    patch_dir.mkdir(parents=True)
+    tasks_dir = root / "tasks" / "round_1"
+    tasks_dir.mkdir(parents=True)
+
+    from minisweagent.run.task_file import write_task_file
+
+    write_task_file(
+        tasks_dir / "06_extension-l0-gluon-anchor.md",
+        {
+            "label": "extension-l0-gluon-anchor",
+            "required_output_dialect": "amd_gluon",
+            "extension_intent": "execution_anchor",
+            "expected_outcome": "correctness_anchor_not_speedup",
+            "not_viable_for_l1_if_slower_than_base": True,
+            "overhead_source_to_record": "launch_layout_overhead",
+            "target_component": "one 1D subpath",
+        },
+        "Extension L0\nTarget component: one 1D subpath\n",
+    )
+    (root / "benchmark_baseline.txt").write_text("case_a: 1.0 ms\ncase_b: 1.0 ms\n")
+    (patch_dir / "patch_1.patch").write_text(
+        "diff --git a/kernel.py b/kernel.py\n+from triton.experimental import gluon\n+@gluon.jit\n+def kernel_gluon(x):\n+    return x\n+kernel_gluon[grid](x)\n"
+    )
+    (patch_dir / "patch_1_test.txt").write_text("case_a: 1.2 ms\ncase_b: 1.2 ms\n")
+
+    result = preprocess_benchmark_parsing.compute_best_patch(patch_dir)
+
+    assert result is not None
+    assert result["best_patch_speedup"] == pytest.approx(0.833333, rel=1e-5)
+    assert result["improves_true_baseline"] is False
+    assert result["has_significant_shape_regression"] is True
+    assert result["extension_intent"] == "execution_anchor"
+    assert result["gluon_execution_contract_satisfied"] is True
+    assert result["gluon_l1_anchor_viability"] == "not_viable_for_l1"
+    assert result["not_viable_for_l1"] is True
+    assert result["overhead_source"] == "launch_layout_overhead"
 
 
 def test_compute_best_patch_rejects_definition_only_gluon_helper(tmp_path: Path) -> None:
