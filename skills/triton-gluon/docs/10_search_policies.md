@@ -32,7 +32,10 @@ additional implementation option, not a reason to remove the plain Triton
 competitor.
 Round 1 L0 overlays must bind to a concrete same-batch plain task through
 `Plain competitor`, not merely to a family name. The `Plain competitor` task's
-`Base family` must match the overlay's `Source Base family`.
+`Base family` must match the overlay's `Source Base family`. It must be a Base
+Set task with `required_output_dialect=plain_triton`; do not point
+`Plain competitor` at Shared, paired-comparison, shared-transplant, Gluon, mixed,
+or hybrid tasks.
 
 Required prompt fields by layer:
 
@@ -385,7 +388,8 @@ Round 1:
 - choose optimization directions from the standard Triton priority order;
 - fill mandatory plain Triton competitors for high-value directions;
 - include at most one Extension L0 when a concrete Gluon overlay reason exists;
-  that L0 must name the exact same-batch `Plain competitor` it overlays;
+  that L0 must name the exact same-batch Base/plain `Plain competitor` it
+  overlays. Shared or paired tasks are not valid plain competitors;
 - for layout-heavy kernels, make Extension L0 a narrow compileable subpath
   rather than a full-kernel Gluon rewrite. The L0 task should explicitly say
   which index/mask/load/matrix skeleton is in scope and reject leftover plain

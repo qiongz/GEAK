@@ -1414,7 +1414,7 @@ def test_inject_pipeline_context_includes_shape_coverage_block() -> None:
     assert "TASK BODY" in body
 
 
-def test_inject_pipeline_context_prints_absolute_gluon_split_doc_paths() -> None:
+def test_inject_pipeline_context_omits_gluon_refs_for_plain_triton_tasks() -> None:
     feature_metadata = {
         "kernel_type": "triton",
         "input_dialect": "plain_triton",
@@ -1425,6 +1425,35 @@ def test_inject_pipeline_context_prints_absolute_gluon_split_doc_paths() -> None
         "output_dialect_search_policy": "prefer_amd_gluon_if_viable_else_plain_triton",
         "target_backend": "hip/gfx942",
         "shape_coverage_profile": SHAPE_COVERAGE_UNKNOWN,
+    }
+    body, _cfg = inject_pipeline_context(
+        "TASK BODY",
+        {},
+        feature_metadata=feature_metadata,
+        gluon_always_read_path="/abs/geak/skills/triton-gluon/docs/00_always_read.md",
+        gluon_api_reference_path="/abs/geak/skills/triton-gluon/docs/50_api_reference.md",
+        gluon_real_patterns_path="/abs/geak/skills/triton-gluon/docs/60_real_patterns.md",
+    )
+
+    assert "Split-doc entrypoint: /abs/geak/skills/triton-gluon/docs/00_always_read.md" not in body
+    assert "API syntax, launch skeletons" not in body
+    assert "/abs/geak/skills/triton-gluon/docs/50_api_reference.md" not in body
+    assert "Real aiter patterns" not in body
+    assert "/abs/geak/skills/triton-gluon/docs/60_real_patterns.md" not in body
+
+
+def test_inject_pipeline_context_prints_absolute_gluon_split_doc_paths_for_gluon_tasks() -> None:
+    feature_metadata = {
+        "kernel_type": "triton",
+        "input_dialect": "plain_triton",
+        "gluon_feature_mode": "auto",
+        "gluon_baseline_profile": "raw",
+        "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+        "preferred_output_dialects": ["amd_gluon", "plain_triton"],
+        "output_dialect_search_policy": "prefer_amd_gluon_if_viable_else_plain_triton",
+        "target_backend": "hip/gfx942",
+        "shape_coverage_profile": SHAPE_COVERAGE_UNKNOWN,
+        "required_output_dialect": "amd_gluon",
     }
     body, _cfg = inject_pipeline_context(
         "TASK BODY",

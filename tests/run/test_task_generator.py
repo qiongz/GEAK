@@ -521,6 +521,58 @@ def test_audit_rejects_l0_overlay_missing_execution_boundary() -> None:
         _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
 
 
+def test_audit_failure_writes_raw_and_parsed_task_diagnostics(tmp_path: Path) -> None:
+    prompt = "\n".join(
+        line
+        for line in _gluon_overlay_prompt(plain_competitor="shared-paired-1d-acc-and-mask").splitlines()
+        if not line.startswith(("Minimum executable unit:", "Allowed execution path:", "Scope infeasible policy:"))
+    )
+    payload = json.dumps(
+        [
+            {
+                "label": "shared-paired-1d-acc-and-mask",
+                "priority": 5,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "\n".join(
+                    [
+                        "Shared Set task",
+                        "Shared source family: base_hot_path_streamline",
+                        "Implementation layer: paired comparison",
+                        "Optimization direction: mask/accumulator cleanup",
+                    ]
+                ),
+            },
+            {
+                "label": "gluon-l0-load-store-layout",
+                "priority": 6,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": prompt,
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Minimum executable unit"):
+        _parse_llm_response(
+            payload,
+            FakeAgentClass,
+            expected_extension_slots=1,
+            audit_diagnostics_dir=tmp_path,
+        )
+
+    dumps = list(tmp_path.glob("task_generation_audit_failed_*.json"))
+    assert len(dumps) == 1
+    data = json.loads(dumps[0].read_text())
+    assert "gluon-l0-load-store-layout" in data["raw_submitted_json"]
+    assert "Plain competitor `shared-paired-1d-acc-and-mask` is not a plain Triton competitor task" in data["error"]
+    summaries = {item["label"]: item for item in data["parsed_task_summaries"]}
+    assert summaries["gluon-l0-load-store-layout"]["plain_competitor"] == "shared-paired-1d-acc-and-mask"
+    assert summaries["gluon-l0-load-store-layout"]["minimum_executable_unit"] == ""
+    assert summaries["gluon-l0-load-store-layout"]["allowed_execution_path"] == ""
+    assert summaries["shared-paired-1d-acc-and-mask"]["search_set"] == "shared"
+
+
 def test_audit_rejects_l0_overlay_that_allows_and_forbids_whole_kernel() -> None:
     prompt = _gluon_overlay_prompt(
         extra=[
@@ -1031,6 +1083,36 @@ def test_parse_llm_response_infers_memory_lowering_profile_for_l1_buffer_task() 
     assert "gluon_architecture_notes_path" not in cfg["required_gluon_docs"]
 
 
+def test_parse_llm_response_omits_gluon_doc_metadata_for_plain_base_task() -> None:
+    tasks = _parse_llm_response(
+        json.dumps(
+            [
+                {
+                    "label": "epilogue-scale-streamline",
+                    "priority": 0,
+                    "agent_type": "strategy_agent",
+                    "required_output_dialect": "plain_triton",
+                    "task_prompt": "\n".join(
+                        [
+                            "Base Set task",
+                            "Base family: base_hot_path_streamline",
+                            "Implementation layer: plain_triton",
+                            "Optimization direction: Streamline scale application epilogue",
+                        ]
+                    ),
+                }
+            ]
+        ),
+        FakeAgentClass,
+    )
+
+    cfg = tasks[0].config
+    assert cfg["search_set"] == "base"
+    assert cfg["required_output_dialect"] == "plain_triton"
+    assert "gluon_doc_profile" not in cfg
+    assert "required_gluon_docs" not in cfg
+
+
 def test_parse_llm_response_infers_gluon_variant_from_anchor_profile() -> None:
     tasks = _parse_llm_response(
         json.dumps(
@@ -1453,13 +1535,11 @@ def test_write_task_files_marks_triton_tasks_with_skill_usage(tmp_path: Path):
     assert meta["preferred_output_dialects"] == ["amd_gluon", "plain_triton"]
     assert meta["output_dialect_search_policy"] == "prefer_amd_gluon_if_viable_else_plain_triton"
     assert meta["allowed_skill_tiers"] == ["general"]
-    assert meta["gluon_doc_profile"] == "base_or_shared_gluon"
-    assert "required_gluon_docs" in meta
-    assert "gluon_skill_path" in meta["required_gluon_docs"]
-    assert Path(meta["gluon_always_read_path"]).is_absolute()
-    assert meta["gluon_always_read_path"].endswith("skills/triton-gluon/docs/00_always_read.md")
-    assert meta["gluon_api_reference_path"].endswith("skills/triton-gluon/docs/50_api_reference.md")
-    assert meta["gluon_real_patterns_path"].endswith("skills/triton-gluon/docs/60_real_patterns.md")
+    assert "gluon_doc_profile" not in meta
+    assert "required_gluon_docs" not in meta
+    assert "gluon_always_read_path" not in meta
+    assert "gluon_api_reference_path" not in meta
+    assert "gluon_real_patterns_path" not in meta
 
 
 def test_parse_llm_response_augments_explicit_required_gluon_docs() -> None:

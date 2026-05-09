@@ -333,7 +333,10 @@ implementation layer.
 Round-1 L0 overlays must also bind to the same component and same optimization
 direction as `Plain competitor`, not merely to the same `Source Base family`.
 Use `Target component:` or `Target symbol:` when the component is narrower than
-the whole kernel/helper.
+the whole kernel/helper. `Plain competitor:` must name an exact same-batch Base
+Set task whose `required_output_dialect` is `plain_triton`; do not use
+`Shared`, `paired comparison`, `shared_transplant`, Gluon, mixed, or hybrid
+tasks as the plain competitor for an L0 overlay.
 
 **Dialect contract metadata**: Use `required_output_dialect=amd_gluon` only
 when plain Triton fallback is not a valid success. Required AMD Gluon tasks must
