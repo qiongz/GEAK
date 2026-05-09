@@ -737,6 +737,9 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
     overhead_source = feature_meta.get("overhead_source_to_record")
     target_symbol = feature_meta.get("target_symbol")
     target_component = feature_meta.get("target_component")
+    forbidden_symbols = feature_meta.get("forbidden_patch_target_symbols")
+    allowed_execution_path = feature_meta.get("allowed_execution_path")
+    scope_infeasible_policy = feature_meta.get("scope_infeasible_policy")
 
     lines = [
         heading,
@@ -786,6 +789,16 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
         lines.append(f"- Task target_symbol: {target_symbol}")
     if target_component:
         lines.append(f"- Task target_component: {target_component}")
+    if forbidden_symbols:
+        if isinstance(forbidden_symbols, str):
+            forbidden_text = forbidden_symbols
+        else:
+            forbidden_text = ", ".join(str(item) for item in forbidden_symbols)
+        lines.append(f"- Task forbidden_patch_target_symbols: {forbidden_text}")
+    if allowed_execution_path:
+        lines.append(f"- Task allowed_execution_path: {allowed_execution_path}")
+    if scope_infeasible_policy:
+        lines.append(f"- Task scope_infeasible_policy: {scope_infeasible_policy}")
 
     if search_policy == PREFER_AMD_GLUON_IF_VIABLE_POLICY:
         lines.append("- Prefer AMD Gluon only as a same-direction implementation overlay when it looks structurally promising for this Triton-family input.")

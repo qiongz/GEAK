@@ -866,6 +866,13 @@ def _build_gluon_working_set(
     target_symbol = str(feature_metadata.get("target_symbol") or "").strip()
     target_component = str(feature_metadata.get("target_component") or "").strip()
     forbidden_change = str(feature_metadata.get("forbidden_change") or "").strip()
+    allowed_execution_path = str(feature_metadata.get("allowed_execution_path") or "").strip()
+    scope_infeasible_policy = str(feature_metadata.get("scope_infeasible_policy") or "").strip()
+    forbidden_symbols = feature_metadata.get("forbidden_patch_target_symbols") or []
+    if isinstance(forbidden_symbols, str):
+        forbidden_symbols_text = forbidden_symbols
+    else:
+        forbidden_symbols_text = ", ".join(str(item) for item in forbidden_symbols)
 
     lines = [
         "## Gluon Working Set",
@@ -880,6 +887,7 @@ def _build_gluon_working_set(
         "- Required AMD Gluon patches must be real executed Gluon paths, not import-only, helper-only, empty, or plain Triton fallbacks.",
         "- Keep task scope narrow: one subpath/component unless `bundle_allowed=true`; use the docs for detailed rejection conditions and fix order.",
         "- L0 patch evolution: `patch_0` should prove the smallest correctness anchor; `patch_1+` should change exactly one layout parameter, launch constant, memory path, matrix subpath, or dispatch condition.",
+        "- If the scoped Gluon change cannot be implemented without touching forbidden paths, do not widen the scope. Use the task's allowed execution path, shrink/report infeasible, or ask for a new task.",
         "- For low-latency kernels or tiny stages, L0 is a smallest executed anchor. If a correctness-passing L0 is slower than Base, record the overhead evidence and avoid repeated `num_warps`, block-size, or launch-constant sweeps.",
     ]
     if extension_intent == "execution_anchor":
@@ -894,6 +902,15 @@ def _build_gluon_working_set(
         lines.append(f"- Target component: {target_component}; keep the patch scoped to this component.")
     if forbidden_change:
         lines.append(f"- Forbidden change: {forbidden_change}")
+    if forbidden_symbols_text:
+        lines.append(f"- Forbidden target scopes checked by tools: {forbidden_symbols_text}.")
+    if allowed_execution_path:
+        lines.append(f"- Allowed execution path: `{allowed_execution_path}`.")
+    if scope_infeasible_policy:
+        lines.append(f"- Scope infeasible policy: `{scope_infeasible_policy}`.")
+    lines.append(
+        "- L0 execution-path choices: `inline_scoped_helper` only when the language boundary permits the scoped change; `separate_gluon_kernel` only when the task explicitly allows a second launch/temp buffer; `infeasible` means report or shrink scope instead of converting the whole kernel."
+    )
 
     if input_dialect == NV_GLUON_DIALECT:
         lines.extend(

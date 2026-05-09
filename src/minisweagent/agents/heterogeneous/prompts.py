@@ -375,7 +375,8 @@ these files to be viewed before saving or benchmarking.
 Optional Gluon metadata may be supplied when useful, and may also be inferred
 from task_prompt tags: `extension_intent`, `expected_outcome`,
 `not_viable_for_l1_if_slower_than_base`, `overhead_source_to_record`,
-`target_symbol`, and `target_component`. Do not add these fields to plain
+`allowed_execution_path`, `scope_infeasible_policy`, `target_symbol`, and
+`target_component`. Do not add these fields to plain
 Triton tasks or to Gluon tasks where they would be noise.
 
 **Composition tags**: If Evidence-Anchored Composition is present, every

@@ -7,9 +7,11 @@ from minisweagent.run.postprocess.benchmark_parsing import (
     _dialect_contract_satisfied,
     _has_added_generic_gluon_dot,
     _has_added_plain_exception_fallback,
+    _infer_forbidden_patch_target_symbols,
     _infer_required_patch_target_symbols,
     _patch_touches_any_target_symbol,
     _patch_touches_backup_file,
+    _patch_touches_forbidden_target_symbol,
     _required_amd_gluon_static_contract_error,
     _required_output_dialect,
     classify_patch_output_dialect,
@@ -138,6 +140,38 @@ def test_stage_scope_target_does_not_accept_other_stage_patch() -> None:
     )
 
     assert _patch_touches_any_target_symbol(patch, ["stage1"]) is False
+
+
+def test_infer_forbidden_patch_target_symbols_from_reject_if_and_do_not() -> None:
+    body = "\n".join(
+        [
+            "Reject if: the main dot loop or A/B loads are modified.",
+            "Do NOT attempt to convert the entire kernel to Gluon.",
+        ]
+    )
+
+    assert _infer_forbidden_patch_target_symbols(body, {}) == [
+        "dot_loop",
+        "ab_input_loads",
+        "whole_kernel_or_helper",
+    ]
+
+
+def test_patch_touches_forbidden_dot_loop_and_input_loads() -> None:
+    patch = "\n".join(
+        [
+            "diff --git a/kernel.py b/kernel.py",
+            "+@gluon.jit",
+            "+def scaled_mm_kernel(a_ptrs, b_ptrs):",
+            "+    a = gl.load(a_ptrs)",
+            "+    b = gl.load(b_ptrs)",
+            "+    return gl.amd.cdna3.mfma(a, b, acc)",
+        ]
+    )
+
+    assert _patch_touches_forbidden_target_symbol(patch, ["dot_loop"]) == "dot_loop"
+    assert _patch_touches_forbidden_target_symbol(patch, ["ab_input_loads"]) == "ab_input_loads"
+    assert _patch_touches_forbidden_target_symbol(patch, ["whole_kernel_or_helper"]) == "whole_kernel_or_helper"
 
 
 def test_required_amd_gluon_static_contract_rejects_generic_gluon_dot() -> None:
@@ -512,6 +546,8 @@ def test_compute_best_patch_infers_target_symbol_from_task_body(tmp_path: Path) 
     assert result["best_patch_id"] == "patch_2"
     assert result["required_patch_target_symbols"] == ["target_stage_kernel"]
     assert result["gluon_execution_contract_satisfied"] is True
+    assert result["scope_compliant"] is True
+    assert result["forbidden_scope_violation"] is None
 
 
 def test_compute_best_patch_marks_slower_execution_anchor_not_viable_for_l1(tmp_path: Path) -> None:
@@ -533,6 +569,8 @@ def test_compute_best_patch_marks_slower_execution_anchor_not_viable_for_l1(tmp_
             "not_viable_for_l1_if_slower_than_base": True,
             "overhead_source_to_record": "launch_layout_overhead",
             "target_component": "one 1D subpath",
+            "allowed_execution_path": "separate_gluon_kernel",
+            "scope_infeasible_policy": "separate_kernel_if_allowed",
         },
         "Extension L0\nTarget component: one 1D subpath\n",
     )
@@ -548,9 +586,107 @@ def test_compute_best_patch_marks_slower_execution_anchor_not_viable_for_l1(tmp_
     assert result["extension_intent"] == "execution_anchor"
     assert result["expected_outcome"] == "correctness_anchor_not_speedup"
     assert result["target_component"] == "one 1D subpath"
+    assert result["allowed_execution_path"] == "separate_gluon_kernel"
+    assert result["scope_infeasible_policy"] == "separate_kernel_if_allowed"
+    assert result["scope_infeasible_reported"] is False
+    assert result["scope_compliant"] is True
     assert result["gluon_l1_anchor_viability"] == "not_viable_for_l1"
     assert result["not_viable_for_l1"] is True
     assert result["overhead_source"] == "launch_layout_overhead"
+
+
+def test_compute_best_patch_rejects_forbidden_scope_patch(tmp_path: Path) -> None:
+    root = tmp_path / "generic_kernel"
+    patch_dir = root / "results" / "round_1" / "gluon-l0-scale-load-layout"
+    patch_dir.mkdir(parents=True)
+    tasks_dir = root / "tasks" / "round_1"
+    tasks_dir.mkdir(parents=True)
+
+    from minisweagent.run.task_file import write_task_file
+
+    write_task_file(
+        tasks_dir / "05_gluon-l0-scale-load-layout.md",
+        {
+            "label": "gluon-l0-scale-load-layout",
+            "required_output_dialect": "amd_gluon",
+            "required_patch_target_symbols": ["scale_a", "scale_b"],
+        },
+        "\n".join(
+            [
+                "Allowed change: Convert only the `scale_a` and `scale_b` load+broadcast+multiply path.",
+                "Reject if: the main dot loop or A/B loads are modified.",
+                "Do NOT attempt to convert the entire kernel to Gluon.",
+            ]
+        ),
+    )
+    (root / "benchmark_baseline.txt").write_text("case_a: 1.0 ms\ncase_b: 1.0 ms\n")
+    (patch_dir / "patch_1.patch").write_text(
+        "\n".join(
+            [
+                "diff --git a/kernel.py b/kernel.py",
+                "+from triton.experimental import gluon",
+                "+from triton.experimental.gluon import language as gl",
+                "+@gluon.jit",
+                "+def scaled_mm_kernel(a_ptrs, b_ptrs, scale_a_ptr, scale_b_ptr):",
+                "+    a = gl.load(a_ptrs)",
+                "+    b = gl.load(b_ptrs)",
+                "+    scale_a = gl.load(scale_a_ptr)",
+                "+    scale_b = gl.load(scale_b_ptr)",
+                "+    return gl.amd.cdna3.mfma(a, b, acc) + scale_a + scale_b",
+                "+scaled_mm_kernel[grid](a, b, scale_a, scale_b)",
+            ]
+        )
+    )
+    (patch_dir / "patch_1_test.txt").write_text("case_a: 0.5 ms\ncase_b: 0.5 ms\n")
+
+    assert compute_best_patch(patch_dir) is None
+
+
+def test_preprocess_compute_best_patch_rejects_forbidden_scope_patch(tmp_path: Path) -> None:
+    root = tmp_path / "generic_kernel"
+    patch_dir = root / "results" / "round_1" / "gluon-l0-scale-load-layout"
+    patch_dir.mkdir(parents=True)
+    tasks_dir = root / "tasks" / "round_1"
+    tasks_dir.mkdir(parents=True)
+
+    from minisweagent.run.task_file import write_task_file
+
+    write_task_file(
+        tasks_dir / "05_gluon-l0-scale-load-layout.md",
+        {
+            "label": "gluon-l0-scale-load-layout",
+            "required_output_dialect": "amd_gluon",
+            "required_patch_target_symbols": ["scale_a", "scale_b"],
+        },
+        "\n".join(
+            [
+                "Allowed change: Convert only the `scale_a` and `scale_b` load+broadcast+multiply path.",
+                "Reject if: the main dot loop or A/B loads are modified.",
+                "Do NOT attempt to convert the entire kernel to Gluon.",
+            ]
+        ),
+    )
+    (root / "benchmark_baseline.txt").write_text("case_a: 1.0 ms\ncase_b: 1.0 ms\n")
+    (patch_dir / "patch_1.patch").write_text(
+        "\n".join(
+            [
+                "diff --git a/kernel.py b/kernel.py",
+                "+from triton.experimental import gluon",
+                "+from triton.experimental.gluon import language as gl",
+                "+@gluon.jit",
+                "+def scaled_mm_kernel(a_ptrs, b_ptrs, scale_a_ptr, scale_b_ptr):",
+                "+    a = gl.load(a_ptrs)",
+                "+    b = gl.load(b_ptrs)",
+                "+    scale_a = gl.load(scale_a_ptr)",
+                "+    scale_b = gl.load(scale_b_ptr)",
+                "+    return gl.amd.cdna3.mfma(a, b, acc) + scale_a + scale_b",
+                "+scaled_mm_kernel[grid](a, b, scale_a, scale_b)",
+            ]
+        )
+    )
+    (patch_dir / "patch_1_test.txt").write_text("case_a: 0.5 ms\ncase_b: 0.5 ms\n")
+
+    assert preprocess_benchmark_parsing.compute_best_patch(patch_dir) is None
 
 
 def test_compute_best_patch_keeps_performance_candidate_as_evidence_not_global_block(tmp_path: Path) -> None:
@@ -636,6 +772,8 @@ def test_preprocess_and_postprocess_preserve_gluon_anchor_metadata(tmp_path: Pat
             "not_viable_for_l1_if_slower_than_base": True,
             "overhead_source_to_record": "launch_layout_overhead",
             "target_component": "one 1D subpath",
+            "allowed_execution_path": "separate_gluon_kernel",
+            "scope_infeasible_policy": "separate_kernel_if_allowed",
         },
         "Extension L0\nTarget component: one 1D subpath\n",
     )
@@ -655,6 +793,8 @@ def test_preprocess_and_postprocess_preserve_gluon_anchor_metadata(tmp_path: Pat
         assert result["extension_intent"] == "execution_anchor"
         assert result["expected_outcome"] == "correctness_anchor_not_speedup"
         assert result["target_component"] == "one 1D subpath"
+        assert result["allowed_execution_path"] == "separate_gluon_kernel"
+        assert result["scope_infeasible_policy"] == "separate_kernel_if_allowed"
         assert result["gluon_execution_contract_satisfied"] is True
         assert result["gluon_l1_anchor_viability"] == "viable_for_l1"
 

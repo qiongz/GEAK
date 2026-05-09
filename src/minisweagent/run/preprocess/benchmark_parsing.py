@@ -21,6 +21,12 @@ import re
 from pathlib import Path
 from typing import Any
 
+from minisweagent.run.target_contracts import (
+    do_not_clauses,
+    forbidden_symbols_from_scoped_text,
+    target_symbols_from_scoped_text,
+)
+
 logger = logging.getLogger(__name__)
 _PER_SHAPE_REGRESSION_SPEEDUP_FLOOR = 0.95
 _AMD_GLUON_PATCH_MARKERS = (
@@ -566,6 +572,39 @@ def _patch_touches_backup_file(patch_text: str) -> bool:
     return False
 
 
+def _identifier_pattern(symbol: str) -> re.Pattern[str]:
+    return re.compile(rf"(?<![A-Za-z0-9_]){re.escape(symbol)}(?![A-Za-z0-9_])")
+
+
+def _contains_identifier(text: str, symbol: str) -> bool:
+    return bool(_identifier_pattern(symbol).search(text))
+
+
+def _patch_touches_any_target_symbol(patch_text: str, required_symbols: list[str]) -> bool:
+    code_text = "\n".join(_added_lines(patch_text))
+    return any(_contains_identifier(code_text, symbol) for symbol in required_symbols)
+
+
+def _patch_touches_forbidden_target_symbol(patch_text: str, forbidden_symbols: list[str]) -> str | None:
+    if not forbidden_symbols:
+        return None
+    added = "\n".join(_added_lines(patch_text)).lower()
+    raw = patch_text.lower()
+    checks = {
+        "whole_kernel_or_helper": lambda: bool(re.search(r"(?m)^\+@gluon\.jit\b", raw)),
+        "dot_loop": lambda: bool(re.search(r"\b(?:gl\.dot|gl\.dot_fma|mfma)\s*\(", added)),
+        "mfma_path": lambda: bool(re.search(r"\b(?:dotoperandlayout|amdmfmalayout|amdwmmalayout|mfma)\b", added)),
+        "ab_input_loads": lambda: bool(re.search(r"\b[ab]\s*=\s*gl\.load\s*\(\s*[ab]_ptrs\b", added)),
+        "buffer_ops": lambda: "buffer_load" in added or "buffer_store" in added,
+        "bias_load": lambda: bool(re.search(r"\bbias\s*=\s*gl\.load\b|\bbias_ptr", added)),
+    }
+    for symbol in forbidden_symbols:
+        check = checks.get(symbol.lower())
+        if check and check():
+            return symbol
+    return None
+
+
 def _has_added_generic_gluon_dot(patch_text: str) -> bool:
     for line in _added_lines(patch_text):
         if not line or line.startswith("#"):
@@ -708,6 +747,8 @@ def _find_task_metadata_for_patch_dir(patch_dir: Path) -> dict[str, Any]:
         from minisweagent.run.task_file import read_task_file
 
         meta, body = read_task_file(candidates[0])
+        inferred_targets = _infer_required_patch_target_symbols(body, meta)
+        inferred_forbidden_targets = _infer_forbidden_patch_target_symbols(body, meta)
         optional_meta: dict[str, Any] = {}
         for key, tag in _OPTIONAL_GLUON_RESULT_METADATA:
             value = meta.get(key)
@@ -722,6 +763,12 @@ def _find_task_metadata_for_patch_dir(patch_dir: Path) -> dict[str, Any]:
         performance_hypothesis = _parse_tagged_task_value(body, "Performance hypothesis")
         allowed_change = _parse_tagged_task_value(body, "Allowed change")
         gluon_overlay_reason = _parse_tagged_task_value(body, "Gluon overlay reason")
+        if inferred_targets:
+            meta = dict(meta)
+            meta["required_patch_target_symbols"] = inferred_targets
+        if inferred_forbidden_targets:
+            meta = dict(meta)
+            meta["forbidden_patch_target_symbols"] = inferred_forbidden_targets
         if (
             implementation_layer
             or extension_layer
@@ -772,6 +819,60 @@ def _parse_tagged_task_value(task_body: str, tag: str) -> str | None:
     return match.group(1).strip().strip("`")
 
 
+def _parse_tagged_task_values(task_body: str, tag: str) -> list[str]:
+    return [
+        match.group(1).strip().strip("`")
+        for match in re.finditer(rf"^\s*{re.escape(tag)}\s*:\s*(.+?)\s*$", task_body, re.IGNORECASE | re.MULTILINE)
+    ]
+
+
+def _metadata_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _infer_required_patch_target_symbols(task_body: str, task_meta: dict[str, Any]) -> list[str]:
+    symbols = _metadata_list(task_meta.get("required_patch_target_symbols"))
+    for match in re.finditer(
+        r"^\s*(?:Target symbol|Target component|Required patch target symbols?)\s*:\s*(.+?)\s*$",
+        task_body,
+        re.IGNORECASE | re.MULTILINE,
+    ):
+        value = match.group(1)
+        symbols.extend(part.strip().strip("`") for part in value.split(","))
+        symbols.extend(target_symbols_from_scoped_text(value))
+    for field in ("Allowed change", "Target component"):
+        value = _parse_tagged_task_value(task_body, field)
+        if value:
+            symbols.extend(target_symbols_from_scoped_text(value))
+
+    unique: list[str] = []
+    for symbol in symbols:
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", symbol) and symbol not in unique:
+            unique.append(symbol)
+    return unique
+
+
+def _infer_forbidden_patch_target_symbols(task_body: str, task_meta: dict[str, Any]) -> list[str]:
+    symbols = _metadata_list(task_meta.get("forbidden_patch_target_symbols"))
+    for key in ("forbidden_change", "forbidden_changes"):
+        symbols.extend(forbidden_symbols_from_scoped_text(task_meta.get(key)))
+    for field in ("Forbidden change", "Reject if"):
+        for value in _parse_tagged_task_values(task_body, field):
+            symbols.extend(forbidden_symbols_from_scoped_text(value))
+    for value in do_not_clauses(task_body):
+        symbols.extend(forbidden_symbols_from_scoped_text(value))
+
+    unique: list[str] = []
+    for symbol in symbols:
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", symbol) and symbol not in unique:
+            unique.append(symbol)
+    return unique
+
+
 _OPTIONAL_GLUON_RESULT_METADATA: tuple[tuple[str, str], ...] = (
     ("extension_intent", "Extension intent"),
     ("expected_outcome", "Expected outcome"),
@@ -780,6 +881,9 @@ _OPTIONAL_GLUON_RESULT_METADATA: tuple[tuple[str, str], ...] = (
     ("target_symbol", "Target symbol"),
     ("target_component", "Target component"),
     ("forbidden_change", "Forbidden change"),
+    ("allowed_execution_path", "Allowed execution path"),
+    ("scope_infeasible_policy", "Scope infeasible policy"),
+    ("scope_infeasible_reported", "Scope infeasible reported"),
 )
 
 
@@ -916,6 +1020,8 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
     best_has_shape_regression = False
     baseline_shape_geomean = _geomean_ms(baseline_shape_latencies)
     task_meta = _find_task_metadata_for_patch_dir(patch_dir)
+    required_patch_target_symbols = _metadata_list(task_meta.get("required_patch_target_symbols"))
+    forbidden_patch_target_symbols = _metadata_list(task_meta.get("forbidden_patch_target_symbols"))
     required_output_dialect = _required_output_dialect(task_meta, label=patch_dir.name)
     preserves_gluon_evidence = required_output_dialect in {"amd_gluon", "mixed"}
 
@@ -939,6 +1045,20 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         )
         if static_contract_error:
             logger.info("Skipping %s because %s", name, static_contract_error)
+            continue
+        if required_patch_target_symbols and not _patch_touches_any_target_symbol(
+            patch_text,
+            required_patch_target_symbols,
+        ):
+            logger.info(
+                "Skipping %s because it does not touch required target symbols: %s",
+                name,
+                required_patch_target_symbols,
+            )
+            continue
+        forbidden_target = _patch_touches_forbidden_target_symbol(patch_text, forbidden_patch_target_symbols)
+        if forbidden_target:
+            logger.info("Skipping %s because it touches forbidden target scope: %s", name, forbidden_target)
             continue
 
         candidate_text = test_file.read_text()
@@ -1036,6 +1156,11 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         "gluon_l1_anchor_viability": anchor_viability,
         "not_viable_for_l1": anchor_viability == "not_viable_for_l1",
         "overhead_source": task_meta.get("overhead_source_to_record") if anchor_viability != "viable_for_l1" else None,
+        "scope_compliant": True,
+        "forbidden_scope_violation": None,
+        "scope_infeasible_reported": False,
+        "required_patch_target_symbols": required_patch_target_symbols,
+        "forbidden_patch_target_symbols": forbidden_patch_target_symbols,
         "fallback_used": required_output_dialect == "amd_gluon" and best_actual_output_dialect != "amd_gluon",
         "llm_selection_analysis": (
             f"Deterministic: baseline={baseline_ms:.4f}ms ({baseline_source}), "
@@ -1053,6 +1178,7 @@ def _invalidate_existing_best_result(
     reason: str,
     required_output_dialect: str = "any",
     actual_output_dialect: str = "unknown",
+    forbidden_scope_violation: str | None = None,
 ) -> dict[str, Any]:
     existing["best_patch_id"] = None
     existing["best_patch_file"] = None
@@ -1064,6 +1190,9 @@ def _invalidate_existing_best_result(
     existing["fallback_used"] = required_output_dialect == "amd_gluon"
     existing["invalidated"] = True
     existing["invalid_reason"] = reason
+    existing["scope_compliant"] = False
+    existing["forbidden_scope_violation"] = forbidden_scope_violation
+    existing.setdefault("scope_infeasible_reported", False)
     existing["llm_selection_analysis"] = (
         existing.get("llm_selection_analysis") or ""
     ) + f" [Invalidated: {reason}]"
@@ -1097,10 +1226,16 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
             pf = existing.get("best_patch_file")
             task_meta = _find_task_metadata_for_patch_dir(patch_dir)
             required_output_dialect = _required_output_dialect(task_meta, label=patch_dir.name)
+            required_patch_target_symbols = _metadata_list(task_meta.get("required_patch_target_symbols"))
+            forbidden_patch_target_symbols = _metadata_list(task_meta.get("forbidden_patch_target_symbols"))
             for key, _tag in _OPTIONAL_GLUON_RESULT_METADATA:
                 if task_meta.get(key) not in (None, ""):
                     existing[key] = task_meta.get(key)
             existing["required_output_dialect"] = required_output_dialect
+            existing["required_patch_target_symbols"] = required_patch_target_symbols
+            existing["forbidden_patch_target_symbols"] = forbidden_patch_target_symbols
+            existing.setdefault("scope_compliant", True)
+            existing.setdefault("forbidden_scope_violation", None)
             existing["gluon_execution_contract_satisfied"] = (
                 bool(existing.get("gluon_execution_contract_satisfied"))
                 if required_output_dialect in {"amd_gluon", "mixed"}
@@ -1138,6 +1273,29 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
 
             patch_text = patch_path.read_text(errors="replace")
             actual_output_dialect = classify_patch_output_dialect(patch_text)
+            if required_patch_target_symbols and not _patch_touches_any_target_symbol(
+                patch_text,
+                required_patch_target_symbols,
+            ):
+                invalid = _invalidate_existing_best_result(
+                    existing,
+                    reason="selected patch did not touch required target symbols",
+                    required_output_dialect=required_output_dialect,
+                    actual_output_dialect=actual_output_dialect,
+                )
+                existing_path.write_text(json.dumps(invalid, indent=2))
+                return invalid
+            forbidden_target = _patch_touches_forbidden_target_symbol(patch_text, forbidden_patch_target_symbols)
+            if forbidden_target:
+                invalid = _invalidate_existing_best_result(
+                    existing,
+                    reason=f"selected patch touched forbidden target scope {forbidden_target}",
+                    required_output_dialect=required_output_dialect,
+                    actual_output_dialect=actual_output_dialect,
+                    forbidden_scope_violation=forbidden_target,
+                )
+                existing_path.write_text(json.dumps(invalid, indent=2))
+                return invalid
             if not _dialect_contract_satisfied(required_output_dialect, actual_output_dialect):
                 invalid = _invalidate_existing_best_result(
                     existing,

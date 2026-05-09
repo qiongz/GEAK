@@ -122,6 +122,14 @@ implementation plan, then edit only the scoped path.
 - For `extension_intent=execution_anchor`, a slower correctness-passing L0 is
   overhead evidence, not permission to expand the same scope into L1/MFMA unless
   the next task names a removable overhead.
+- If the scoped Gluon change cannot be implemented without touching forbidden
+  paths, do not widen the scope. Use `allowed_execution_path`: inline the scoped
+  helper only when legal, use a separate Gluon kernel only when explicitly
+  allowed, or report `infeasible`.
+- After a contract failure, the next patch must address that failure only:
+  helper-not-executed means fix wiring/launch/output feeding; forbidden scope
+  means revert the forbidden change; slow correctness pass means change one
+  named overhead source.
 - L1 memory/MFMA work must refine an executed Gluon/mixed anchor or shrink back
   to L0. It must name anchor evidence and one allowed change.
 - Matrix/MFMA work requires result layout, operand layouts, `convert_layout`,
