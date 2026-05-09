@@ -110,6 +110,9 @@ def _gluon_overlay_prompt(
         "Same ABI comparison: required",
         "Comparison target: true_baseline",
         "Allowed change: one layout or memory component",
+        "Minimum executable unit: inline_scoped_helper",
+        "Allowed execution path: inline_scoped_helper",
+        "Scope infeasible policy: shrink_or_report",
         "Reject if: non-executed Gluon or shape regression",
     ]
     lines.extend(extra or [])
@@ -226,7 +229,8 @@ def test_search_space_allocation_for_two_gpus_preserves_base_without_weak_gluon(
     assert "Performance hypothesis:" in guidance
     assert "Comparison target:" in guidance
     assert "Allowed change:" in guidance
-    assert "allowed_execution_path: inline_scoped_helper|separate_gluon_kernel|infeasible" in guidance
+    assert "minimum_executable_unit: inline_scoped_helper|separate_gluon_kernel|whole_jit_kernel|infeasible" in guidance
+    assert "allowed_execution_path: inline_scoped_helper|separate_gluon_kernel|whole_jit_kernel" in guidance
     assert "L0 execution path must be exactly one of" in guidance
 
 
@@ -486,6 +490,104 @@ def test_audit_accepts_main_like_five_base_plus_gluon_l0() -> None:
         expected_extension_slots=1,
     )
     assert [task.label for task in tasks][-1] == "amd-gluon-l0-viability"
+
+
+def test_audit_rejects_l0_overlay_missing_execution_boundary() -> None:
+    prompt = "\n".join(
+        line
+        for line in _gluon_overlay_prompt().splitlines()
+        if not line.startswith(("Minimum executable unit:", "Allowed execution path:", "Scope infeasible policy:"))
+    )
+    payload = json.dumps(
+        [
+            {
+                "label": "triton-eliminate-redundant-ops-streamline",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nstreamline plain Triton path",
+            },
+            {
+                "label": "amd-gluon-l0-viability",
+                "priority": 8,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": prompt,
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Minimum executable unit"):
+        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+
+
+def test_audit_rejects_l0_overlay_that_allows_and_forbids_whole_kernel() -> None:
+    prompt = _gluon_overlay_prompt(
+        extra=[
+            "Target component: scale_epilogue_load_broadcast",
+            "Whole kernel required reason: scale epilogue cannot execute independently",
+            "Do NOT attempt to convert the entire kernel to Gluon.",
+        ]
+    ).replace("Minimum executable unit: inline_scoped_helper", "Minimum executable unit: whole_jit_kernel").replace(
+        "Allowed execution path: inline_scoped_helper", "Allowed execution path: whole_jit_kernel"
+    )
+    payload = json.dumps(
+        [
+            {
+                "label": "triton-eliminate-redundant-ops-streamline",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nstreamline plain Triton path",
+            },
+            {
+                "label": "amd-gluon-l0-viability",
+                "priority": 8,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": prompt,
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="allows whole_jit_kernel but forbids whole-kernel rewrite"):
+        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+
+
+def test_audit_accepts_whole_kernel_anchor_when_declared() -> None:
+    prompt = _gluon_overlay_prompt(
+        extra=[
+            "Target component: scale_epilogue_load_broadcast",
+            "Whole kernel required reason: scale epilogue cannot feed measured output as an isolated subpath",
+            "Reject if: MFMA or buffer_load is introduced.",
+        ]
+    ).replace("Minimum executable unit: inline_scoped_helper", "Minimum executable unit: whole_jit_kernel").replace(
+        "Allowed execution path: inline_scoped_helper", "Allowed execution path: whole_jit_kernel"
+    )
+    payload = json.dumps(
+        [
+            {
+                "label": "triton-eliminate-redundant-ops-streamline",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nstreamline plain Triton path",
+            },
+            {
+                "label": "amd-gluon-l0-viability",
+                "priority": 8,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": prompt,
+            },
+        ]
+    )
+
+    tasks = _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+
+    assert tasks[-1].config["minimum_executable_unit"] == "whole_jit_kernel"
+    assert tasks[-1].config["allowed_execution_path"] == "whole_jit_kernel"
+    assert tasks[-1].config["whole_kernel_required_reason"].startswith("scale epilogue")
 
 
 def test_audit_rejects_l0_overlay_without_same_batch_plain_competitor() -> None:
@@ -1400,8 +1502,10 @@ def test_parse_llm_response_preserves_optional_l0_metadata() -> None:
                     "expected_outcome": "correctness_anchor_not_speedup",
                     "not_viable_for_l1_if_slower_than_base": True,
                     "overhead_source_to_record": "launch_layout_overhead",
+                    "minimum_executable_unit": "separate_gluon_kernel",
                     "allowed_execution_path": "separate_gluon_kernel",
                     "scope_infeasible_policy": "separate_kernel_if_allowed",
+                    "whole_kernel_required_reason": "not needed for separate kernel",
                     "target_symbol": "_stage_kernel",
                     "target_component": "one 1D reduction subpath",
                     "task_prompt": "\n".join(
@@ -1423,8 +1527,10 @@ def test_parse_llm_response_preserves_optional_l0_metadata() -> None:
     assert cfg["expected_outcome"] == "correctness_anchor_not_speedup"
     assert cfg["not_viable_for_l1_if_slower_than_base"] is True
     assert cfg["overhead_source_to_record"] == "launch_layout_overhead"
+    assert cfg["minimum_executable_unit"] == "separate_gluon_kernel"
     assert cfg["allowed_execution_path"] == "separate_gluon_kernel"
     assert cfg["scope_infeasible_policy"] == "separate_kernel_if_allowed"
+    assert cfg["whole_kernel_required_reason"] == "not needed for separate kernel"
     assert cfg["target_symbol"] == "_stage_kernel"
     assert cfg["target_component"] == "one 1D reduction subpath"
 

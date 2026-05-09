@@ -735,11 +735,13 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
     extension_intent = feature_meta.get("extension_intent")
     expected_outcome = feature_meta.get("expected_outcome")
     overhead_source = feature_meta.get("overhead_source_to_record")
+    minimum_executable_unit = feature_meta.get("minimum_executable_unit")
     target_symbol = feature_meta.get("target_symbol")
     target_component = feature_meta.get("target_component")
     forbidden_symbols = feature_meta.get("forbidden_patch_target_symbols")
     allowed_execution_path = feature_meta.get("allowed_execution_path")
     scope_infeasible_policy = feature_meta.get("scope_infeasible_policy")
+    whole_kernel_required_reason = feature_meta.get("whole_kernel_required_reason")
 
     lines = [
         heading,
@@ -785,6 +787,8 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
         lines.append(f"- Task expected_outcome: {expected_outcome}")
     if overhead_source:
         lines.append(f"- Task overhead_source_to_record: {overhead_source}")
+    if minimum_executable_unit:
+        lines.append(f"- Task minimum_executable_unit: {minimum_executable_unit}")
     if target_symbol:
         lines.append(f"- Task target_symbol: {target_symbol}")
     if target_component:
@@ -799,6 +803,8 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
         lines.append(f"- Task allowed_execution_path: {allowed_execution_path}")
     if scope_infeasible_policy:
         lines.append(f"- Task scope_infeasible_policy: {scope_infeasible_policy}")
+    if whole_kernel_required_reason:
+        lines.append(f"- Task whole_kernel_required_reason: {whole_kernel_required_reason}")
 
     if search_policy == PREFER_AMD_GLUON_IF_VIABLE_POLICY:
         lines.append("- Prefer AMD Gluon only as a same-direction implementation overlay when it looks structurally promising for this Triton-family input.")

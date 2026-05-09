@@ -999,11 +999,13 @@ def _build_gluon_working_set(
     entrypoint = str(gluon_always_read_path or "skills/triton-gluon/docs/00_always_read.md").strip()
     extension_intent = str(feature_metadata.get("extension_intent") or "").strip().lower()
     expected_outcome = str(feature_metadata.get("expected_outcome") or "").strip()
+    minimum_executable_unit = str(feature_metadata.get("minimum_executable_unit") or "").strip()
     target_symbol = str(feature_metadata.get("target_symbol") or "").strip()
     target_component = str(feature_metadata.get("target_component") or "").strip()
     forbidden_change = str(feature_metadata.get("forbidden_change") or "").strip()
     allowed_execution_path = str(feature_metadata.get("allowed_execution_path") or "").strip()
     scope_infeasible_policy = str(feature_metadata.get("scope_infeasible_policy") or "").strip()
+    whole_kernel_required_reason = str(feature_metadata.get("whole_kernel_required_reason") or "").strip()
     forbidden_symbols = feature_metadata.get("forbidden_patch_target_symbols") or []
     if isinstance(forbidden_symbols, str):
         forbidden_symbols_text = forbidden_symbols
@@ -1032,6 +1034,8 @@ def _build_gluon_working_set(
         )
     if expected_outcome:
         lines.append(f"- Expected outcome: `{expected_outcome}`.")
+    if minimum_executable_unit:
+        lines.append(f"- Minimum executable unit: `{minimum_executable_unit}`.")
     if target_symbol:
         lines.append(f"- Target symbol: `{target_symbol}`; do not report success through a different symbol.")
     if target_component:
@@ -1044,8 +1048,10 @@ def _build_gluon_working_set(
         lines.append(f"- Allowed execution path: `{allowed_execution_path}`.")
     if scope_infeasible_policy:
         lines.append(f"- Scope infeasible policy: `{scope_infeasible_policy}`.")
+    if whole_kernel_required_reason:
+        lines.append(f"- Whole kernel required reason: {whole_kernel_required_reason}")
     lines.append(
-        "- L0 execution-path choices: `inline_scoped_helper` only when the language boundary permits the scoped change; `separate_gluon_kernel` only when the task explicitly allows a second launch/temp buffer; `infeasible` means report or shrink scope instead of converting the whole kernel."
+        "- L0 execution-path choices: `inline_scoped_helper` only when the language boundary permits the scoped change; `separate_gluon_kernel` only when the task explicitly allows a second launch/temp buffer; `whole_jit_kernel` only when the whole helper/kernel is declared as the minimum executable unit; `infeasible` means report or shrink scope instead of converting the whole kernel."
     )
 
     if input_dialect == NV_GLUON_DIALECT:
@@ -1250,26 +1256,26 @@ def inject_pipeline_context(
             )
         )
         ctx.append("")
+        ctx.extend(
+            _build_gluon_reference_block(
+                knowledge_base_path=knowledge_base_path,
+                gluon_skill_path=gluon_skill_path,
+                gluon_kb_path=gluon_kb_path,
+                gluon_examples_path=gluon_examples_path,
+                gluon_always_read_path=gluon_always_read_path,
+                gluon_search_policies_path=gluon_search_policies_path,
+                gluon_component_traits_path=gluon_component_traits_path,
+                gluon_architecture_notes_path=gluon_architecture_notes_path,
+                gluon_examples_doc_path=gluon_examples_doc_path,
+                gluon_api_reference_path=gluon_api_reference_path,
+                gluon_real_patterns_path=gluon_real_patterns_path,
+                gluon_backup_details_path=gluon_backup_details_path,
+            )
+        )
         if _task_needs_gluon_worker_context(
             feature_metadata,
             task_body,
         ):
-            ctx.extend(
-                _build_gluon_reference_block(
-                    knowledge_base_path=knowledge_base_path,
-                    gluon_skill_path=gluon_skill_path,
-                    gluon_kb_path=gluon_kb_path,
-                    gluon_examples_path=gluon_examples_path,
-                    gluon_always_read_path=gluon_always_read_path,
-                    gluon_search_policies_path=gluon_search_policies_path,
-                    gluon_component_traits_path=gluon_component_traits_path,
-                    gluon_architecture_notes_path=gluon_architecture_notes_path,
-                    gluon_examples_doc_path=gluon_examples_doc_path,
-                    gluon_api_reference_path=gluon_api_reference_path,
-                    gluon_real_patterns_path=gluon_real_patterns_path,
-                    gluon_backup_details_path=gluon_backup_details_path,
-                )
-            )
             ctx.extend(
                 _build_gluon_working_set(
                     feature_metadata,

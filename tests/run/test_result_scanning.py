@@ -149,6 +149,7 @@ def test_scan_results_surfaces_scope_violation(tmp_path: Path) -> None:
                 "gluon_execution_contract_satisfied": False,
                 "scope_compliant": False,
                 "forbidden_scope_violation": "dot_loop",
+                "minimum_executable_unit": "separate_gluon_kernel",
                 "allowed_execution_path": "separate_gluon_kernel",
                 "scope_infeasible_policy": "separate_kernel_if_allowed",
                 "scope_infeasible_reported": False,
@@ -159,5 +160,6 @@ def test_scan_results_surfaces_scope_violation(tmp_path: Path) -> None:
     text = "\n".join(scan_single_round_results(tmp_path / "round_1"))
 
     assert "Scope compliance: scope_compliant=False, forbidden_scope_violation=dot_loop" in text
+    assert "minimum_executable_unit=separate_gluon_kernel" in text
     assert "allowed_execution_path=separate_gluon_kernel" in text
     assert "scope_infeasible_policy=separate_kernel_if_allowed" in text

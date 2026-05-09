@@ -24,6 +24,7 @@ from typing import Any
 from minisweagent.run.target_contracts import (
     do_not_clauses,
     forbidden_symbols_from_scoped_text,
+    patch_touches_forbidden_target_symbol,
     target_symbols_from_scoped_text,
 )
 
@@ -586,23 +587,7 @@ def _patch_touches_any_target_symbol(patch_text: str, required_symbols: list[str
 
 
 def _patch_touches_forbidden_target_symbol(patch_text: str, forbidden_symbols: list[str]) -> str | None:
-    if not forbidden_symbols:
-        return None
-    added = "\n".join(_added_lines(patch_text)).lower()
-    raw = patch_text.lower()
-    checks = {
-        "whole_kernel_or_helper": lambda: bool(re.search(r"(?m)^\+@gluon\.jit\b", raw)),
-        "dot_loop": lambda: bool(re.search(r"\b(?:gl\.dot|gl\.dot_fma|mfma)\s*\(", added)),
-        "mfma_path": lambda: bool(re.search(r"\b(?:dotoperandlayout|amdmfmalayout|amdwmmalayout|mfma)\b", added)),
-        "ab_input_loads": lambda: bool(re.search(r"\b[ab]\s*=\s*gl\.load\s*\(\s*[ab]_ptrs\b", added)),
-        "buffer_ops": lambda: "buffer_load" in added or "buffer_store" in added,
-        "bias_load": lambda: bool(re.search(r"\bbias\s*=\s*gl\.load\b|\bbias_ptr", added)),
-    }
-    for symbol in forbidden_symbols:
-        check = checks.get(symbol.lower())
-        if check and check():
-            return symbol
-    return None
+    return patch_touches_forbidden_target_symbol(patch_text, forbidden_symbols)
 
 
 def _has_added_generic_gluon_dot(patch_text: str) -> bool:
@@ -878,11 +863,13 @@ _OPTIONAL_GLUON_RESULT_METADATA: tuple[tuple[str, str], ...] = (
     ("expected_outcome", "Expected outcome"),
     ("not_viable_for_l1_if_slower_than_base", "Not viable for L1 if slower than Base"),
     ("overhead_source_to_record", "Overhead source to record"),
+    ("minimum_executable_unit", "Minimum executable unit"),
     ("target_symbol", "Target symbol"),
     ("target_component", "Target component"),
     ("forbidden_change", "Forbidden change"),
     ("allowed_execution_path", "Allowed execution path"),
     ("scope_infeasible_policy", "Scope infeasible policy"),
+    ("whole_kernel_required_reason", "Whole kernel required reason"),
     ("scope_infeasible_reported", "Scope infeasible reported"),
 )
 
@@ -930,6 +917,8 @@ def _gluon_l1_anchor_viability(
     has_shape_regression: bool,
     task_meta: dict[str, Any],
 ) -> str:
+    if task_meta.get("scope_infeasible_reported") is True:
+        return "not_applicable"
     if (
         required_output_dialect not in {"amd_gluon", "mixed"}
         or actual_output_dialect not in {"amd_gluon", "mixed"}

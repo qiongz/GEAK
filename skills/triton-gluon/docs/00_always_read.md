@@ -291,7 +291,9 @@ Hard rules:
 - If a scoped L0 cannot be implemented without touching forbidden paths, do not
   widen the patch. Follow `allowed_execution_path` / `scope_infeasible_policy`:
   inline only when legal, split to a separate Gluon kernel only when allowed, or
-  report the scope as infeasible.
+  use a `whole_jit_kernel` anchor only when the task declares it as the
+  `minimum_executable_unit`. If the task says the scope is `infeasible`, report
+  or shrink instead of saving a required Gluon patch.
 - Patch evolution after failure is constrained: helper-not-executed fixes only
   wiring/launch/output feeding; forbidden-scope failures must revert forbidden
   changes; slow correctness passes may only change one named overhead source.
