@@ -181,6 +181,43 @@ def _task_body_field(task_body: str, field: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def _task_required_patch_target_symbols(meta: dict[str, Any], task_body: str = "") -> list[str]:
+    raw = meta.get("required_patch_target_symbols")
+    if isinstance(raw, str):
+        symbols = [part.strip().strip("`") for part in raw.split(",")]
+    elif isinstance(raw, list):
+        symbols = [str(part).strip().strip("`") for part in raw]
+    else:
+        symbols = []
+
+    for match in re.finditer(
+        r"^\s*(?:Target symbol|Target component|Required patch target symbols?)\s*:\s*(.+?)\s*$",
+        task_body or "",
+        re.IGNORECASE | re.MULTILINE,
+    ):
+        symbols.extend(part.strip().strip("`") for part in match.group(1).split(","))
+    for field in ("Allowed change", "Target component"):
+        tagged = _task_body_field(task_body, field)
+        if tagged:
+            symbols.extend(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", tagged))
+            target_groups = re.finditer(
+                r"(?:expressions?|components?|symbols?|variables?|paths?|loads?|stores?|tensors?)\s*\(([^)]*)\)",
+                tagged,
+                re.IGNORECASE,
+            )
+            for group_match in target_groups:
+                group = group_match.group(1)
+                group_symbols = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", group)
+                if len(group_symbols) > 1:
+                    symbols.extend(group_symbols)
+
+    unique: list[str] = []
+    for symbol in symbols:
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", symbol) and symbol not in unique:
+            unique.append(symbol)
+    return unique
+
+
 def _task_required_output_dialect(meta: dict[str, Any], task_body: str = "") -> str:
     label_text = str(meta.get("label") or "").strip().lower()
     required = str(meta.get("required_output_dialect") or "").strip().lower()
@@ -293,8 +330,9 @@ def _task_feature_metadata(meta: dict[str, Any], task_body: str = "") -> dict[st
         feature_meta["implementation_layer"] = str(implementation_layer)
     if extension_layer:
         feature_meta["extension_layer"] = str(extension_layer)
-    if meta.get("required_patch_target_symbols"):
-        feature_meta["required_patch_target_symbols"] = meta.get("required_patch_target_symbols")
+    required_patch_target_symbols = _task_required_patch_target_symbols(meta, task_body)
+    if required_patch_target_symbols:
+        feature_meta["required_patch_target_symbols"] = required_patch_target_symbols
     return feature_meta
 
 
@@ -572,13 +610,9 @@ def task_file_to_agent_task(task_file: Path):
     required_amd_gluon_contract_tags = _task_required_amd_gluon_contract_tags(meta, body)
     if required_amd_gluon_contract_tags:
         cfg["required_amd_gluon_contract_tags"] = required_amd_gluon_contract_tags
-    if meta.get("required_patch_target_symbols"):
-        raw_symbols = meta.get("required_patch_target_symbols")
-        cfg["required_patch_target_symbols"] = (
-            [str(item).strip() for item in raw_symbols if str(item).strip()]
-            if isinstance(raw_symbols, list)
-            else [part.strip() for part in str(raw_symbols).split(",") if part.strip()]
-        )
+    required_patch_target_symbols = _task_required_patch_target_symbols(meta, body)
+    if required_patch_target_symbols:
+        cfg["required_patch_target_symbols"] = required_patch_target_symbols
 
     # COMMANDMENT is the single source of truth for test commands.
     # Its SETUP + CORRECTNESS + BENCHMARK sections are executed verbatim.

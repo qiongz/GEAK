@@ -180,6 +180,38 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
     assert "Task required_patch_target_symbols: target_stage" in task.task
 
 
+def test_worker_context_infers_local_target_components_from_allowed_change(tmp_path) -> None:
+    task_path = tmp_path / "local_target_components.md"
+    write_task_file(
+        task_path,
+        {
+            "label": "gluon-l0-explicit-layout",
+            "priority": 6,
+            "kernel_type": "triton",
+            "kernel_path": str(tmp_path / "kernel.py"),
+            "repo_root": str(tmp_path),
+            "input_dialect": "plain_triton",
+            "gluon_feature_mode": "auto",
+            "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+            "required_output_dialect": "amd_gluon",
+            "implementation_layer": "amd_gluon overlay",
+            "extension_layer": "L0",
+        },
+        "\n".join(
+            [
+                "Extension layer: L0",
+                "Implementation layer: amd_gluon overlay",
+                "Allowed change: Replace the scoped local expressions (tile_load_a, tile_load_b, tile_load_c) in the inner loop.",
+                "Reject if: target-symbol mismatch.",
+            ]
+        ),
+    )
+
+    task = task_file_to_agent_task(task_path)
+
+    assert "Task required_patch_target_symbols: tile_load_a, tile_load_b, tile_load_c" in task.task
+
+
 def test_worker_context_sets_matrix_contract_tag_for_mfma_task(tmp_path) -> None:
     task_path = tmp_path / "matrix_contract.md"
     write_task_file(

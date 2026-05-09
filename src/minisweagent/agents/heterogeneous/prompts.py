@@ -345,16 +345,21 @@ knowledge lookup plan`, `Gluon implementation plan`, `Performance hypothesis`,
 the routed docs that justified overlay priority: `10_search_policies.md` for
 policy, `20_component_traits.md` for component viability, `60_real_patterns.md`
 for end-to-end/source-first/low-latency risk, and `50_api_reference.md` only for
-API-sensitive details. `Reject if:` must cover non-executed Gluon,
-target-symbol mismatch, missing plan blocks, leftover plain Triton device APIs
-inside edited `@gluon.jit`, backup/temp files, and bundled unrelated changes
-unless `bundle_allowed=true`. API-level Gluon rewrite details belong in the
-routed skill docs, not in the prompt contract.
+API-sensitive details. Stage/helper/local-expression scoped tasks must include
+`Target symbol:` or `Target component:`; if `Allowed change` names local
+variables, wrap those names in backticks so save/test and selection can enforce
+the target component. `Reject if:` must cover non-executed Gluon, target-symbol
+mismatch, missing plan blocks, leftover plain Triton device APIs inside edited
+`@gluon.jit`, backup/temp files, and bundled unrelated changes unless
+`bundle_allowed=true`. API-level Gluon rewrite details belong in the routed
+skill docs, not in the prompt contract.
 
 **Gluon documentation gate metadata**: For Triton-family tasks that use Gluon
 guidance, task objects should include optional top-level fields
 `gluon_doc_profile`, `required_gluon_docs`, and, for stage/helper-specific
-tasks, `required_patch_target_symbols`. `gluon_doc_profile` should be one of
+tasks, `required_patch_target_symbols`. Local target expressions named in
+backticks inside `Allowed change` are also treated as required target symbols.
+`gluon_doc_profile` should be one of
 `extension_l0_minimal`, `nv_to_amd_translation`, `memory_lowering`,
 `matrix_lowering`, `shape_bucketed_dispatch`, `jit_aot_sensitive`,
 `shared_transplant`, `gluon_variant_from_anchor`, `hybrid_dispatch`, or

@@ -60,6 +60,8 @@ Performance hypothesis: <why this scoped overlay might beat the safe plain/base 
 Measurement boundary: kernel_only | fair_make_inputs_run_kernel | full_operator
 Comparison target: true_baseline | safe_anchor | anchor_patch
 Allowed change: <one component or one dispatch decision>
+Target symbol: <required when scoped to a specific stage or helper>
+Target component: <required when scoped to named local expressions or data paths>
 Reject if: <conditions that invalidate the patch>
 ```
 

@@ -1191,11 +1191,25 @@ def _infer_required_patch_target_symbols(task_prompt: str, item: dict[str, Any] 
         symbols = []
 
     for match in re.finditer(
-        r"^\s*(?:Target symbol|Required patch target symbols?)\s*:\s*(.+?)\s*$",
+        r"^\s*(?:Target symbol|Target component|Required patch target symbols?)\s*:\s*(.+?)\s*$",
         task_prompt,
         re.IGNORECASE | re.MULTILINE,
     ):
         symbols.extend(part.strip().strip("`") for part in match.group(1).split(","))
+    for field in ("Allowed change", "Target component"):
+        tagged = _parse_prompt_field_value(task_prompt, field)
+        if tagged:
+            symbols.extend(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", tagged))
+            target_groups = re.finditer(
+                r"(?:expressions?|components?|symbols?|variables?|paths?|loads?|stores?|tensors?)\s*\(([^)]*)\)",
+                tagged,
+                re.IGNORECASE,
+            )
+            for group_match in target_groups:
+                group = group_match.group(1)
+                group_symbols = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", group)
+                if len(group_symbols) > 1:
+                    symbols.extend(group_symbols)
 
     unique: list[str] = []
     for symbol in symbols:
@@ -1891,8 +1905,8 @@ def _build_search_space_allocation_guidance(
         "- Round 1 plain Triton input may have at most one L0 overlay. Generate it only when `overlay_priority_routing` is Prefer/high-confidence Consider; otherwise spend the slot on another plain Triton direction.",
         "- Required Gluon docs for priority: `00_always_read.md`, `10_search_policies.md` (`optimization_direction_dialect_overlay`, `overlay_priority_routing`), plus `20_component_traits.md` / `60_real_patterns.md` / `50_api_reference.md` only when their routed details apply.",
         "- AMD Gluon overlay prompts must include `Extension layer: L0|L1|Hybrid`, `Optimization direction:`, `Source Base family:`, `Plain competitor:`, `Gluon overlay reason:`, `Overlay priority: Prefer` or `Overlay priority: high-confidence Consider`, `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`. Do not write plain `Overlay priority: Consider` for Round-1 L0.",
-        "- Required Gluon worker contract: ask for `Gluon knowledge lookup plan`, `Gluon implementation plan`, `Performance hypothesis:`, `Same ABI comparison:`, and `Patch evolution:` before editing; reject non-executed Gluon, target-symbol mismatch, leftover plain Triton device APIs inside edited `@gluon.jit`, backup/temp files, and bundled unrelated changes without `bundle_allowed=true`. Keep API-level Gluon rewrite details in the routed skills/docs.",
-        "- L1 tasks additionally require an executed Gluon/mixed anchor (`Anchor patch`, `Anchor speedup`, `Anchor execution: true`, `Comparison target: anchor_patch`) and stage-specific tasks require `Target symbol` plus top-level `required_patch_target_symbols`.",
+        "- Required Gluon worker contract: ask for `Gluon knowledge lookup plan`, `Gluon implementation plan`, `Performance hypothesis:`, `Same ABI comparison:`, and `Patch evolution:` before editing; stage/helper/local-expression scoped tasks must include `Target symbol:` or `Target component:` and wrap local target names in backticks inside `Allowed change`; reject non-executed Gluon, target-symbol mismatch, leftover plain Triton device APIs inside edited `@gluon.jit`, backup/temp files, and bundled unrelated changes without `bundle_allowed=true`. Keep API-level Gluon rewrite details in the routed skills/docs.",
+        "- L1 tasks additionally require an executed Gluon/mixed anchor (`Anchor patch`, `Anchor speedup`, `Anchor execution: true`, `Comparison target: anchor_patch`) and stage-specific tasks require target metadata such as `Target symbol` / `Target component` plus top-level `required_patch_target_symbols` when available.",
         "- If a plain Triton candidate wins, accept it as the best result rather than forcing more Gluon work.",
         "- If a Triton strategy wins and maps cleanly to Gluon traits, a later round may create an AMD Gluon variant of that winning strategy only with a concrete performance hypothesis.",
         "- If an AMD Gluon candidate wins on only some shapes or sub-operations, a later round may create a `mixed/hybrid` candidate that dispatches between plain Triton and AMD Gluon by host-side shape/feature checks; the mixed path must keep per-shape no-regression and must be compared against a plain Triton or paired competitor.",

@@ -6,6 +6,7 @@ from minisweagent.run.postprocess.benchmark_parsing import (
     _dialect_contract_satisfied,
     _has_added_generic_gluon_dot,
     _has_added_plain_exception_fallback,
+    _infer_required_patch_target_symbols,
     _patch_touches_backup_file,
     _required_amd_gluon_static_contract_error,
     _required_output_dialect,
@@ -99,6 +100,23 @@ def test_patch_touches_backup_file_detects_bak_source_copy() -> None:
     )
 
     assert _patch_touches_backup_file(patch) is True
+
+
+def test_infer_required_patch_target_symbols_from_allowed_change_components() -> None:
+    body = "\n".join(
+        [
+            "Allowed change: Replace the scoped local expressions (tile_load_a, tile_load_b, tile_load_c) in the inner loop.",
+            "Reject if: target-symbol mismatch.",
+        ]
+    )
+
+    assert _infer_required_patch_target_symbols(body, {}) == ["tile_load_a", "tile_load_b", "tile_load_c"]
+
+
+def test_infer_required_patch_target_symbols_ignores_non_target_parentheses() -> None:
+    body = "Allowed change: specialize the shape bucket (B, H, S) without naming local target components."
+
+    assert _infer_required_patch_target_symbols(body, {}) == []
 
 
 def test_required_amd_gluon_static_contract_rejects_generic_gluon_dot() -> None:
