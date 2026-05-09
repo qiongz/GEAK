@@ -226,6 +226,8 @@ def test_search_space_allocation_for_two_gpus_preserves_base_without_weak_gluon(
     assert "Performance hypothesis:" in guidance
     assert "Comparison target:" in guidance
     assert "Allowed change:" in guidance
+    assert "allowed_execution_path: inline_scoped_helper|separate_gluon_kernel|infeasible" in guidance
+    assert "L0 execution path must be exactly one of" in guidance
 
 
 def test_search_space_allocation_for_large_budget_keeps_full_base() -> None:
@@ -1398,6 +1400,8 @@ def test_parse_llm_response_preserves_optional_l0_metadata() -> None:
                     "expected_outcome": "correctness_anchor_not_speedup",
                     "not_viable_for_l1_if_slower_than_base": True,
                     "overhead_source_to_record": "launch_layout_overhead",
+                    "allowed_execution_path": "separate_gluon_kernel",
+                    "scope_infeasible_policy": "separate_kernel_if_allowed",
                     "target_symbol": "_stage_kernel",
                     "target_component": "one 1D reduction subpath",
                     "task_prompt": "\n".join(
@@ -1419,6 +1423,8 @@ def test_parse_llm_response_preserves_optional_l0_metadata() -> None:
     assert cfg["expected_outcome"] == "correctness_anchor_not_speedup"
     assert cfg["not_viable_for_l1_if_slower_than_base"] is True
     assert cfg["overhead_source_to_record"] == "launch_layout_overhead"
+    assert cfg["allowed_execution_path"] == "separate_gluon_kernel"
+    assert cfg["scope_infeasible_policy"] == "separate_kernel_if_allowed"
     assert cfg["target_symbol"] == "_stage_kernel"
     assert cfg["target_component"] == "one 1D reduction subpath"
 

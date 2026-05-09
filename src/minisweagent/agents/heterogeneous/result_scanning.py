@@ -108,6 +108,31 @@ def scan_single_round_results(results_dir: Path) -> list[str]:
                         f"{comparison_target}"
                         + (f", safe_anchor={br.get('safe_anchor')}" if br.get("safe_anchor") else "")
                     )
+                if br.get("scope_compliant") is not None or br.get("forbidden_scope_violation"):
+                    section.append(
+                        "- Scope compliance: "
+                        f"scope_compliant={br.get('scope_compliant')}"
+                        + (
+                            f", forbidden_scope_violation={br.get('forbidden_scope_violation')}"
+                            if br.get("forbidden_scope_violation")
+                            else ""
+                        )
+                    )
+                if br.get("allowed_execution_path") or br.get("scope_infeasible_policy") or br.get("scope_infeasible_reported") is not None:
+                    section.append(
+                        "- Scope execution path: "
+                        f"allowed_execution_path={br.get('allowed_execution_path') or 'unknown'}"
+                        + (
+                            f", scope_infeasible_policy={br.get('scope_infeasible_policy')}"
+                            if br.get("scope_infeasible_policy")
+                            else ""
+                        )
+                        + (
+                            f", scope_infeasible_reported={br.get('scope_infeasible_reported')}"
+                            if br.get("scope_infeasible_reported") is not None
+                            else ""
+                        )
+                    )
                 per_shape = br.get("per_shape_speedups") or {}
                 if isinstance(per_shape, dict) and per_shape:
                     shape_parts = []

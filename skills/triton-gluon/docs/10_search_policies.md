@@ -366,6 +366,8 @@ extension_intent: execution_anchor | performance_candidate
 expected_outcome: correctness_anchor_not_speedup | possible_speedup
 not_viable_for_l1_if_slower_than_base: true
 overhead_source_to_record: launch_layout_overhead | conversion_overhead | memory_path_overhead
+allowed_execution_path: inline_scoped_helper | separate_gluon_kernel | infeasible
+scope_infeasible_policy: shrink_or_report | separate_kernel_if_allowed | do_not_widen
 target_symbol: <symbol or helper>
 target_component: <scoped component description>
 ```
@@ -385,6 +387,10 @@ Round 1:
   rather than a full-kernel Gluon rewrite. The L0 task should explicitly say
   which index/mask/load/matrix skeleton is in scope and reject leftover plain
   Triton tensor APIs in that scoped `@gluon.jit` path;
+- L0 execution path must be explicit: use `inline_scoped_helper` only when the
+  language boundary permits the scoped change, `separate_gluon_kernel` only when
+  second launch/temp buffer overhead is accepted as execution-anchor evidence,
+  and `infeasible` when the scoped change would require whole-kernel widening;
 - make the first Gluon patch prove the smallest real executed Gluon path. Later
   patches in the same task should be single-variable experiments so round 2 can
   attribute which component helped or hurt;

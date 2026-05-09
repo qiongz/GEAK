@@ -255,6 +255,17 @@ on every benchmark shape, record `observed_speedup`, `overhead_source`, and
 overhead. Do not automatically generate same-scope MFMA, buffer, shared-memory,
 or scheduler follow-up.
 
+If the selected scoped path cannot be implemented without touching forbidden
+paths, do not reinterpret the task as a larger Gluon rewrite. Use the task's
+execution path policy:
+
+- `inline_scoped_helper`: only when the scoped Gluon code can be wired into the
+  measured path without changing forbidden code.
+- `separate_gluon_kernel`: only when the task accepts second-launch/temp-buffer
+  overhead and marks the result as an execution anchor.
+- `infeasible`: report the scope as infeasible and keep the next search width on
+  Base/Shared or a separately named full-kernel performance candidate.
+
 Do not satisfy L0 by adding an unused `@gluon.jit` helper next to an unchanged
 plain Triton path. If the helper is the scoped L0 path, the measured host
 dispatch must launch it and its output must feed the correctness result.
@@ -279,6 +290,9 @@ Patch evolution model:
   one matrix subpath, one launch constant, or one dispatch condition.
 - Before the next patch, record `Changed component`, `Expected effect`,
   `Observed effect`, and `Keep / revert / compose later`.
+- After helper-not-executed, fix only wiring/launch/output feeding. After a
+  forbidden-scope failure, revert the forbidden change before any other edit.
+  After a slow correctness pass, change only one named overhead source.
 - If a patch bundles unrelated changes, later rounds cannot tell whether Gluon
   helped or was masked by another regression.
 - Quick directions and checked-in examples are starting points for `patch_0` or

@@ -129,3 +129,35 @@ def test_scan_results_prefers_explicit_anchor_viability_and_overhead_source(tmp_
     assert "Gluon L1 anchor viability: not_viable_for_l1" in text
     assert "Gluon extension intent: execution_anchor" in text
     assert "overhead_source=launch_layout_overhead" in text
+
+
+def test_scan_results_surfaces_scope_violation(tmp_path: Path) -> None:
+    task_dir = tmp_path / "round_1" / "gluon-l0-scale-load-layout"
+    task_dir.mkdir(parents=True)
+    (task_dir / "patch_0.patch").write_text("diff --git a/kernel.py b/kernel.py\n+@gluon.jit\n")
+    (task_dir / "patch_0_test.txt").write_text("case_small: 1.2 ms\n")
+    (task_dir / "best_results.json").write_text(
+        json.dumps(
+            {
+                "best_patch_id": None,
+                "best_patch_speedup": 0.0,
+                "baseline_latency_ms": 1.0,
+                "candidate_latency_ms": 1.2,
+                "required_output_dialect": "amd_gluon",
+                "actual_output_dialect": "amd_gluon",
+                "dialect_contract_satisfied": True,
+                "gluon_execution_contract_satisfied": False,
+                "scope_compliant": False,
+                "forbidden_scope_violation": "dot_loop",
+                "allowed_execution_path": "separate_gluon_kernel",
+                "scope_infeasible_policy": "separate_kernel_if_allowed",
+                "scope_infeasible_reported": False,
+            }
+        )
+    )
+
+    text = "\n".join(scan_single_round_results(tmp_path / "round_1"))
+
+    assert "Scope compliance: scope_compliant=False, forbidden_scope_violation=dot_loop" in text
+    assert "allowed_execution_path=separate_gluon_kernel" in text
+    assert "scope_infeasible_policy=separate_kernel_if_allowed" in text

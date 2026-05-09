@@ -288,6 +288,13 @@ Hard rules:
 - For `extension_intent=execution_anchor`, slower correctness-passing L0 is
   overhead evidence. Record the overhead source and do not expand the same scope
   into L1 unless a later task names a removable overhead.
+- If a scoped L0 cannot be implemented without touching forbidden paths, do not
+  widen the patch. Follow `allowed_execution_path` / `scope_infeasible_policy`:
+  inline only when legal, split to a separate Gluon kernel only when allowed, or
+  report the scope as infeasible.
+- Patch evolution after failure is constrained: helper-not-executed fixes only
+  wiring/launch/output feeding; forbidden-scope failures must revert forbidden
+  changes; slow correctness passes may only change one named overhead source.
 
 ## semantic_contract
 

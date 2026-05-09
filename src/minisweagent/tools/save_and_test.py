@@ -22,6 +22,7 @@ from minisweagent.run.postprocess.benchmark_parsing import (
     _gluon_execution_contract_satisfied,
     _patch_touches_backup_file,
     _patch_touches_any_target_symbol,
+    _patch_touches_forbidden_target_symbol,
     _required_amd_gluon_static_contract_error,
     compute_shape_speedups,
     extract_latency_ms,
@@ -137,6 +138,7 @@ class SaveAndTestContext:
     gluon_doc_gate_required_paths: list[str] | None = None
     required_output_dialect: str | None = None
     required_patch_target_symbols: list[str] | None = None
+    forbidden_patch_target_symbols: list[str] | None = None
     required_amd_gluon_contract_tags: list[str] | None = None
 
 
@@ -302,7 +304,10 @@ class SaveAndTestTool:
 
         required_output = str(ctx.required_output_dialect or "").strip().lower()
         required_symbols = [str(symbol).strip() for symbol in (ctx.required_patch_target_symbols or []) if str(symbol).strip()]
-        if not required_output and not required_symbols:
+        forbidden_symbols = [
+            str(symbol).strip() for symbol in (ctx.forbidden_patch_target_symbols or []) if str(symbol).strip()
+        ]
+        if not required_output and not required_symbols and not forbidden_symbols:
             return None
 
         task_meta = {"required_amd_gluon_contract_tags": ctx.required_amd_gluon_contract_tags or []}
@@ -345,6 +350,16 @@ class SaveAndTestTool:
                 + ", ".join(required_symbols)
             )
 
+        forbidden_target = _patch_touches_forbidden_target_symbol(patch_content, forbidden_symbols)
+        if forbidden_target:
+            return (
+                "PATCH_CONTRACT_FAILED: patch touches forbidden target scope: "
+                + forbidden_target
+                + ". Do not fix this by converting more of the kernel to Gluon. "
+                "Revert the forbidden change, then shrink or split the scoped Gluon path. "
+                "If the implementation requires whole-kernel/MFMA scope, create a new task with that scope."
+            )
+
         if not _gluon_execution_contract_satisfied(
             patch_content,
             required_symbols=required_symbols,
@@ -352,7 +367,8 @@ class SaveAndTestTool:
         ):
             return (
                 "PATCH_CONTRACT_FAILED: patch defines a Gluon helper without executing it "
-                "for the required target path."
+                "for the required target path. The next patch should only fix helper wiring, "
+                "launch, or measured-output feeding; do not widen the target scope."
             )
         return None
 

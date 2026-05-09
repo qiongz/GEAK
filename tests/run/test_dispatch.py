@@ -261,6 +261,8 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
             "overhead_source_to_record": "launch_layout_overhead",
             "target_symbol": "target_stage",
             "target_component": "one memory subpath",
+            "allowed_execution_path": "separate_gluon_kernel",
+            "scope_infeasible_policy": "separate_kernel_if_allowed",
         },
         "Extension task using AMD Gluon.",
     )
@@ -281,7 +283,11 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
     assert "Task overhead_source_to_record: launch_layout_overhead" in task.task
     assert "Task target_symbol: target_stage" in task.task
     assert "Task target_component: one memory subpath" in task.task
+    assert "Task allowed_execution_path: separate_gluon_kernel" in task.task
+    assert "Task scope_infeasible_policy: separate_kernel_if_allowed" in task.task
     assert "Extension intent: `execution_anchor`" in task.task
+    assert "Allowed execution path: `separate_gluon_kernel`" in task.task
+    assert "Scope infeasible policy: `separate_kernel_if_allowed`" in task.task
 
 
 def test_worker_context_infers_local_target_components_from_allowed_change(tmp_path) -> None:
@@ -347,6 +353,42 @@ def test_worker_context_infers_stage_scope_from_allowed_change(tmp_path) -> None
 
     assert "Task required_patch_target_symbols: stage1" in task.task
     assert task.config["required_patch_target_symbols"] == ["stage1"]
+
+
+def test_worker_context_infers_forbidden_scope_from_reject_if(tmp_path) -> None:
+    task_path = tmp_path / "forbidden_scope.md"
+    write_task_file(
+        task_path,
+        {
+            "label": "gluon-l0-scale-load-layout",
+            "priority": 6,
+            "kernel_type": "triton",
+            "kernel_path": str(tmp_path / "kernel.py"),
+            "repo_root": str(tmp_path),
+            "input_dialect": "plain_triton",
+            "gluon_feature_mode": "auto",
+            "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+            "required_output_dialect": "amd_gluon",
+            "implementation_layer": "amd_gluon overlay",
+            "extension_layer": "L0",
+        },
+        "\n".join(
+            [
+                "Allowed change: Convert only the `scale_a` and `scale_b` load+broadcast+multiply path.",
+                "Reject if: the main dot loop or A/B loads are modified.",
+                "Do NOT attempt to convert the entire kernel to Gluon.",
+            ]
+        ),
+    )
+
+    task = task_file_to_agent_task(task_path)
+
+    assert task.config["required_patch_target_symbols"] == ["scale_a", "scale_b"]
+    assert task.config["forbidden_patch_target_symbols"] == [
+        "dot_loop",
+        "ab_input_loads",
+        "whole_kernel_or_helper",
+    ]
 
 
 def test_worker_context_sets_matrix_contract_tag_for_mfma_task(tmp_path) -> None:
@@ -829,6 +871,74 @@ def test_save_and_test_rejects_backup_file_patch(tmp_path) -> None:
 
     assert result["returncode"] == 1
     assert "backup or temporary files" in result["output"]
+
+
+def test_save_and_test_rejects_forbidden_dot_loop_scope(tmp_path) -> None:
+    tool = SaveAndTestTool()
+    tool._get_patch_content = lambda: "\n".join(  # type: ignore[method-assign]
+        [
+            "diff --git a/kernel.py b/kernel.py",
+            "--- a/kernel.py",
+            "+++ b/kernel.py",
+            "@@",
+            "+from triton.experimental import gluon",
+            "+from triton.experimental.gluon import language as gl",
+            "+@gluon.jit",
+            "+def scaled_mm_kernel(a_ptrs, b_ptrs):",
+            "+    a = gl.load(a_ptrs)",
+            "+    b = gl.load(b_ptrs)",
+            "+    scale_a = gl.load(scale_a_ptr)",
+            "+    scale_b = gl.load(scale_b_ptr)",
+            "+    return gl.amd.cdna3.mfma(a, b, acc)",
+        ]
+    )
+    tool.set_context(
+        SaveAndTestContext(
+            cwd=str(tmp_path),
+            test_command="true",
+            timeout=5,
+            patch_output_dir=None,
+            required_output_dialect="amd_gluon",
+            required_patch_target_symbols=["scale_a", "scale_b"],
+            forbidden_patch_target_symbols=["dot_loop", "ab_input_loads", "whole_kernel_or_helper"],
+        )
+    )
+
+    result = tool(description="forbidden dot loop")
+
+    assert result["returncode"] == 1
+    assert "forbidden target scope" in result["output"]
+    assert "Revert the forbidden change" in result["output"]
+    assert "shrink or split the scoped Gluon path" in result["output"]
+
+
+def test_save_and_test_rejects_helper_without_execution_with_wiring_hint(tmp_path) -> None:
+    tool = SaveAndTestTool()
+    tool._get_patch_content = lambda: "\n".join(  # type: ignore[method-assign]
+        [
+            "diff --git a/kernel.py b/kernel.py",
+            "+from triton.experimental import gluon",
+            "+@gluon.jit",
+            "+def target_stage_gluon(x):",
+            "+    return x",
+        ]
+    )
+    tool.set_context(
+        SaveAndTestContext(
+            cwd=str(tmp_path),
+            test_command="true",
+            timeout=5,
+            patch_output_dir=None,
+            required_output_dialect="amd_gluon",
+            required_patch_target_symbols=["target_stage_gluon"],
+        )
+    )
+
+    result = tool(description="helper not executed")
+
+    assert result["returncode"] == 1
+    assert "helper wiring, launch, or measured-output feeding" in result["output"]
+    assert "do not widen the target scope" in result["output"]
 
 
 def test_save_and_test_allows_required_gluon_generic_dot_without_matrix_contract(tmp_path) -> None:

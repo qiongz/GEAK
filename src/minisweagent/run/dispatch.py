@@ -31,6 +31,7 @@ from minisweagent.run.gluon_doc_profiles import (
     task_requires_gluon_worker_docs,
 )
 from minisweagent.run.target_contracts import target_symbols_from_scoped_text
+from minisweagent.run.target_contracts import do_not_clauses, forbidden_symbols_from_scoped_text
 
 _GEAK_REPO_ROOT = get_repo_root()
 _GLUON_GATE_FALLBACK_RELS = {
@@ -218,6 +219,31 @@ def _task_required_patch_target_symbols(meta: dict[str, Any], task_body: str = "
     return unique
 
 
+def _task_forbidden_patch_target_symbols(meta: dict[str, Any], task_body: str = "") -> list[str]:
+    raw = meta.get("forbidden_patch_target_symbols")
+    if isinstance(raw, str):
+        symbols = [part.strip().strip("`") for part in raw.split(",")]
+    elif isinstance(raw, list):
+        symbols = [str(part).strip().strip("`") for part in raw]
+    else:
+        symbols = []
+
+    for key in ("forbidden_change", "forbidden_changes"):
+        symbols.extend(forbidden_symbols_from_scoped_text(meta.get(key)))
+    for field in ("Forbidden change", "Reject if"):
+        tagged = _task_body_field(task_body, field)
+        if tagged:
+            symbols.extend(forbidden_symbols_from_scoped_text(tagged))
+    for value in do_not_clauses(task_body):
+        symbols.extend(forbidden_symbols_from_scoped_text(value))
+
+    unique: list[str] = []
+    for symbol in symbols:
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", symbol) and symbol not in unique:
+            unique.append(symbol)
+    return unique
+
+
 def _task_required_output_dialect(meta: dict[str, Any], task_body: str = "") -> str:
     label_text = str(meta.get("label") or "").strip().lower()
     required = str(meta.get("required_output_dialect") or "").strip().lower()
@@ -347,6 +373,8 @@ def _task_feature_metadata(meta: dict[str, Any], task_body: str = "") -> dict[st
         "target_symbol",
         "target_component",
         "forbidden_change",
+        "allowed_execution_path",
+        "scope_infeasible_policy",
     ):
         if key in meta and meta.get(key) not in (None, ""):
             feature_meta[key] = meta.get(key)
@@ -359,6 +387,9 @@ def _task_feature_metadata(meta: dict[str, Any], task_body: str = "") -> dict[st
     required_patch_target_symbols = _task_required_patch_target_symbols(meta, task_body)
     if required_patch_target_symbols:
         feature_meta["required_patch_target_symbols"] = required_patch_target_symbols
+    forbidden_patch_target_symbols = _task_forbidden_patch_target_symbols(meta, task_body)
+    if forbidden_patch_target_symbols:
+        feature_meta["forbidden_patch_target_symbols"] = forbidden_patch_target_symbols
     return feature_meta
 
 
@@ -640,6 +671,9 @@ def task_file_to_agent_task(task_file: Path):
     required_patch_target_symbols = _task_required_patch_target_symbols(meta, body)
     if required_patch_target_symbols:
         cfg["required_patch_target_symbols"] = required_patch_target_symbols
+    forbidden_patch_target_symbols = _task_forbidden_patch_target_symbols(meta, body)
+    if forbidden_patch_target_symbols:
+        cfg["forbidden_patch_target_symbols"] = forbidden_patch_target_symbols
 
     # COMMANDMENT is the single source of truth for test commands.
     # Its SETUP + CORRECTNESS + BENCHMARK sections are executed verbatim.
