@@ -228,6 +228,35 @@ def _task_requires_amd_gluon(meta: dict[str, Any], task_body: str = "") -> bool:
     )
 
 
+def _task_required_amd_gluon_contract_tags(meta: dict[str, Any], task_body: str = "") -> list[str]:
+    text = "\n".join(
+        str(part or "")
+        for part in (
+            task_body,
+            meta.get("label"),
+            meta.get("gluon_doc_profile"),
+            meta.get("optimization_direction"),
+            meta.get("performance_hypothesis"),
+            meta.get("allowed_change"),
+            meta.get("gluon_overlay_reason"),
+        )
+    ).lower()
+    tags: list[str] = []
+    if any(
+        marker in text
+        for marker in (
+            "matrix",
+            "dotoperandlayout",
+            "operand layout",
+            "mfma",
+            "wmma",
+            "matrix_lowering",
+        )
+    ):
+        tags.append("matrix_lowering")
+    return tags
+
+
 def _task_feature_metadata(meta: dict[str, Any], task_body: str = "") -> dict[str, Any]:
     """Rebuild the normalized Gluon feature metadata from task frontmatter."""
     kernel_path = Path(str(meta.get("kernel_path") or "unknown.py"))
@@ -540,6 +569,9 @@ def task_file_to_agent_task(task_file: Path):
         cfg["gluon_doc_gate_required_paths"] = gluon_doc_gate_paths
     if required_output_dialect and required_output_dialect != "any":
         cfg["required_output_dialect"] = required_output_dialect
+    required_amd_gluon_contract_tags = _task_required_amd_gluon_contract_tags(meta, body)
+    if required_amd_gluon_contract_tags:
+        cfg["required_amd_gluon_contract_tags"] = required_amd_gluon_contract_tags
     if meta.get("required_patch_target_symbols"):
         raw_symbols = meta.get("required_patch_target_symbols")
         cfg["required_patch_target_symbols"] = (

@@ -22,6 +22,7 @@ from minisweagent.run.postprocess.benchmark_parsing import (
     _gluon_execution_contract_satisfied,
     _patch_touches_backup_file,
     _patch_touches_any_target_symbol,
+    _required_amd_gluon_static_contract_error,
     compute_shape_speedups,
     extract_latency_ms,
     classify_patch_output_dialect,
@@ -136,6 +137,7 @@ class SaveAndTestContext:
     gluon_doc_gate_required_paths: list[str] | None = None
     required_output_dialect: str | None = None
     required_patch_target_symbols: list[str] | None = None
+    required_amd_gluon_contract_tags: list[str] | None = None
 
 
 def _tracked_subprocess_run(
@@ -302,6 +304,15 @@ class SaveAndTestTool:
         required_symbols = [str(symbol).strip() for symbol in (ctx.required_patch_target_symbols or []) if str(symbol).strip()]
         if not required_output and not required_symbols:
             return None
+
+        task_meta = {"required_amd_gluon_contract_tags": ctx.required_amd_gluon_contract_tags or []}
+        static_contract_error = _required_amd_gluon_static_contract_error(
+            patch_content,
+            required_output,
+            task_meta,
+        )
+        if static_contract_error:
+            return "PATCH_CONTRACT_FAILED: " + static_contract_error + "."
 
         actual_output = classify_patch_output_dialect(patch_content)
         if required_output and not _dialect_contract_satisfied(required_output, actual_output):

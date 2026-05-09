@@ -322,10 +322,23 @@ def _find_task_metadata_for_patch_dir(patch_dir: Path) -> dict[str, Any]:
         safe_anchor = _parse_tagged_task_value(body, "Safe anchor")
         implementation_layer = _parse_tagged_task_value(body, "Implementation layer")
         extension_layer = _parse_tagged_task_value(body, "Extension layer")
+        optimization_direction = _parse_tagged_task_value(body, "Optimization direction")
+        performance_hypothesis = _parse_tagged_task_value(body, "Performance hypothesis")
+        allowed_change = _parse_tagged_task_value(body, "Allowed change")
+        gluon_overlay_reason = _parse_tagged_task_value(body, "Gluon overlay reason")
         if inferred_targets:
             meta = dict(meta)
             meta["required_patch_target_symbols"] = inferred_targets
-        if comparison_target or safe_anchor or implementation_layer or extension_layer:
+        if (
+            comparison_target
+            or safe_anchor
+            or implementation_layer
+            or extension_layer
+            or optimization_direction
+            or performance_hypothesis
+            or allowed_change
+            or gluon_overlay_reason
+        ):
             meta = dict(meta)
             if comparison_target:
                 meta["comparison_target"] = comparison_target
@@ -335,6 +348,14 @@ def _find_task_metadata_for_patch_dir(patch_dir: Path) -> dict[str, Any]:
                 meta["implementation_layer"] = implementation_layer
             if extension_layer:
                 meta["extension_layer"] = extension_layer
+            if optimization_direction:
+                meta["optimization_direction"] = optimization_direction
+            if performance_hypothesis:
+                meta["performance_hypothesis"] = performance_hypothesis
+            if allowed_change:
+                meta["allowed_change"] = allowed_change
+            if gluon_overlay_reason:
+                meta["gluon_overlay_reason"] = gluon_overlay_reason
         return meta
     except Exception as exc:
         logger.debug("Could not read task metadata for %s: %s", patch_dir, exc)
@@ -477,6 +498,68 @@ def _patch_touches_backup_file(patch_text: str) -> bool:
             if name.endswith(_BACKUP_FILE_SUFFIXES):
                 return True
     return False
+
+
+def _has_added_generic_gluon_dot(patch_text: str) -> bool:
+    for line in _added_lines(patch_text):
+        if not line or line.startswith("#"):
+            continue
+        if re.search(r"(?<![A-Za-z0-9_])(?:gl|ttgl)\.dot\s*\(", line):
+            return True
+    return False
+
+
+def _has_added_plain_exception_fallback(patch_text: str) -> bool:
+    lines = [line for line in _added_lines(patch_text) if line and not line.startswith("#")]
+    if not any(re.match(r"except\s+Exception\b", line) for line in lines):
+        return False
+    launch_pattern = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)\s*\[[^\]]+\]\s*\(")
+    for line in lines:
+        match = launch_pattern.search(line)
+        if match and "gluon" not in match.group(1).lower():
+            return True
+    return False
+
+
+def _task_requires_matrix_lowering_contract(task_meta: dict[str, Any] | None = None) -> bool:
+    task_meta = task_meta or {}
+    text = "\n".join(
+        str(task_meta.get(key) or "")
+        for key in (
+            "required_amd_gluon_contract_tags",
+            "label",
+            "gluon_doc_profile",
+            "optimization_direction",
+            "performance_hypothesis",
+            "allowed_change",
+            "gluon_overlay_reason",
+        )
+    ).lower()
+    return any(
+        marker in text
+        for marker in (
+            "matrix",
+            "dotoperandlayout",
+            "operand layout",
+            "mfma",
+            "wmma",
+            "matrix_lowering",
+        )
+    )
+
+
+def _required_amd_gluon_static_contract_error(
+    patch_text: str,
+    required_output_dialect: str,
+    task_meta: dict[str, Any] | None = None,
+) -> str | None:
+    if str(required_output_dialect or "").strip().lower() != "amd_gluon":
+        return None
+    if _has_added_plain_exception_fallback(patch_text):
+        return "required AMD Gluon patches must not add broad exception fallback to a plain Triton launcher"
+    if _task_requires_matrix_lowering_contract(task_meta) and _has_added_generic_gluon_dot(patch_text):
+        return "required AMD Gluon patches must not use generic gl.dot as a mechanical dot rewrite"
+    return None
 
 
 def _extract_added_gluon_jit_defs(patch_text: str) -> list[str]:
@@ -868,6 +951,14 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         if _patch_touches_backup_file(patch_text):
             logger.info("Skipping %s because it touches backup or temporary files", name)
             continue
+        static_contract_error = _required_amd_gluon_static_contract_error(
+            patch_text,
+            required_output_dialect,
+            task_meta,
+        )
+        if static_contract_error:
+            logger.info("Skipping %s because %s", name, static_contract_error)
+            continue
         if required_patch_target_symbols and not _patch_touches_any_target_symbol(
             patch_text,
             required_patch_target_symbols,
@@ -1016,6 +1107,26 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
                     existing["llm_selection_analysis"] = (
                         existing.get("llm_selection_analysis") or ""
                     ) + " [Invalidated: selected patch touched backup or temporary files]"
+                    existing_path.write_text(json.dumps(existing, indent=2))
+                    return existing
+                static_contract_error = _required_amd_gluon_static_contract_error(
+                    patch_text,
+                    required_output_dialect,
+                    task_meta,
+                )
+                if static_contract_error:
+                    logger.warning(
+                        "rewrite_best_results(%s): selected patch violates static AMD Gluon contract: %s.",
+                        patch_dir.name,
+                        static_contract_error,
+                    )
+                    existing["best_patch_id"] = None
+                    existing["best_patch_file"] = None
+                    existing["best_patch_speedup"] = 0.0
+                    existing["required_output_dialect"] = required_output_dialect
+                    existing["llm_selection_analysis"] = (
+                        existing.get("llm_selection_analysis") or ""
+                    ) + f" [Invalidated: {static_contract_error}]"
                     existing_path.write_text(json.dumps(existing, indent=2))
                     return existing
 

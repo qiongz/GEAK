@@ -4,7 +4,10 @@ import pytest
 
 from minisweagent.run.postprocess.benchmark_parsing import (
     _dialect_contract_satisfied,
+    _has_added_generic_gluon_dot,
+    _has_added_plain_exception_fallback,
     _patch_touches_backup_file,
+    _required_amd_gluon_static_contract_error,
     _required_output_dialect,
     classify_patch_output_dialect,
     compute_best_patch,
@@ -96,6 +99,46 @@ def test_patch_touches_backup_file_detects_bak_source_copy() -> None:
     )
 
     assert _patch_touches_backup_file(patch) is True
+
+
+def test_required_amd_gluon_static_contract_rejects_generic_gluon_dot() -> None:
+    patch = "\n".join(
+        [
+            "diff --git a/kernel.py b/kernel.py",
+            "+from triton.experimental import gluon",
+            "+from triton.experimental.gluon import language as gl",
+            "+@gluon.jit",
+            "+def kernel_gluon(q, k):",
+            "+    return gl.dot(q, k)",
+        ]
+    )
+
+    assert _has_added_generic_gluon_dot(patch) is True
+    assert _required_amd_gluon_static_contract_error(patch, "amd_gluon") is None
+    assert "generic gl.dot" in (
+        _required_amd_gluon_static_contract_error(
+            patch,
+            "amd_gluon",
+            {"performance_hypothesis": "DotOperandLayout can ensure MFMA selection"},
+        )
+        or ""
+    )
+    assert _required_amd_gluon_static_contract_error(patch, "mixed") is None
+
+
+def test_required_amd_gluon_static_contract_rejects_plain_exception_fallback() -> None:
+    patch = "\n".join(
+        [
+            "diff --git a/wrapper.py b/wrapper.py",
+            "+try:",
+            "+    kernel_gluon[grid](x)",
+            "+except Exception:",
+            "+    kernel_plain[grid](x)",
+        ]
+    )
+
+    assert _has_added_plain_exception_fallback(patch) is True
+    assert "plain Triton launcher" in (_required_amd_gluon_static_contract_error(patch, "amd_gluon") or "")
 
 
 def test_classify_patch_output_dialect_ignores_context_lines() -> None:

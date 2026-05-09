@@ -64,6 +64,7 @@ class AgentConfig:
     gluon_doc_gate_required_paths: list[str] | None = None
     required_output_dialect: str | None = None
     required_patch_target_symbols: list[str] | None = None
+    required_amd_gluon_contract_tags: list[str] | None = None
 
 
 # Unified observation truncation for both bash output and tool call results (head + tail).
@@ -253,6 +254,7 @@ class DefaultAgent:
             gluon_doc_gate_required_paths=self.config.gluon_doc_gate_required_paths,
             required_output_dialect=self.config.required_output_dialect,
             required_patch_target_symbols=self.config.required_patch_target_symbols,
+            required_amd_gluon_contract_tags=self.config.required_amd_gluon_contract_tags,
         )
 
         save_and_test_tool = self.toolruntime._tool_table.get("save_and_test")

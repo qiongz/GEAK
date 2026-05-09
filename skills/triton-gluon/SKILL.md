@@ -71,7 +71,9 @@ torch2hip tasks.
      `gl.sigmoid` evidence;
    - every `tl.dot` / `tl.dot_scaled` in scope and the full Gluon matrix path:
      result layout, `DotOperandLayout`s, `convert_layout`, and target op such as
-     `gl.amd.cdna3.mfma`; never leave `tl.dot` inside `@gluon.jit`;
+     `gl.amd.cdna3.mfma`; never leave `tl.dot` inside `@gluon.jit`, and do not
+     replace it with a generic `gl.dot` when the task hypothesis requires MFMA
+     or operand-layout lowering;
    - for buffer ops, the loaded element dtype, typed `other` value/layout, and
      `stored_value` dtype before using `buffer_load` / `buffer_store`;
    - the performance hypothesis before editing: why this Gluon change might help
@@ -92,6 +94,9 @@ torch2hip tasks.
      caller so that helper is actually executed; a definition-only helper while
      the dispatch still uses the plain Triton path is not a valid result, even
      if compile/correctness passes through the unchanged path;
+   - whether a required `amd_gluon` task adds broad `try/except Exception`
+     fallback to a plain Triton launcher. Required pure Gluon tasks must fail
+     visibly rather than count a silent plain fallback as success;
    - whether the patch creates any backup or temporary files. Do not add
      `.bak`, `.backup`, `.orig`, `.tmp`, or editor-swap copies; patches should
      contain only the intended source/config changes.
