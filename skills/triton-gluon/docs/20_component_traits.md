@@ -207,6 +207,8 @@ lowering. Do not add MFMA / WMMA just because Gluon is available.
 Do not skip accumulator and operand layout compatibility.
 Leaving `tl.dot(...)` inside an `@gluon.jit` body is not an L0 shortcut; it is a
 mixed/invalid rewrite for a required pure AMD Gluon task.
+Likewise, do not satisfy an MFMA or operand-layout hypothesis by replacing
+`tl.dot` with generic `gl.dot`; use the matrix ladder or reduce the task scope.
 
 MFMA-specific checks before editing:
 

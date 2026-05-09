@@ -180,6 +180,29 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
     assert "Task required_patch_target_symbols: target_stage" in task.task
 
 
+def test_worker_context_sets_matrix_contract_tag_for_mfma_task(tmp_path) -> None:
+    task_path = tmp_path / "matrix_contract.md"
+    write_task_file(
+        task_path,
+        {
+            "label": "gluon-l0-explicit-layout-overlay",
+            "priority": 6,
+            "kernel_type": "triton",
+            "kernel_path": str(tmp_path / "kernel.py"),
+            "repo_root": str(tmp_path),
+            "input_dialect": "plain_triton",
+            "gluon_feature_mode": "auto",
+            "allowed_output_dialects": ["amd_gluon"],
+            "required_output_dialect": "amd_gluon",
+        },
+        "Performance hypothesis: DotOperandLayout can ensure optimal MFMA instruction selection.\n",
+    )
+
+    task = task_file_to_agent_task(task_path)
+
+    assert task.config["required_amd_gluon_contract_tags"] == ["matrix_lowering"]
+
+
 def test_worker_context_infers_required_gluon_from_body_layer_contract(tmp_path) -> None:
     task_path = tmp_path / "body_layer_contract.md"
     write_task_file(
@@ -480,6 +503,92 @@ def test_save_and_test_rejects_backup_file_patch(tmp_path) -> None:
 
     assert result["returncode"] == 1
     assert "backup or temporary files" in result["output"]
+
+
+def test_save_and_test_allows_required_gluon_generic_dot_without_matrix_contract(tmp_path) -> None:
+    tool = SaveAndTestTool()
+    tool._get_patch_content = lambda: "\n".join(  # type: ignore[method-assign]
+        [
+            "diff --git a/kernel.py b/kernel.py",
+            "+from triton.experimental import gluon",
+            "+from triton.experimental.gluon import language as gl",
+            "+@gluon.jit",
+            "+def kernel_gluon(q, k):",
+            "+    return gl.dot(q, k)",
+            "+kernel_gluon[grid](q, k)",
+        ]
+    )
+    tool.set_context(
+        SaveAndTestContext(
+            cwd=str(tmp_path),
+            test_command="true",
+            timeout=5,
+            patch_output_dir=None,
+            required_output_dialect="amd_gluon",
+        )
+    )
+
+    result = tool(description="generic gl.dot")
+
+    assert result["returncode"] == 0
+    assert "PATCH_CONTRACT_FAILED" not in result["output"]
+
+
+def test_save_and_test_rejects_required_gluon_generic_dot_for_matrix_contract(tmp_path) -> None:
+    tool = SaveAndTestTool()
+    tool._get_patch_content = lambda: "\n".join(  # type: ignore[method-assign]
+        [
+            "diff --git a/kernel.py b/kernel.py",
+            "+from triton.experimental import gluon",
+            "+from triton.experimental.gluon import language as gl",
+            "+@gluon.jit",
+            "+def kernel_gluon(q, k):",
+            "+    return gl.dot(q, k)",
+            "+kernel_gluon[grid](q, k)",
+        ]
+    )
+    tool.set_context(
+        SaveAndTestContext(
+            cwd=str(tmp_path),
+            test_command="true",
+            timeout=5,
+            patch_output_dir=None,
+            required_output_dialect="amd_gluon",
+            required_amd_gluon_contract_tags=["matrix_lowering"],
+        )
+    )
+
+    result = tool(description="generic gl.dot")
+
+    assert result["returncode"] == 1
+    assert "generic gl.dot" in result["output"]
+
+
+def test_save_and_test_rejects_required_gluon_plain_exception_fallback(tmp_path) -> None:
+    tool = SaveAndTestTool()
+    tool._get_patch_content = lambda: "\n".join(  # type: ignore[method-assign]
+        [
+            "diff --git a/wrapper.py b/wrapper.py",
+            "+try:",
+            "+    kernel_gluon[grid](x)",
+            "+except Exception:",
+            "+    kernel_plain[grid](x)",
+        ]
+    )
+    tool.set_context(
+        SaveAndTestContext(
+            cwd=str(tmp_path),
+            test_command="true",
+            timeout=5,
+            patch_output_dir=None,
+            required_output_dialect="amd_gluon",
+        )
+    )
+
+    result = tool(description="plain exception fallback")
+
+    assert result["returncode"] == 1
+    assert "plain Triton launcher" in result["output"]
 
 
 def test_save_and_test_rejects_mixed_dead_gluon_helper(tmp_path) -> None:

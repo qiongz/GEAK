@@ -330,7 +330,8 @@ Rules:
 - Do not leave `tl.dot` inside `@gluon.jit`. A dot path is only valid after the
   plan names result layout, operand `DotOperandLayout`s, `convert_layout`, and a
   target matrix op such as `gl.amd.cdna3.mfma`; otherwise reduce scope to a
-  non-dot L0 path.
+  non-dot L0 path. Do not substitute a generic `gl.dot` for a task whose
+  hypothesis requires MFMA or operand-layout lowering.
 - If the plan cannot name the layout for an index, mask, temporary, or matrix
   operand, reduce the task scope before editing.
 - If the plan cannot name the optimization direction or Gluon overlay reason,
@@ -348,6 +349,9 @@ Rules:
   `target` path is not a valid Gluon execution result. The plan must name the
   call/dispatch line that executes the Gluon helper, or directly convert the
   original target function that existing dispatch already calls.
+- Required pure AMD Gluon tasks must not add broad `try/except Exception`
+  fallback to a plain Triton launcher. Compile/runtime failure should be
+  reported by `save_and_test`, not hidden behind a plain fallback success path.
 - Do not create or commit backup files (`*.bak`, `*.backup`, `*.orig`, `*.tmp`,
   editor swap files). Backup source copies can pollute dialect detection and are
   invalid patch content.
