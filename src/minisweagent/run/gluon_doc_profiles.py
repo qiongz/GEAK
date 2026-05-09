@@ -80,3 +80,62 @@ def required_doc_keys_for_profile(profile: str | None) -> list[str]:
     """Return the deterministic documentation keys for a Gluon doc profile."""
     normalized = str(profile or "").strip().lower()
     return list(GLUON_DOC_PROFILE_REQUIRED_KEYS.get(normalized, MANDATORY_GLUON_DOC_KEYS))
+
+
+def task_requires_gluon_worker_docs(
+    *,
+    kernel_type: str | None,
+    required_output: str | None,
+    implementation_layer: str | None = None,
+    extension_layer: str | None = None,
+    doc_profile: str | None = None,
+    task_body: str = "",
+    label: str | None = None,
+) -> bool:
+    """Return whether a task should receive worker-side Gluon docs/context."""
+    if str(kernel_type or "").strip().lower() != "triton":
+        return False
+
+    required = str(required_output or "").strip().lower()
+    implementation = str(implementation_layer or "").strip().lower()
+    extension = str(extension_layer or "").strip().lower()
+    profile = str(doc_profile or "").strip().lower()
+    text = "\n".join(
+        str(part or "")
+        for part in (
+            task_body,
+            label,
+            implementation,
+            extension,
+            profile,
+        )
+    ).lower()
+
+    if required in {"amd_gluon", "mixed"}:
+        return True
+    if "amd_gluon" in implementation or "amd-gluon" in implementation:
+        return True
+    if extension in {"l0", "l1", "hybrid"}:
+        return True
+    if profile in {
+        "extension_l0_minimal",
+        "nv_to_amd_translation",
+        "shared_transplant",
+        "gluon_variant_from_anchor",
+        "hybrid_dispatch",
+        "hybrid_dispatch_from_evidence",
+    }:
+        return True
+    return any(
+        marker in text
+        for marker in (
+            "composition type: shared_transplant",
+            "composition type: gluon_variant",
+            "composition type: hybrid_dispatch",
+            "shared_transplant",
+            "gluon_variant",
+            "@gluon.jit",
+            "amd gluon overlay",
+            "amd_gluon variant",
+        )
+    )

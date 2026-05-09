@@ -1,8 +1,19 @@
 # Triton-Gluon Examples
 
-Read at most one relevant example after reading `00_always_read.md` and the
-needed component traits. These examples are schematic; they are not golden
-outputs.
+Example-only worker doc. Read at most one relevant example after reading
+`00_always_read.md` and the needed component/API docs. These examples are
+schematic; they are not golden outputs and are not planner-default context.
+
+## Profile Routing Hints
+
+- `extension_l0_minimal`: use one minimal example only to confirm host-created
+  layout and launcher wiring shape.
+- `nv_to_amd_translation`: use the translation example to preserve semantics and
+  drop unsupported NVIDIA fast paths before AMD tuning.
+- `jit_aot_sensitive`: use JIT/AOT examples only when package gates or signatures
+  are in scope.
+- `shared_transplant`: examples may show final plain Triton results that are
+  Gluon-informed, but they do not replace safe-anchor comparison.
 
 ## Internal Index
 

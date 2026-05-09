@@ -29,6 +29,7 @@ from minisweagent.agents.heterogeneous.task_generator import (
     generate_tasks,
     write_task_files,
 )
+from minisweagent.agents.heterogeneous.prompts import TASKGEN_INSTANCE_TEMPLATE
 from minisweagent.agents.agent_spec import AgentTask
 from minisweagent.run.gluon_doc_profiles import GLUON_DOC_PROFILE_REQUIRED_KEYS
 from minisweagent.run.task_file import read_task_file
@@ -284,6 +285,25 @@ def test_search_space_allocation_lists_base_family_checklist() -> None:
     assert "`base_small_matrix_persistent_or_launch_amortization`" in guidance
     assert "Base family: <family_id>" in guidance
     assert "Gluon overlay reasons by family" in guidance
+
+
+def test_round1_allocation_preserves_plain_base_families_with_gluon_overlay() -> None:
+    guidance = _build_search_space_allocation_guidance(
+        {**_gluon_feature_meta("plain_triton"), "shape_coverage_profile": "bucketed"},
+        traits=["semantics_contract", "dialect_plain_triton", "layout_basic", "memory_amd_buffer", "matrix_scaled_dot"],
+        num_gpus=8,
+        baseline_metrics={"bottleneck": "memory", "duration_us": 220.0},
+        current_round=1,
+    )
+
+    assert "Plain Triton competitors: at least" in guidance
+    assert "AMD Gluon overlay: 1 task(s)" in guidance
+    assert "`base_swizzle_and_tile_schedule`" in guidance
+    assert "`base_split_k_or_multipass_reduce`" in guidance
+    assert "`base_scaled_dot_fusion`" in guidance
+    assert "`base_hot_path_streamline`" in guidance
+    assert "register-pressure reduction" in guidance
+    assert "Round 1 plain Triton input may have at most one L0 overlay" in guidance
 
 
 def test_search_space_allocation_includes_evidence_anchored_composition() -> None:
@@ -1324,6 +1344,36 @@ def test_gluon_doc_profile_mapping_covers_prompt_enum_values() -> None:
     }
 
     assert set(GLUON_DOC_PROFILE_REQUIRED_KEYS) == expected
+
+
+def test_taskgen_planner_default_files_do_not_require_worker_deep_docs() -> None:
+    assert "Triton-Gluon API reference" not in TASKGEN_INSTANCE_TEMPLATE
+    assert "Triton-Gluon schematic examples" not in TASKGEN_INSTANCE_TEMPLATE
+    assert "Triton-Gluon residual backup routing" not in TASKGEN_INSTANCE_TEMPLATE
+    assert "Worker-routed Gluon implementation docs" in TASKGEN_INSTANCE_TEMPLATE
+
+
+def test_gluon_entry_docs_keep_hard_contract_and_profile_performance_hints() -> None:
+    root = Path(__file__).resolve().parents[2]
+    skill = (root / "skills" / "triton-gluon" / "SKILL.md").read_text()
+    always = (root / "skills" / "triton-gluon" / "docs" / "00_always_read.md").read_text()
+    component = (root / "skills" / "triton-gluon" / "docs" / "20_component_traits.md").read_text()
+    api = (root / "skills" / "triton-gluon" / "docs" / "50_api_reference.md").read_text()
+    real = (root / "skills" / "triton-gluon" / "docs" / "60_real_patterns.md").read_text()
+
+    for text in (skill, always):
+        assert "doc" in text.lower()
+        assert "Gluon knowledge lookup plan" in text
+        assert "Gluon implementation plan" in text
+        assert "broad `try/except Exception` fallback" in text
+        assert "one subpath/component" in text
+        assert "backup" in text.lower()
+    assert "Profile Routing Hints" in component
+    assert "performance prior" in component
+    assert "Profile Routing Hints" in api
+    assert "API cookbook" in api
+    assert "Profile Routing Hints" in real
+    assert "source-first" in real
 
 
 def test_write_task_files_records_plain_triton_gluon_preference(tmp_path: Path):

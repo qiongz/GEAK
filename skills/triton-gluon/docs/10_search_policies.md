@@ -1,9 +1,10 @@
 # Triton-Gluon Search Policies
 
-Read this file when planning tasks, reviewing prior rounds, or deciding how a
-Triton optimization direction should be tried as plain Triton, AMD Gluon,
-paired comparison, shared transplant, or hybrid dispatch. Implementation details
-live in `20_component_traits.md`.
+Planner-facing policy doc. Read this file when planning tasks, reviewing prior
+rounds, or deciding how a Triton optimization direction should be tried as plain
+Triton, AMD Gluon, paired comparison, shared transplant, or hybrid dispatch.
+Implementation details live in worker-routed docs (`20_component_traits.md`,
+`30_architecture_notes.md`, `50_api_reference.md`, and `60_real_patterns.md`).
 
 ## Internal Index
 
@@ -301,51 +302,21 @@ required_gluon_docs:
   - gluon_search_policies_path
 ```
 
-Profile guidance:
+Deterministic profile map:
 
-- `extension_l0_minimal`: add `gluon_component_traits_path` and
-  `gluon_api_reference_path`. The task must ask the worker for a pre-edit
-  layout/API mapping and must scope layout-heavy kernels to one Gluon subpath.
-  Treat L0 as an executed correctness anchor; do not describe it as a
-  performance win unless benchmark evidence beats the safe plain/base path. For
-  low-latency kernels or tiny stages, L0 should not ask for launch tuning or
-  block-size sweeps after a slower correctness pass; it should record overhead
-  evidence and stop as an anchor.
-- `nv_to_amd_translation`: add `gluon_component_traits_path`,
-  `gluon_architecture_notes_path`, and `gluon_real_patterns_path`.
-- `memory_lowering`: add `gluon_component_traits_path`,
-  `gluon_architecture_notes_path`, `gluon_api_reference_path`, and
-  `gluon_real_patterns_path`. This profile must refine a verified Gluon layout
-  anchor; do not wrap the original plain Triton body in `@gluon.jit` just to add
-  `buffer_load` / `buffer_store`. A buffer/load/store task should keep
-  `Matrix path: none` unless it explicitly declares matrix lowering or
-  `bundle_allowed=true`.
-- `matrix_lowering`: add `gluon_component_traits_path`,
-  `gluon_architecture_notes_path`, and `gluon_api_reference_path`. The task must
-  name the verified layout anchor, result layout, operand layouts, and target
-  matrix op; otherwise it should be downgraded to L0 layout viability. It must
-  also name the expected performance mechanism, such as replacing a real hot dot
-  path without adding dominant layout-conversion or dispatch overhead.
-- `shape_bucketed_dispatch`: add `gluon_component_traits_path`,
-  `gluon_architecture_notes_path`, and `gluon_real_patterns_path`.
-- `jit_aot_sensitive`: add `gluon_architecture_notes_path` and
-  `gluon_api_reference_path`.
-- `shared_transplant`: add `gluon_component_traits_path` and
-  `gluon_real_patterns_path` when the source component comes from real Gluon or
-  downstream operator evidence.
-- `gluon_variant_from_anchor`: add `gluon_component_traits_path`,
-  `gluon_architecture_notes_path`, `gluon_api_reference_path`, and
-  `gluon_real_patterns_path`. The task must name the safe anchor and preserve
-  its algorithm before changing performance components.
-- `hybrid_dispatch`: add `gluon_component_traits_path`,
-  `gluon_architecture_notes_path`, and `gluon_real_patterns_path`.
-- `hybrid_dispatch_from_evidence`: add `gluon_component_traits_path`,
-  `gluon_architecture_notes_path`, and `gluon_real_patterns_path`. The task must
-  name per-shape or sub-operation evidence for each dispatch branch.
-- `base_or_shared_gluon`: compatibility profile for Base/Shared tasks carrying
-  Gluon metadata but no narrower implementation profile. It keeps planner and
-  result attribution metadata aligned, but does not by itself require a plain
-  Triton Base worker to read Gluon implementation docs.
+| `gluon_doc_profile` | Required docs beyond mandatory skill/00/10 | Planner performance boundary |
+| --- | --- | --- |
+| `extension_l0_minimal` | `gluon_component_traits_path`, `gluon_api_reference_path` | Smallest executed Gluon anchor. Worth trying only with a concrete layout/API reason; stop after slower correctness on low-latency paths. |
+| `nv_to_amd_translation` | `gluon_component_traits_path`, `gluon_architecture_notes_path`, `gluon_real_patterns_path`, `gluon_api_reference_path` | Translation, not renaming. Source-first for NVIDIA layout/async/TMA/WGMMA assumptions before AMD tuning. |
+| `memory_lowering` | `gluon_component_traits_path`, `gluon_api_reference_path` | Use when a scoped load/store/cache path is hot. Start from generic `gl.load/store`; escalate to AMD buffer ops only when dtype/layout preconditions and performance mechanism are named. |
+| `matrix_lowering` | `gluon_component_traits_path`, `gluon_architecture_notes_path`, `gluon_api_reference_path` | Requires real hot dot/scaled-dot path, result layout, operand layouts, target op, and conversion cost hypothesis. Downgrade to L0 if anchor/layout evidence is missing. |
+| `shape_bucketed_dispatch` | `gluon_component_traits_path`, `gluon_real_patterns_path` | Use only when shapes have distinct regimes. Require visible host dispatch and per-shape no-regression. |
+| `jit_aot_sensitive` | `gluon_architecture_notes_path`, `gluon_api_reference_path` | Use when JIT/AOT/prebuilt/signature/scratch/version details are part of execution. Preserve fallback gates unless benchmark contract proves otherwise. |
+| `shared_transplant` | `gluon_component_traits_path`, `gluon_real_patterns_path` | Transplant one portable component into the safe anchor. Output may stay plain Triton; compare to safe anchor. |
+| `gluon_variant_from_anchor` | `gluon_component_traits_path`, `gluon_api_reference_path`, `gluon_real_patterns_path` | Re-express the safe-anchor algorithm in AMD Gluon only when explicit layout, memory, or matrix mechanism justifies it. |
+| `hybrid_dispatch` | `gluon_real_patterns_path` | Use visible host-side dispatch only after Base/Gluon candidates both exist and a dispatch condition is auditable. |
+| `hybrid_dispatch_from_evidence` | `gluon_real_patterns_path` | Same as hybrid, but must name per-shape or sub-operation evidence for each branch. |
+| `base_or_shared_gluon` | `gluon_component_traits_path` | Compatibility attribution profile. It must not by itself turn a plain Base task into a Gluon worker task. |
 
 Documentation-gate merge order is additive: mandatory docs
 (`gluon_skill_path`, `gluon_always_read_path`, `gluon_search_policies_path`),

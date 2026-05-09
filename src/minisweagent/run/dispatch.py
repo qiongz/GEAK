@@ -28,6 +28,7 @@ from minisweagent.run.gluon_doc_profiles import (
     MANDATORY_GLUON_DOC_KEYS,
     add_unique_doc_key,
     required_doc_keys_for_profile,
+    task_requires_gluon_worker_docs,
 )
 
 _GEAK_REPO_ROOT = get_repo_root()
@@ -37,8 +38,10 @@ _GLUON_GATE_FALLBACK_RELS = {
     "gluon_search_policies_path": "skills/triton-gluon/docs/10_search_policies.md",
     "gluon_component_traits_path": "skills/triton-gluon/docs/20_component_traits.md",
     "gluon_architecture_notes_path": "skills/triton-gluon/docs/30_architecture_notes.md",
+    "gluon_examples_doc_path": "skills/triton-gluon/docs/40_examples.md",
     "gluon_api_reference_path": "skills/triton-gluon/docs/50_api_reference.md",
     "gluon_real_patterns_path": "skills/triton-gluon/docs/60_real_patterns.md",
+    "gluon_backup_details_path": "skills/triton-gluon/docs/70_backup_details.md",
 }
 
 # ── model ensemble support ───────────────────────────────────────────
@@ -271,55 +274,14 @@ def _task_requires_amd_gluon(meta: dict[str, Any], task_body: str = "") -> bool:
 
 def _task_requires_gluon_worker_docs(meta: dict[str, Any], task_body: str = "") -> bool:
     """Return whether this task should receive the Gluon worker documentation gate."""
-    if str(meta.get("kernel_type") or "").strip().lower() != "triton":
-        return False
-
-    required_output = _task_required_output_dialect(meta, task_body)
-    implementation_layer = str(
-        meta.get("implementation_layer") or _task_body_field(task_body, "Implementation layer")
-    ).strip().lower()
-    extension_layer = str(
-        meta.get("extension_layer") or _task_body_field(task_body, "Extension layer")
-    ).strip().lower()
-    doc_profile = str(meta.get("gluon_doc_profile") or "").strip().lower()
-    text = "\n".join(
-        str(part or "")
-        for part in (
-            task_body,
-            meta.get("label"),
-            implementation_layer,
-            extension_layer,
-            doc_profile,
-        )
-    ).lower()
-
-    if required_output in {"amd_gluon", "mixed"}:
-        return True
-    if "amd_gluon" in implementation_layer or "amd-gluon" in implementation_layer:
-        return True
-    if extension_layer in {"l0", "l1", "hybrid"}:
-        return True
-    if doc_profile in {
-        "extension_l0_minimal",
-        "nv_to_amd_translation",
-        "shared_transplant",
-        "gluon_variant_from_anchor",
-        "hybrid_dispatch",
-        "hybrid_dispatch_from_evidence",
-    }:
-        return True
-    return any(
-        marker in text
-        for marker in (
-            "composition type: shared_transplant",
-            "composition type: gluon_variant",
-            "composition type: hybrid_dispatch",
-            "shared_transplant",
-            "gluon_variant",
-            "@gluon.jit",
-            "amd gluon overlay",
-            "amd_gluon variant",
-        )
+    return task_requires_gluon_worker_docs(
+        kernel_type=str(meta.get("kernel_type") or ""),
+        required_output=_task_required_output_dialect(meta, task_body),
+        implementation_layer=meta.get("implementation_layer") or _task_body_field(task_body, "Implementation layer"),
+        extension_layer=meta.get("extension_layer") or _task_body_field(task_body, "Extension layer"),
+        doc_profile=meta.get("gluon_doc_profile"),
+        task_body=task_body,
+        label=str(meta.get("label") or ""),
     )
 
 
@@ -372,6 +334,8 @@ def _task_feature_metadata(meta: dict[str, Any], task_body: str = "") -> dict[st
     )
     if meta.get("search_set"):
         feature_meta["search_set"] = str(meta.get("search_set"))
+    if meta.get("label"):
+        feature_meta["label"] = str(meta.get("label"))
     if required_output_dialect:
         feature_meta["required_output_dialect"] = required_output_dialect
     if meta.get("gluon_doc_profile"):

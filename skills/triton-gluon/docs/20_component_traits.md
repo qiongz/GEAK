@@ -1,7 +1,26 @@
 # Triton-Gluon Component Traits
 
-Read this file when implementing or planning a concrete optimization direction.
-Search policy and task allocation live in `10_search_policies.md`.
+Worker-routed implementation doc. Read this file when a task's
+`gluon_doc_profile` or doc gate routes you to concrete component traits. Search
+policy and task allocation live in `10_search_policies.md`.
+
+## Profile Routing Hints
+
+- `extension_l0_minimal`: use `layout_basic`, `layout_slice_broadcast`, and
+  `memory_generic` to build the smallest executed Gluon subpath. Treat it as an
+  anchor, not a promised speedup.
+- `memory_lowering`: use `memory_generic` before `memory_amd_buffer`. The
+  performance prior is hot memory/cache traffic; the common slowdown is adding
+  buffer/layout work when generic `gl.load/store` or plain Triton is cheaper.
+- `matrix_lowering`: use `matrix_dot`, `matrix_scaled_dot`, or
+  `matrix_wmma_descriptor` only after a hot dot path and layout anchor are known.
+  The hard part is avoiding conversion overhead that dominates the MFMA/WMMA win.
+- `shape_bucketed_dispatch`: use `shape_*` traits when layout constexprs or
+  matrix tile choices vary by shape. Prefer explicit host dispatch over hidden
+  heuristic mutation.
+- `shared_transplant` / `gluon_variant_from_anchor`: identify one portable
+  component and preserve safe-anchor semantics before changing layout, memory, or
+  matrix behavior.
 
 ## Internal Index
 
