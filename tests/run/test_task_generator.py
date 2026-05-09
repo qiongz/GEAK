@@ -154,6 +154,18 @@ def test_infer_required_patch_target_symbols_from_allowed_change_components() ->
     assert _infer_required_patch_target_symbols(prompt) == ["tile_load_a", "tile_load_b", "tile_load_c"]
 
 
+def test_infer_required_patch_target_symbols_from_stage_scoped_allowed_change() -> None:
+    prompt = "\n".join(
+        [
+            "Extension layer: L0",
+            "Allowed change: layout specification for tensor creation and load/store in stage1 inner loop",
+            "Reject if: target-symbol mismatch.",
+        ]
+    )
+
+    assert _infer_required_patch_target_symbols(prompt) == ["stage1"]
+
+
 def test_build_gluon_planning_traits_guidance_includes_candidate_slots(tmp_path: Path) -> None:
     kernel = tmp_path / "kernel.py"
     kernel.write_text(
@@ -304,6 +316,7 @@ def test_round1_allocation_preserves_plain_base_families_with_gluon_overlay() ->
     assert "`base_hot_path_streamline`" in guidance
     assert "register-pressure reduction" in guidance
     assert "Round 1 plain Triton input may have at most one L0 overlay" in guidance
+    assert "must not ask the worker to convert an entire stage/helper/kernel" in guidance
 
 
 def test_search_space_allocation_includes_evidence_anchored_composition() -> None:
