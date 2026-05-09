@@ -23,7 +23,11 @@ from minisweagent.debug_runtime import emit_debug_log
 from minisweagent.run.preprocess.discovery_types import (
     allowed_skill_tiers_for_feature,
     build_gluon_feature_metadata,
-    feature_uses_gluon_guidance_from_meta,
+)
+from minisweagent.run.gluon_doc_profiles import (
+    MANDATORY_GLUON_DOC_KEYS,
+    add_unique_doc_key,
+    required_doc_keys_for_profile,
 )
 
 _GEAK_REPO_ROOT = get_repo_root()
@@ -265,6 +269,60 @@ def _task_requires_amd_gluon(meta: dict[str, Any], task_body: str = "") -> bool:
     )
 
 
+def _task_requires_gluon_worker_docs(meta: dict[str, Any], task_body: str = "") -> bool:
+    """Return whether this task should receive the Gluon worker documentation gate."""
+    if str(meta.get("kernel_type") or "").strip().lower() != "triton":
+        return False
+
+    required_output = _task_required_output_dialect(meta, task_body)
+    implementation_layer = str(
+        meta.get("implementation_layer") or _task_body_field(task_body, "Implementation layer")
+    ).strip().lower()
+    extension_layer = str(
+        meta.get("extension_layer") or _task_body_field(task_body, "Extension layer")
+    ).strip().lower()
+    doc_profile = str(meta.get("gluon_doc_profile") or "").strip().lower()
+    text = "\n".join(
+        str(part or "")
+        for part in (
+            task_body,
+            meta.get("label"),
+            implementation_layer,
+            extension_layer,
+            doc_profile,
+        )
+    ).lower()
+
+    if required_output in {"amd_gluon", "mixed"}:
+        return True
+    if "amd_gluon" in implementation_layer or "amd-gluon" in implementation_layer:
+        return True
+    if extension_layer in {"l0", "l1", "hybrid"}:
+        return True
+    if doc_profile in {
+        "extension_l0_minimal",
+        "nv_to_amd_translation",
+        "shared_transplant",
+        "gluon_variant_from_anchor",
+        "hybrid_dispatch",
+        "hybrid_dispatch_from_evidence",
+    }:
+        return True
+    return any(
+        marker in text
+        for marker in (
+            "composition type: shared_transplant",
+            "composition type: gluon_variant",
+            "composition type: hybrid_dispatch",
+            "shared_transplant",
+            "gluon_variant",
+            "@gluon.jit",
+            "amd gluon overlay",
+            "amd_gluon variant",
+        )
+    )
+
+
 def _task_required_amd_gluon_contract_tags(meta: dict[str, Any], task_body: str = "") -> list[str]:
     text = "\n".join(
         str(part or "")
@@ -394,14 +452,21 @@ def _required_gluon_docs_from_metadata(meta: dict[str, Any]) -> list[str]:
 
 def _gluon_doc_gate_required_paths(meta: dict[str, Any], task_body: str) -> list[str]:
     """Return split-doc paths that a Gluon worker must view before save_and_test."""
-    feature_meta = _task_feature_metadata(meta)
-    if not feature_uses_gluon_guidance_from_meta(feature_meta):
+    if not _task_requires_gluon_worker_docs(meta, task_body):
         return []
 
     required: list[str] = []
-    _add_gate_path(required, meta, "gluon_skill_path")
-    _add_gate_path(required, meta, "gluon_always_read_path")
-    _add_gate_path(required, meta, "gluon_search_policies_path")
+
+    def add_doc_key(key: str) -> None:
+        before = list(required)
+        _add_gate_path(required, meta, key)
+        if required == before and key not in _GLUON_GATE_FALLBACK_RELS:
+            add_unique_doc_key(required, key)
+
+    for key in MANDATORY_GLUON_DOC_KEYS:
+        add_doc_key(key)
+    for key in required_doc_keys_for_profile(meta.get("gluon_doc_profile")):
+        add_doc_key(key)
     for path in _required_gluon_docs_from_metadata(meta):
         if path and path not in required:
             required.append(path)
@@ -432,7 +497,6 @@ def _gluon_doc_gate_required_paths(meta: dict[str, Any], task_body: str) -> list
             "gluon",
             "amd_gluon",
             "nv_gluon",
-            "extension",
             "shared set",
             "layout",
             "blockedlayout",
@@ -491,7 +555,7 @@ def _gluon_doc_gate_required_paths(meta: dict[str, Any], task_body: str) -> list
     ):
         _add_gate_path(required, meta, "gluon_architecture_notes_path")
 
-    if str(meta.get("required_output_dialect") or "").strip().lower() == "amd_gluon" or any(
+    if _task_required_output_dialect(meta, task_body) == "amd_gluon" or any(
         marker in text
         for marker in (
             "api",
@@ -512,20 +576,20 @@ def _gluon_doc_gate_required_paths(meta: dict[str, Any], task_body: str) -> list
             "get_mfma_scale_layout",
             "get_wmma_scale_layout",
             "k_width",
-            "full",
-            "full_like",
-            "reduce",
-            "sum",
-            "max",
-            "min",
-            "softmax",
-            "scan",
-            "associative_scan",
-            "histogram",
-            "reshape",
-            "permute",
-            "split",
-            "join",
+            "gl.full",
+            "gl.full_like",
+            "gl.reduce",
+            "gl.sum",
+            "gl.max",
+            "gl.min",
+            "gl.softmax",
+            "gl.scan",
+            "gl.associative_scan",
+            "gl.histogram",
+            "gl.reshape",
+            "gl.permute",
+            "gl.split",
+            "gl.join",
         )
     ):
         _add_gate_path(required, meta, "gluon_api_reference_path")
@@ -544,7 +608,6 @@ def _gluon_doc_gate_required_paths(meta: dict[str, Any], task_body: str) -> list
             "afp4",
             "wfp4",
             "preshuffle",
-            "benchmark",
             "per-shape",
             "shape regression",
             "source-first",
@@ -552,10 +615,6 @@ def _gluon_doc_gate_required_paths(meta: dict[str, Any], task_body: str) -> list
             "current_target",
             "tensordescriptor",
             "tdm",
-            "artifact",
-            "zip",
-            "config",
-            "env",
         )
     ):
         _add_gate_path(required, meta, "gluon_real_patterns_path")

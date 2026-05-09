@@ -187,7 +187,7 @@ primary axis is the named optimization direction.
 ```yaml
 required_output_dialect: plain_triton | amd_gluon | mixed | any
 search_set: base | shared | extension  # optional legacy compatibility bucket
-gluon_doc_profile: extension_l0_minimal | nv_to_amd_translation | memory_lowering | matrix_lowering | shape_bucketed_dispatch | jit_aot_sensitive | shared_transplant | gluon_variant_from_anchor | hybrid_dispatch | hybrid_dispatch_from_evidence
+gluon_doc_profile: extension_l0_minimal | nv_to_amd_translation | memory_lowering | matrix_lowering | shape_bucketed_dispatch | jit_aot_sensitive | shared_transplant | gluon_variant_from_anchor | hybrid_dispatch | hybrid_dispatch_from_evidence | base_or_shared_gluon
 required_gluon_docs:
   - gluon_skill_path
   - gluon_always_read_path

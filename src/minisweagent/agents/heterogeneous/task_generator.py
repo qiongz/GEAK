@@ -80,6 +80,7 @@ from minisweagent.run.preprocess.discovery_types import (
     feature_uses_gluon_guidance,
     feature_uses_gluon_guidance_from_meta,
 )
+from minisweagent.run.gluon_doc_profiles import add_unique_doc_key, required_doc_keys_for_profile
 
 logger = logging.getLogger(__name__)
 _GEAK_REPO_ROOT = get_repo_root()
@@ -1295,15 +1296,10 @@ def _infer_required_gluon_doc_keys(
     profile: str,
 ) -> list[str]:
     text = f"{label}\n{task_prompt}\n{search_set}\n{required_output}\n{profile}".lower()
-    docs = [
-        "gluon_skill_path",
-        "gluon_always_read_path",
-        "gluon_search_policies_path",
-    ]
+    docs = required_doc_keys_for_profile(profile)
 
     def add(key: str) -> None:
-        if key not in docs:
-            docs.append(key)
+        add_unique_doc_key(docs, key)
 
     if any(
         marker in text
@@ -1361,9 +1357,7 @@ def _infer_required_gluon_doc_keys(
         profile
         in {
             "nv_to_amd_translation",
-            "memory_lowering",
             "matrix_lowering",
-            "shape_bucketed_dispatch",
             "jit_aot_sensitive",
             "gluon_variant_from_anchor",
             "hybrid_dispatch",
@@ -1410,7 +1404,6 @@ def _infer_required_gluon_doc_keys(
         profile
         in {
             "nv_to_amd_translation",
-            "memory_lowering",
             "shape_bucketed_dispatch",
             "shared_transplant",
             "gluon_variant_from_anchor",
@@ -3062,19 +3055,22 @@ def _parse_llm_response(
         gluon_doc_profile = str(item.get("gluon_doc_profile") or "").strip().lower()
         if not gluon_doc_profile:
             gluon_doc_profile = _infer_gluon_doc_profile(label, task_prompt, search_set, required_output_dialect)
+        required_gluon_docs = _infer_required_gluon_doc_keys(
+            label,
+            task_prompt,
+            search_set,
+            required_output_dialect,
+            gluon_doc_profile,
+        )
         raw_required_docs = item.get("required_gluon_docs")
         if isinstance(raw_required_docs, str):
-            required_gluon_docs = [part.strip() for part in raw_required_docs.split(",") if part.strip()]
+            explicit_docs = [part.strip() for part in raw_required_docs.split(",") if part.strip()]
         elif isinstance(raw_required_docs, list):
-            required_gluon_docs = [str(part).strip() for part in raw_required_docs if str(part).strip()]
+            explicit_docs = [str(part).strip() for part in raw_required_docs if str(part).strip()]
         else:
-            required_gluon_docs = _infer_required_gluon_doc_keys(
-                label,
-                task_prompt,
-                search_set,
-                required_output_dialect,
-                gluon_doc_profile,
-            )
+            explicit_docs = []
+        for doc_key in explicit_docs:
+            add_unique_doc_key(required_gluon_docs, doc_key)
         cfg: dict[str, Any] = {
             "search_set": search_set,
             "required_output_dialect": required_output_dialect,

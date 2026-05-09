@@ -30,6 +30,7 @@ from minisweagent.agents.heterogeneous.task_generator import (
     write_task_files,
 )
 from minisweagent.agents.agent_spec import AgentTask
+from minisweagent.run.gluon_doc_profiles import GLUON_DOC_PROFILE_REQUIRED_KEYS
 from minisweagent.run.task_file import read_task_file
 
 
@@ -844,9 +845,9 @@ def test_parse_llm_response_infers_memory_lowering_profile_for_l1_buffer_task() 
     cfg = tasks[0].config
     assert cfg["gluon_doc_profile"] == "memory_lowering"
     assert "gluon_component_traits_path" in cfg["required_gluon_docs"]
-    assert "gluon_architecture_notes_path" in cfg["required_gluon_docs"]
     assert "gluon_api_reference_path" in cfg["required_gluon_docs"]
     assert "gluon_real_patterns_path" in cfg["required_gluon_docs"]
+    assert "gluon_architecture_notes_path" not in cfg["required_gluon_docs"]
 
 
 def test_parse_llm_response_infers_gluon_variant_from_anchor_profile() -> None:
@@ -1278,6 +1279,51 @@ def test_write_task_files_marks_triton_tasks_with_skill_usage(tmp_path: Path):
     assert meta["gluon_always_read_path"].endswith("skills/triton-gluon/docs/00_always_read.md")
     assert meta["gluon_api_reference_path"].endswith("skills/triton-gluon/docs/50_api_reference.md")
     assert meta["gluon_real_patterns_path"].endswith("skills/triton-gluon/docs/60_real_patterns.md")
+
+
+def test_parse_llm_response_augments_explicit_required_gluon_docs() -> None:
+    tasks = _parse_llm_response(
+        json.dumps(
+            [
+                {
+                    "label": "matrix-l0",
+                    "priority": 6,
+                    "agent_type": "strategy_agent",
+                    "gluon_doc_profile": "matrix_lowering",
+                    "required_gluon_docs": ["gluon_real_patterns_path"],
+                    "task_prompt": "Extension layer: L0\nImplementation layer: amd_gluon overlay\n",
+                }
+            ]
+        ),
+        FakeAgentClass,
+    )
+
+    docs = tasks[0].config["required_gluon_docs"]
+    assert "gluon_skill_path" in docs
+    assert "gluon_always_read_path" in docs
+    assert "gluon_search_policies_path" in docs
+    assert "gluon_component_traits_path" in docs
+    assert "gluon_architecture_notes_path" in docs
+    assert "gluon_api_reference_path" in docs
+    assert "gluon_real_patterns_path" in docs
+
+
+def test_gluon_doc_profile_mapping_covers_prompt_enum_values() -> None:
+    expected = {
+        "extension_l0_minimal",
+        "nv_to_amd_translation",
+        "memory_lowering",
+        "matrix_lowering",
+        "shape_bucketed_dispatch",
+        "jit_aot_sensitive",
+        "shared_transplant",
+        "gluon_variant_from_anchor",
+        "hybrid_dispatch",
+        "hybrid_dispatch_from_evidence",
+        "base_or_shared_gluon",
+    }
+
+    assert set(GLUON_DOC_PROFILE_REQUIRED_KEYS) == expected
 
 
 def test_write_task_files_records_plain_triton_gluon_preference(tmp_path: Path):
