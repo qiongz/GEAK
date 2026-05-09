@@ -80,7 +80,11 @@ from minisweagent.run.preprocess.discovery_types import (
     feature_uses_gluon_guidance,
     feature_uses_gluon_guidance_from_meta,
 )
-from minisweagent.run.gluon_doc_profiles import add_unique_doc_key, required_doc_keys_for_profile
+from minisweagent.run.gluon_doc_profiles import (
+    add_unique_doc_key,
+    required_doc_keys_for_profile,
+    task_requires_gluon_worker_docs,
+)
 from minisweagent.run.target_contracts import (
     do_not_clauses,
     forbidden_symbols_from_scoped_text,
@@ -174,6 +178,24 @@ _OPTIONAL_GLUON_TASK_METADATA_FIELDS: tuple[tuple[str, str], ...] = (
 
 _VALID_SEARCH_SETS = {"base", "shared", "extension"}
 _VALID_REQUIRED_OUTPUT_DIALECTS = {"plain_triton", "amd_gluon", "mixed", "any"}
+
+
+def _task_config_requires_gluon_worker_docs(
+    *,
+    kernel_type: str,
+    cfg: dict[str, Any],
+    task_body: str,
+    label: str,
+) -> bool:
+    return task_requires_gluon_worker_docs(
+        kernel_type=kernel_type,
+        required_output=str(cfg.get("required_output_dialect") or ""),
+        implementation_layer=str(cfg.get("implementation_layer") or ""),
+        extension_layer=str(cfg.get("extension_layer") or ""),
+        doc_profile=str(cfg.get("gluon_doc_profile") or ""),
+        task_body=task_body,
+        label=label,
+    )
 
 
 # ============================================================================
@@ -334,6 +356,7 @@ def generate_tasks(
     round_evaluations: list[dict[str, Any]] | None = None,
     current_round: int = 1,
     num_gpus: int = 1,
+    audit_diagnostics_dir: Path | None = None,
 ) -> list[AgentTask]:
     """Generate optimization tasks using an LLM planning agent.
 
@@ -430,6 +453,7 @@ def generate_tasks(
         baseline_metrics_path=str(baseline_metrics_path) if baseline_metrics_path else None,
         required_base_families=required_base_families,
         expected_extension_slots=expected_extension_slots,
+        audit_diagnostics_dir=audit_diagnostics_dir,
     )
 
 
@@ -767,17 +791,25 @@ def write_task_files(
             "round": round_num,
             "use_skills": _should_enable_skills(kernel_type),
             "allowed_skill_tiers": list(allowed_skill_tiers),
-            **task_knowledge_paths,
         }
+        if task_knowledge_paths.get("knowledge_base_path"):
+            metadata["knowledge_base_path"] = task_knowledge_paths["knowledge_base_path"]
         if str(kernel_type or "").strip().lower() == "triton":
             if t.config.get("search_set"):
                 metadata["search_set"] = t.config["search_set"]
             if t.config.get("required_output_dialect"):
                 metadata["required_output_dialect"] = t.config["required_output_dialect"]
-            if t.config.get("gluon_doc_profile"):
-                metadata["gluon_doc_profile"] = t.config["gluon_doc_profile"]
-            if t.config.get("required_gluon_docs"):
-                metadata["required_gluon_docs"] = list(t.config["required_gluon_docs"])
+            if _task_config_requires_gluon_worker_docs(
+                kernel_type=kernel_type,
+                cfg=t.config,
+                task_body=t.task,
+                label=t.label,
+            ):
+                metadata.update({key: value for key, value in task_knowledge_paths.items() if value})
+                if t.config.get("gluon_doc_profile"):
+                    metadata["gluon_doc_profile"] = t.config["gluon_doc_profile"]
+                if t.config.get("required_gluon_docs"):
+                    metadata["required_gluon_docs"] = list(t.config["required_gluon_docs"])
             if t.config.get("source_base_family"):
                 metadata["source_base_family"] = t.config["source_base_family"]
             if t.config.get("plain_competitor"):
@@ -3113,6 +3145,67 @@ def _audit_base_family_coverage(
     logger.warning(message)
 
 
+def _task_audit_summary(task: AgentTask) -> dict[str, Any]:
+    text = f"{task.label}\n{task.task}"
+    return {
+        "label": task.label,
+        "priority": task.priority,
+        "search_set": task.config.get("search_set"),
+        "required_output_dialect": task.config.get("required_output_dialect"),
+        "base_family": _parse_prompt_field_value(task.task, "Base family"),
+        "source_base_family": task.config.get("source_base_family") or _parse_prompt_field_value(text, "Source Base family"),
+        "plain_competitor": task.config.get("plain_competitor") or _parse_prompt_field_value(text, "Plain competitor"),
+        "implementation_layer": task.config.get("implementation_layer") or _parse_prompt_field_value(text, "Implementation layer"),
+        "extension_layer": task.config.get("extension_layer") or _parse_prompt_field_value(text, "Extension layer"),
+        "optimization_direction": _parse_prompt_field_value(text, "Optimization direction"),
+        "target_component": task.config.get("target_component") or _parse_prompt_field_value(text, "Target component"),
+        "minimum_executable_unit": task.config.get("minimum_executable_unit")
+        or _parse_prompt_field_value(text, "Minimum executable unit")
+        or "",
+        "allowed_execution_path": task.config.get("allowed_execution_path")
+        or _parse_prompt_field_value(text, "Allowed execution path")
+        or "",
+        "scope_infeasible_policy": task.config.get("scope_infeasible_policy")
+        or _parse_prompt_field_value(text, "Scope infeasible policy")
+        or "",
+        "required_patch_target_symbols": task.config.get("required_patch_target_symbols") or [],
+        "forbidden_patch_target_symbols": _task_forbidden_symbols(task),
+        "first_lines": "\n".join(task.task.splitlines()[:18]),
+    }
+
+
+def _write_task_generation_audit_failure(
+    *,
+    diagnostics_dir: Path | None,
+    raw_content: str,
+    raw_tasks: list[Any],
+    parsed_tasks: list[AgentTask],
+    error: Exception,
+    required_base_families: list[str],
+    expected_extension_slots: int | None,
+) -> None:
+    if diagnostics_dir is None:
+        env_dir = os.getenv("GEAK_TASKGEN_AUDIT_DUMP_DIR")
+        diagnostics_dir = Path(env_dir) if env_dir else None
+    if diagnostics_dir is None:
+        return
+    try:
+        diagnostics_dir.mkdir(parents=True, exist_ok=True)
+        path = diagnostics_dir / f"task_generation_audit_failed_{int(time.time() * 1000)}.json"
+        payload = {
+            "error": str(error),
+            "required_base_families": list(required_base_families),
+            "expected_extension_slots": expected_extension_slots,
+            "raw_submitted_json": raw_content,
+            "raw_tasks": raw_tasks,
+            "parsed_task_summaries": [_task_audit_summary(task) for task in parsed_tasks],
+        }
+        path.write_text(json.dumps(payload, indent=2, default=str))
+        logger.error("Task-generation audit failure diagnostics written to %s", path)
+    except Exception as exc:
+        logger.warning("Could not write task-generation audit failure diagnostics: %s", exc)
+
+
 def _parse_llm_response(
     content: str,
     agent_class: type,
@@ -3122,6 +3215,7 @@ def _parse_llm_response(
     baseline_metrics_path: str | None = None,
     required_base_families: list[str] | None = None,
     expected_extension_slots: int | None = None,
+    audit_diagnostics_dir: Path | None = None,
 ) -> list[AgentTask]:
     """Parse JSON response into AgentTask objects."""
     content = content.strip()
@@ -3173,30 +3267,9 @@ def _parse_llm_response(
             logger.debug("_parse_llm_response: unknown agent_type %r for '%s'; using default class.", agent_type, label)
 
         search_set, required_output_dialect = _infer_search_set_and_required_output(label, task_prompt, item)
-        gluon_doc_profile = str(item.get("gluon_doc_profile") or "").strip().lower()
-        if not gluon_doc_profile:
-            gluon_doc_profile = _infer_gluon_doc_profile(label, task_prompt, search_set, required_output_dialect)
-        required_gluon_docs = _infer_required_gluon_doc_keys(
-            label,
-            task_prompt,
-            search_set,
-            required_output_dialect,
-            gluon_doc_profile,
-        )
-        raw_required_docs = item.get("required_gluon_docs")
-        if isinstance(raw_required_docs, str):
-            explicit_docs = [part.strip() for part in raw_required_docs.split(",") if part.strip()]
-        elif isinstance(raw_required_docs, list):
-            explicit_docs = [str(part).strip() for part in raw_required_docs if str(part).strip()]
-        else:
-            explicit_docs = []
-        for doc_key in explicit_docs:
-            add_unique_doc_key(required_gluon_docs, doc_key)
         cfg: dict[str, Any] = {
             "search_set": search_set,
             "required_output_dialect": required_output_dialect,
-            "gluon_doc_profile": gluon_doc_profile,
-            "required_gluon_docs": required_gluon_docs,
         }
         source_base_family = _parse_prompt_field_value(task_prompt, "Source Base family")
         plain_competitor = _parse_prompt_field_value(task_prompt, "Plain competitor")
@@ -3210,6 +3283,34 @@ def _parse_llm_response(
             cfg["implementation_layer"] = implementation_layer.strip().strip("`")
         if extension_layer:
             cfg["extension_layer"] = extension_layer.strip().strip("`")
+        gluon_doc_profile = str(item.get("gluon_doc_profile") or "").strip().lower()
+        if not gluon_doc_profile:
+            gluon_doc_profile = _infer_gluon_doc_profile(label, task_prompt, search_set, required_output_dialect)
+        cfg_with_profile = {**cfg, "gluon_doc_profile": gluon_doc_profile}
+        if _task_config_requires_gluon_worker_docs(
+            kernel_type="triton",
+            cfg=cfg_with_profile,
+            task_body=task_prompt,
+            label=label,
+        ):
+            required_gluon_docs = _infer_required_gluon_doc_keys(
+                label,
+                task_prompt,
+                search_set,
+                required_output_dialect,
+                gluon_doc_profile,
+            )
+            raw_required_docs = item.get("required_gluon_docs")
+            if isinstance(raw_required_docs, str):
+                explicit_docs = [part.strip() for part in raw_required_docs.split(",") if part.strip()]
+            elif isinstance(raw_required_docs, list):
+                explicit_docs = [str(part).strip() for part in raw_required_docs if str(part).strip()]
+            else:
+                explicit_docs = []
+            for doc_key in explicit_docs:
+                add_unique_doc_key(required_gluon_docs, doc_key)
+            cfg["gluon_doc_profile"] = gluon_doc_profile
+            cfg["required_gluon_docs"] = required_gluon_docs
         required_patch_target_symbols = _infer_required_patch_target_symbols(task_prompt, item)
         if required_patch_target_symbols:
             cfg["required_patch_target_symbols"] = required_patch_target_symbols
@@ -3240,11 +3341,23 @@ def _parse_llm_response(
         agent_class=agent_class,
     )
     sorted_tasks = sorted(tasks, key=lambda t: t.priority)
-    _audit_base_family_coverage(
-        sorted_tasks,
-        required_base_families or [],
-        expected_extension_slots=expected_extension_slots,
-    )
+    try:
+        _audit_base_family_coverage(
+            sorted_tasks,
+            required_base_families or [],
+            expected_extension_slots=expected_extension_slots,
+        )
+    except ValueError as exc:
+        _write_task_generation_audit_failure(
+            diagnostics_dir=audit_diagnostics_dir,
+            raw_content=content,
+            raw_tasks=raw_tasks,
+            parsed_tasks=sorted_tasks,
+            error=exc,
+            required_base_families=required_base_families or [],
+            expected_extension_slots=expected_extension_slots,
+        )
+        raise
     return sorted_tasks
 
 

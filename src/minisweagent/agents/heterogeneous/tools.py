@@ -60,6 +60,7 @@ def tool_generate_tasks(
         "benchmark_test_cases": kernel_meta.get("benchmark_test_cases"),
         "shape_coverage_profile": kernel_meta.get("shape_coverage_profile"),
         "num_gpus": len(ctx.get("gpu_ids", [0])),
+        "audit_diagnostics_dir": output_dir,
     }
 
     pp_dir = Path(ctx["preprocess_dir"])

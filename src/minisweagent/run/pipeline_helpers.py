@@ -1120,26 +1120,26 @@ def inject_pipeline_context(
             )
         )
         ctx.append("")
-        ctx.extend(
-            _build_gluon_reference_block(
-                knowledge_base_path=knowledge_base_path,
-                gluon_skill_path=gluon_skill_path,
-                gluon_kb_path=gluon_kb_path,
-                gluon_examples_path=gluon_examples_path,
-                gluon_always_read_path=gluon_always_read_path,
-                gluon_search_policies_path=gluon_search_policies_path,
-                gluon_component_traits_path=gluon_component_traits_path,
-                gluon_architecture_notes_path=gluon_architecture_notes_path,
-                gluon_examples_doc_path=gluon_examples_doc_path,
-                gluon_api_reference_path=gluon_api_reference_path,
-                gluon_real_patterns_path=gluon_real_patterns_path,
-                gluon_backup_details_path=gluon_backup_details_path,
-            )
-        )
         if _task_needs_gluon_worker_context(
             feature_metadata,
             task_body,
         ):
+            ctx.extend(
+                _build_gluon_reference_block(
+                    knowledge_base_path=knowledge_base_path,
+                    gluon_skill_path=gluon_skill_path,
+                    gluon_kb_path=gluon_kb_path,
+                    gluon_examples_path=gluon_examples_path,
+                    gluon_always_read_path=gluon_always_read_path,
+                    gluon_search_policies_path=gluon_search_policies_path,
+                    gluon_component_traits_path=gluon_component_traits_path,
+                    gluon_architecture_notes_path=gluon_architecture_notes_path,
+                    gluon_examples_doc_path=gluon_examples_doc_path,
+                    gluon_api_reference_path=gluon_api_reference_path,
+                    gluon_real_patterns_path=gluon_real_patterns_path,
+                    gluon_backup_details_path=gluon_backup_details_path,
+                )
+            )
             ctx.extend(
                 _build_gluon_working_set(
                     feature_metadata,

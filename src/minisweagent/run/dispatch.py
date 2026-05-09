@@ -357,9 +357,10 @@ def _task_feature_metadata(meta: dict[str, Any], task_body: str = "") -> dict[st
         feature_meta["label"] = str(meta.get("label"))
     if required_output_dialect:
         feature_meta["required_output_dialect"] = required_output_dialect
-    if meta.get("gluon_doc_profile"):
+    task_needs_gluon_docs = _task_requires_gluon_worker_docs(meta, task_body)
+    if task_needs_gluon_docs and meta.get("gluon_doc_profile"):
         feature_meta["gluon_doc_profile"] = str(meta.get("gluon_doc_profile"))
-    if meta.get("required_gluon_docs"):
+    if task_needs_gluon_docs and meta.get("required_gluon_docs"):
         feature_meta["required_gluon_docs"] = meta.get("required_gluon_docs")
     if meta.get("source_base_family"):
         feature_meta["source_base_family"] = str(meta.get("source_base_family"))

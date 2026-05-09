@@ -110,6 +110,7 @@ def test_plain_base_task_with_gluon_run_meta_does_not_enable_doc_gate(tmp_path) 
     task = task_file_to_agent_task(task_path)
 
     assert "gluon_doc_gate_enabled" not in task.config
+    assert "## Canonical Gluon References" not in task.task
     assert "## Gluon Working Set" not in task.task
     assert "## REQUIRED BEFORE EDITING OR SAVE_AND_TEST" not in task.task
 
