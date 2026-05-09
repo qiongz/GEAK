@@ -322,6 +322,10 @@ competitor:`, `Gluon overlay reason:`, `Overlay priority: Prefer` or
 `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`,
 `Comparison target:`, `Allowed change:`, and `Reject if:`. Paired tasks should name their source family and
 implementation layer.
+Round-1 L0 overlays must also bind to the same component and same optimization
+direction as `Plain competitor`, not merely to the same `Source Base family`.
+Use `Target component:` or `Target symbol:` when the component is narrower than
+the whole kernel/helper.
 
 **Dialect contract metadata**: Use `required_output_dialect=amd_gluon` only
 when plain Triton fallback is not a valid success. Required AMD Gluon tasks must
@@ -345,6 +349,10 @@ mismatch, missing plan blocks, leftover plain Triton device APIs inside edited
 `@gluon.jit`, backup/temp files, and bundled unrelated changes unless
 `bundle_allowed=true`. API-level Gluon rewrite details belong in the routed
 skill docs, not in the prompt contract.
+For L0 tasks, prefer `extension_intent=execution_anchor` when the expected result
+is a correctness-passing Gluon path rather than an immediate speedup. Do not ask
+for full-stage rewrites in layout-heavy paths; name allowed and forbidden
+subpaths/components instead.
 
 **Gluon documentation gate metadata**: For Triton-family tasks that use Gluon
 guidance, task objects should include optional top-level fields
@@ -364,6 +372,11 @@ metadata keys such as `gluon_skill_path`, `gluon_always_read_path`,
 `gluon_architecture_notes_path`, `gluon_api_reference_path`, and
 `gluon_real_patterns_path`. The worker's `save_and_test` gate will require
 these files to be viewed before saving or benchmarking.
+Optional Gluon metadata may be supplied when useful, and may also be inferred
+from task_prompt tags: `extension_intent`, `expected_outcome`,
+`not_viable_for_l1_if_slower_than_base`, `overhead_source_to_record`,
+`target_symbol`, and `target_component`. Do not add these fields to plain
+Triton tasks or to Gluon tasks where they would be noise.
 
 **Composition tags**: If Evidence-Anchored Composition is present, every
 composition task_prompt MUST include:

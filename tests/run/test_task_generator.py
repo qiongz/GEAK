@@ -240,6 +240,9 @@ def test_search_space_allocation_for_large_budget_keeps_full_base() -> None:
     assert "Paired same-direction mappings: 1 task(s)" in guidance
     assert "AMD Gluon overlay: 1 task(s)" in guidance
     assert "Round 1 plain Triton input may have at most one L0 overlay" in guidance
+    assert "Gluon L0 scope classification" in guidance
+    assert "Target component" in guidance
+    assert "same component and same optimization direction" in guidance
     assert "overlay_priority_routing" in guidance
     assert "60_real_patterns.md" in guidance
     assert "slots 2+ may be L1" not in guidance
@@ -664,6 +667,47 @@ def test_audit_treats_body_only_l0_overlay_as_l0_for_priority_and_binding() -> N
     tasks = _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
 
     assert [task.label for task in tasks] == ["triton-eliminate-redundant-ops-streamline"]
+
+
+def test_l0_overlay_binding_allows_mismatched_target_component_as_soft_audit() -> None:
+    payload = json.dumps(
+        [
+            {
+                "label": "triton-stage1-mask",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "plain_triton",
+                "task_prompt": "\n".join(
+                    [
+                        "Base Set task",
+                        "Base family: base_hot_path_streamline",
+                        "Target component: stage1_mask",
+                        "Allowed change: simplify `stage1_mask` only.",
+                    ]
+                ),
+            },
+            {
+                "label": "gluon-l0-stage2-anchor",
+                "priority": 6,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "amd_gluon",
+                "target_component": "stage2_reduce",
+                "task_prompt": _gluon_overlay_prompt(
+                    extra=[
+                        "Target component: stage2_reduce",
+                        "Allowed change: convert `stage2_reduce` only.",
+                    ],
+                    plain_competitor="triton-stage1-mask",
+                ),
+            },
+        ]
+    )
+
+    tasks = _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+
+    assert [task.label for task in tasks] == ["triton-stage1-mask", "gluon-l0-stage2-anchor"]
 
 
 def test_audit_rejects_l1_without_anchor_contract() -> None:
@@ -1339,6 +1383,44 @@ def test_parse_llm_response_augments_explicit_required_gluon_docs() -> None:
     assert "gluon_architecture_notes_path" in docs
     assert "gluon_api_reference_path" in docs
     assert "gluon_real_patterns_path" in docs
+
+
+def test_parse_llm_response_preserves_optional_l0_metadata() -> None:
+    tasks = _parse_llm_response(
+        json.dumps(
+            [
+                {
+                    "label": "gluon-l0-stage-anchor",
+                    "priority": 6,
+                    "agent_type": "strategy_agent",
+                    "required_output_dialect": "amd_gluon",
+                    "extension_intent": "execution_anchor",
+                    "expected_outcome": "correctness_anchor_not_speedup",
+                    "not_viable_for_l1_if_slower_than_base": True,
+                    "overhead_source_to_record": "launch_layout_overhead",
+                    "target_symbol": "_stage_kernel",
+                    "target_component": "one 1D reduction subpath",
+                    "task_prompt": "\n".join(
+                        [
+                            "Extension layer: L0",
+                            "Implementation layer: amd_gluon overlay",
+                            "Target component: one 1D reduction subpath",
+                            "Allowed change: Convert `_stage_kernel` only.",
+                        ]
+                    ),
+                }
+            ]
+        ),
+        FakeAgentClass,
+    )
+
+    cfg = tasks[0].config
+    assert cfg["extension_intent"] == "execution_anchor"
+    assert cfg["expected_outcome"] == "correctness_anchor_not_speedup"
+    assert cfg["not_viable_for_l1_if_slower_than_base"] is True
+    assert cfg["overhead_source_to_record"] == "launch_layout_overhead"
+    assert cfg["target_symbol"] == "_stage_kernel"
+    assert cfg["target_component"] == "one 1D reduction subpath"
 
 
 def test_gluon_doc_profile_mapping_covers_prompt_enum_values() -> None:

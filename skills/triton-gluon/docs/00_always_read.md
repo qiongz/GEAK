@@ -285,6 +285,9 @@ Hard rules:
 - L0 is the smallest executed Gluon anchor and may be slower than Base. L1
   memory/MFMA/Hybrid work requires executed anchor evidence and a concrete
   performance hypothesis.
+- For `extension_intent=execution_anchor`, slower correctness-passing L0 is
+  overhead evidence. Record the overhead source and do not expand the same scope
+  into L1 unless a later task names a removable overhead.
 
 ## semantic_contract
 

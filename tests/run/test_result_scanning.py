@@ -94,5 +94,38 @@ def test_scan_results_does_not_mark_plain_any_as_gluon_informed(tmp_path: Path) 
 
     text = "\n".join(scan_single_round_results(tmp_path / "round_1"))
 
+    assert "gluon_execution_contract_satisfied=False" in text
     assert "Gluon result attribution: unknown" in text
     assert "Gluon-informed" not in text
+
+
+def test_scan_results_prefers_explicit_anchor_viability_and_overhead_source(tmp_path: Path) -> None:
+    task_dir = tmp_path / "round_1" / "ext-l0-execution-anchor"
+    task_dir.mkdir(parents=True)
+    (task_dir / "patch_0.patch").write_text("diff --git a/kernel.py b/kernel.py\n+@gluon.jit\n")
+    (task_dir / "patch_0_test.txt").write_text("case_small: 1.2 ms\n")
+    (task_dir / "best_results.json").write_text(
+        json.dumps(
+            {
+                "best_patch_id": "patch_0",
+                "best_patch_speedup": 0.91,
+                "baseline_latency_ms": 1.0,
+                "candidate_latency_ms": 1.1,
+                "required_output_dialect": "amd_gluon",
+                "actual_output_dialect": "amd_gluon",
+                "dialect_contract_satisfied": True,
+                "gluon_execution_contract_satisfied": True,
+                "extension_intent": "execution_anchor",
+                "expected_outcome": "correctness_anchor_not_speedup",
+                "not_viable_for_l1_if_slower_than_base": True,
+                "overhead_source_to_record": "launch_layout_overhead",
+                "has_significant_shape_regression": False,
+            }
+        )
+    )
+
+    text = "\n".join(scan_single_round_results(tmp_path / "round_1"))
+
+    assert "Gluon L1 anchor viability: not_viable_for_l1" in text
+    assert "Gluon extension intent: execution_anchor" in text
+    assert "overhead_source=launch_layout_overhead" in text

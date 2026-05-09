@@ -339,6 +339,17 @@ def _task_feature_metadata(meta: dict[str, Any], task_body: str = "") -> dict[st
         feature_meta["source_base_family"] = str(meta.get("source_base_family"))
     if meta.get("plain_competitor"):
         feature_meta["plain_competitor"] = str(meta.get("plain_competitor"))
+    for key in (
+        "extension_intent",
+        "expected_outcome",
+        "not_viable_for_l1_if_slower_than_base",
+        "overhead_source_to_record",
+        "target_symbol",
+        "target_component",
+        "forbidden_change",
+    ):
+        if key in meta and meta.get(key) not in (None, ""):
+            feature_meta[key] = meta.get(key)
     implementation_layer = meta.get("implementation_layer") or _task_body_field(task_body, "Implementation layer")
     extension_layer = meta.get("extension_layer") or _task_body_field(task_body, "Extension layer")
     if implementation_layer:

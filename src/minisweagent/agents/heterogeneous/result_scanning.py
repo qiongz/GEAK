@@ -83,6 +83,8 @@ def scan_single_round_results(results_dir: Path) -> list[str]:
                 actual_dialect = br.get("actual_output_dialect", "unknown")
                 dialect_ok = br.get("dialect_contract_satisfied")
                 execution_ok = br.get("gluon_execution_contract_satisfied")
+                if actual_dialect not in {"amd_gluon", "mixed"} and required_dialect not in {"amd_gluon", "mixed"}:
+                    execution_ok = False
                 target_symbols = br.get("required_patch_target_symbols") or []
                 section.append(
                     "- Contracts: "
@@ -114,13 +116,22 @@ def scan_single_round_results(results_dir: Path) -> list[str]:
                             shape_parts.append(f"{shape}={float(info['speedup']):.4f}x")
                     if shape_parts:
                         section.append("- Per-shape speedups: " + ", ".join(shape_parts))
-                anchor_viability = "unknown"
+                anchor_viability = str(br.get("gluon_l1_anchor_viability") or "unknown")
                 try:
                     numeric_speedup = float(speedup)
                 except (TypeError, ValueError):
                     numeric_speedup = 0.0
                 shape_regression = br.get("has_significant_shape_regression")
-                if actual_dialect in {"amd_gluon", "mixed"} and dialect_ok and execution_ok:
+                if anchor_viability == "unknown" and br.get("not_viable_for_l1") is True:
+                    anchor_viability = "not_viable_for_l1"
+                if (
+                    anchor_viability == "unknown"
+                    and str(br.get("extension_intent") or "").strip().lower() == "execution_anchor"
+                    and br.get("not_viable_for_l1_if_slower_than_base") is True
+                    and numeric_speedup < 1.0
+                ):
+                    anchor_viability = "not_viable_for_l1"
+                if anchor_viability == "unknown" and actual_dialect in {"amd_gluon", "mixed"} and dialect_ok and execution_ok:
                     if numeric_speedup >= 1.0 and shape_regression is False:
                         anchor_viability = "viable_for_l1"
                     elif numeric_speedup < 0.5 or shape_regression is True:
@@ -128,6 +139,13 @@ def scan_single_round_results(results_dir: Path) -> list[str]:
                     elif shape_regression is False:
                         anchor_viability = "neutral_or_slow_anchor"
                 section.append(f"- Gluon L1 anchor viability: {anchor_viability}")
+                if br.get("extension_intent"):
+                    section.append(
+                        "- Gluon extension intent: "
+                        f"{br.get('extension_intent')}"
+                        + (f", expected_outcome={br.get('expected_outcome')}" if br.get("expected_outcome") else "")
+                        + (f", overhead_source={br.get('overhead_source') or br.get('overhead_source_to_record')}" if (br.get("overhead_source") or br.get("overhead_source_to_record")) else "")
+                    )
                 attribution = "unknown"
                 if actual_dialect in {"amd_gluon", "mixed"} and dialect_ok and execution_ok:
                     if numeric_speedup >= 1.0 and shape_regression is False:

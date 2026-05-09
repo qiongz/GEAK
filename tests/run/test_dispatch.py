@@ -256,6 +256,11 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
             "implementation_layer": "amd_gluon overlay",
             "extension_layer": "L1",
             "required_patch_target_symbols": ["target_stage"],
+            "extension_intent": "execution_anchor",
+            "expected_outcome": "correctness_anchor_not_speedup",
+            "overhead_source_to_record": "launch_layout_overhead",
+            "target_symbol": "target_stage",
+            "target_component": "one memory subpath",
         },
         "Extension task using AMD Gluon.",
     )
@@ -271,6 +276,12 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
     assert "Task implementation_layer: amd_gluon overlay" in task.task
     assert "Task extension_layer: L1" in task.task
     assert "Task required_patch_target_symbols: target_stage" in task.task
+    assert "Task extension_intent: execution_anchor" in task.task
+    assert "Task expected_outcome: correctness_anchor_not_speedup" in task.task
+    assert "Task overhead_source_to_record: launch_layout_overhead" in task.task
+    assert "Task target_symbol: target_stage" in task.task
+    assert "Task target_component: one memory subpath" in task.task
+    assert "Extension intent: `execution_anchor`" in task.task
 
 
 def test_worker_context_infers_local_target_components_from_allowed_change(tmp_path) -> None:

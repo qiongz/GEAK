@@ -861,6 +861,11 @@ def _build_gluon_working_set(
     feature_metadata = feature_metadata or {}
     input_dialect = str(feature_metadata.get("input_dialect") or "").strip().lower()
     entrypoint = str(gluon_always_read_path or "skills/triton-gluon/docs/00_always_read.md").strip()
+    extension_intent = str(feature_metadata.get("extension_intent") or "").strip().lower()
+    expected_outcome = str(feature_metadata.get("expected_outcome") or "").strip()
+    target_symbol = str(feature_metadata.get("target_symbol") or "").strip()
+    target_component = str(feature_metadata.get("target_component") or "").strip()
+    forbidden_change = str(feature_metadata.get("forbidden_change") or "").strip()
 
     lines = [
         "## Gluon Working Set",
@@ -874,8 +879,21 @@ def _build_gluon_working_set(
         "- Before editing a Gluon path, write a `Gluon implementation plan`, `Performance hypothesis`, and `Patch evolution` plan. It must name `Optimization direction`, `Implementation layer`, `Gluon overlay reason`, `Measurement boundary`, `Same ABI comparison`, `Comparison target`, and `Allowed change`; detailed fields live in `00_always_read.md`, `10_search_policies.md`, and `60_real_patterns.md`.",
         "- Required AMD Gluon patches must be real executed Gluon paths, not import-only, helper-only, empty, or plain Triton fallbacks.",
         "- Keep task scope narrow: one subpath/component unless `bundle_allowed=true`; use the docs for detailed rejection conditions and fix order.",
+        "- L0 patch evolution: `patch_0` should prove the smallest correctness anchor; `patch_1+` should change exactly one layout parameter, launch constant, memory path, matrix subpath, or dispatch condition.",
         "- For low-latency kernels or tiny stages, L0 is a smallest executed anchor. If a correctness-passing L0 is slower than Base, record the overhead evidence and avoid repeated `num_warps`, block-size, or launch-constant sweeps.",
     ]
+    if extension_intent == "execution_anchor":
+        lines.append(
+            "- Extension intent: `execution_anchor`. Treat correctness-passing but slower Gluon as overhead evidence, not as permission to expand the same scope into L1/MFMA without a named removable overhead."
+        )
+    if expected_outcome:
+        lines.append(f"- Expected outcome: `{expected_outcome}`.")
+    if target_symbol:
+        lines.append(f"- Target symbol: `{target_symbol}`; do not report success through a different symbol.")
+    if target_component:
+        lines.append(f"- Target component: {target_component}; keep the patch scoped to this component.")
+    if forbidden_change:
+        lines.append(f"- Forbidden change: {forbidden_change}")
 
     if input_dialect == NV_GLUON_DIALECT:
         lines.extend(
@@ -964,7 +982,7 @@ def _build_forced_triton_gluon_skill_context() -> list[str]:
         "Before the first edit, write these strategy-note blocks: `Gluon knowledge lookup plan`, `Gluon implementation plan`, `Performance hypothesis`, `Same ABI comparison`, and `Patch evolution`.",
         "Required AMD Gluon tasks must not add broad `try/except Exception` fallback that silently succeeds through the plain Triton path.",
         "If the task names `Target symbol`, `required_patch_target_symbols`, or scoped items in `Allowed change`, only report success when that target path is modified and executes the intended Gluon code.",
-        "Keep scope to one subpath/component unless the task explicitly says `bundle_allowed=true`.",
+        "Keep scope to one subpath/component unless the task explicitly says `bundle_allowed=true`. For L0, `patch_0` is the smallest correctness anchor; later patches change one variable at a time.",
         "If lookup rows are still viewed=no, view those sections before editing. If the implementation plan cannot satisfy the scoped path fields from the docs, reduce scope before editing.",
     ]
     lines.append("")

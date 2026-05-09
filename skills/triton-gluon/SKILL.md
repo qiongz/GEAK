@@ -119,6 +119,9 @@ implementation plan, then edit only the scoped path.
 
 - L0 proves the smallest real executed Gluon anchor. It may be slower than Base;
   record that as evidence instead of launch-tuning blindly.
+- For `extension_intent=execution_anchor`, a slower correctness-passing L0 is
+  overhead evidence, not permission to expand the same scope into L1/MFMA unless
+  the next task names a removable overhead.
 - L1 memory/MFMA work must refine an executed Gluon/mixed anchor or shrink back
   to L0. It must name anchor evidence and one allowed change.
 - Matrix/MFMA work requires result layout, operand layouts, `convert_layout`,

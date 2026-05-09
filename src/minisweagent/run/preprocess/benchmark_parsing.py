@@ -708,6 +708,14 @@ def _find_task_metadata_for_patch_dir(patch_dir: Path) -> dict[str, Any]:
         from minisweagent.run.task_file import read_task_file
 
         meta, body = read_task_file(candidates[0])
+        optional_meta: dict[str, Any] = {}
+        for key, tag in _OPTIONAL_GLUON_RESULT_METADATA:
+            value = meta.get(key)
+            if value in (None, ""):
+                value = _parse_tagged_task_value(body, tag)
+            normalized = _normalize_optional_result_metadata(value)
+            if normalized not in (None, ""):
+                optional_meta[key] = normalized
         implementation_layer = _parse_tagged_task_value(body, "Implementation layer")
         extension_layer = _parse_tagged_task_value(body, "Extension layer")
         optimization_direction = _parse_tagged_task_value(body, "Optimization direction")
@@ -721,6 +729,7 @@ def _find_task_metadata_for_patch_dir(patch_dir: Path) -> dict[str, Any]:
             or performance_hypothesis
             or allowed_change
             or gluon_overlay_reason
+            or optional_meta
         ):
             meta = dict(meta)
             if implementation_layer:
@@ -735,6 +744,7 @@ def _find_task_metadata_for_patch_dir(patch_dir: Path) -> dict[str, Any]:
                 meta["allowed_change"] = allowed_change
             if gluon_overlay_reason:
                 meta["gluon_overlay_reason"] = gluon_overlay_reason
+            meta.update(optional_meta)
         return meta
     except Exception as exc:
         logger.debug("Could not read task metadata for %s: %s", patch_dir, exc)
@@ -762,6 +772,31 @@ def _parse_tagged_task_value(task_body: str, tag: str) -> str | None:
     return match.group(1).strip().strip("`")
 
 
+_OPTIONAL_GLUON_RESULT_METADATA: tuple[tuple[str, str], ...] = (
+    ("extension_intent", "Extension intent"),
+    ("expected_outcome", "Expected outcome"),
+    ("not_viable_for_l1_if_slower_than_base", "Not viable for L1 if slower than Base"),
+    ("overhead_source_to_record", "Overhead source to record"),
+    ("target_symbol", "Target symbol"),
+    ("target_component", "Target component"),
+    ("forbidden_change", "Forbidden change"),
+)
+
+
+def _normalize_optional_result_metadata(value: Any) -> Any:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().strip("`")
+    if not text:
+        return None
+    lowered = text.lower()
+    if lowered in {"true", "yes", "on"}:
+        return True
+    if lowered in {"false", "no", "off"}:
+        return False
+    return text
+
+
 def _required_output_dialect(task_meta: dict[str, Any], *, label: str) -> str:
     required = str(task_meta.get("required_output_dialect") or "").strip().lower()
     implementation_layer = str(task_meta.get("implementation_layer") or "").strip().lower()
@@ -779,6 +814,39 @@ def _required_output_dialect(task_meta: dict[str, Any], *, label: str) -> str:
             return layer_required
         return required
     return layer_required or "any"
+
+
+def _gluon_l1_anchor_viability(
+    *,
+    required_output_dialect: str,
+    actual_output_dialect: str,
+    dialect_contract_satisfied: bool,
+    gluon_execution_contract_satisfied: bool,
+    speedup: float,
+    has_shape_regression: bool,
+    task_meta: dict[str, Any],
+) -> str:
+    if (
+        required_output_dialect not in {"amd_gluon", "mixed"}
+        or actual_output_dialect not in {"amd_gluon", "mixed"}
+        or not dialect_contract_satisfied
+        or not gluon_execution_contract_satisfied
+    ):
+        return "not_applicable"
+    if speedup >= 1.0 and not has_shape_regression:
+        return "viable_for_l1"
+    extension_intent = str(task_meta.get("extension_intent") or "").strip().lower()
+    if extension_intent == "performance_candidate":
+        return "neutral_or_slow_anchor"
+    if (
+        extension_intent == "execution_anchor"
+        or task_meta.get("not_viable_for_l1_if_slower_than_base") is True
+        or has_shape_regression
+    ):
+        return "not_viable_for_l1"
+    if speedup < 0.5:
+        return "not_viable_for_l1"
+    return "neutral_or_slow_anchor"
 
 
 def _find_original_baseline_ms(patch_dir: Path) -> float | None:
@@ -845,9 +913,11 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
     best_shape_speedups: dict[str, dict[str, float]] = {}
     best_candidate_shape_latencies: dict[str, float] = {}
     best_candidate_shape_geomean: float | None = None
+    best_has_shape_regression = False
     baseline_shape_geomean = _geomean_ms(baseline_shape_latencies)
     task_meta = _find_task_metadata_for_patch_dir(patch_dir)
     required_output_dialect = _required_output_dialect(task_meta, label=patch_dir.name)
+    preserves_gluon_evidence = required_output_dialect in {"amd_gluon", "mixed"}
 
     for test_file in sorted(patch_dir.glob("patch_*_test.txt")):
         name = test_file.stem.replace("_test", "")
@@ -892,7 +962,8 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
             logger.info("Skipping %s because it defines a Gluon helper without executing it.", name)
             continue
         shape_speedups = compute_shape_speedups(baseline_shape_latencies, candidate_shape_latencies)
-        if shape_speedups and _has_significant_shape_regression(shape_speedups):
+        has_shape_regression = _has_significant_shape_regression(shape_speedups) if shape_speedups else False
+        if shape_speedups and has_shape_regression and not preserves_gluon_evidence:
             logger.info(
                 "Skipping %s due to per-shape regression below %.2fx: %s",
                 name,
@@ -913,11 +984,33 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
             best_candidate_shape_latencies = candidate_shape_latencies
             best_candidate_shape_geomean = _geomean_ms(candidate_shape_latencies)
             best_shape_speedups = shape_speedups
+            best_has_shape_regression = has_shape_regression
 
-    if best_patch_id is None or best_speedup <= 1.0:
+    if best_patch_id is None:
+        return None
+    if best_speedup <= 1.0 and not preserves_gluon_evidence:
         return None
 
-    return {
+    dialect_ok = _dialect_contract_satisfied(
+        required_output_dialect,
+        best_actual_output_dialect,
+    )
+    gluon_execution_ok = required_output_dialect in {"amd_gluon", "mixed"}
+    anchor_viability = _gluon_l1_anchor_viability(
+        required_output_dialect=required_output_dialect,
+        actual_output_dialect=best_actual_output_dialect,
+        dialect_contract_satisfied=dialect_ok,
+        gluon_execution_contract_satisfied=gluon_execution_ok,
+        speedup=best_speedup,
+        has_shape_regression=best_has_shape_regression,
+        task_meta=task_meta,
+    )
+    optional_meta = {
+        key: task_meta.get(key)
+        for key, _tag in _OPTIONAL_GLUON_RESULT_METADATA
+        if task_meta.get(key) not in (None, "")
+    }
+    result = {
         "best_patch_id": best_patch_id,
         "best_patch_speedup": round(best_speedup, 6),
         "best_patch_file": best_patch_file,
@@ -934,12 +1027,15 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         ),
         "per_shape_speedups": best_shape_speedups,
         "objective": "total_shape_latency_ms" if best_shape_speedups else "latency_ms",
+        "improves_true_baseline": best_speedup > 1.0,
+        "has_significant_shape_regression": best_has_shape_regression,
         "required_output_dialect": required_output_dialect,
         "actual_output_dialect": best_actual_output_dialect,
-        "dialect_contract_satisfied": _dialect_contract_satisfied(
-            required_output_dialect,
-            best_actual_output_dialect,
-        ),
+        "dialect_contract_satisfied": dialect_ok,
+        "gluon_execution_contract_satisfied": gluon_execution_ok,
+        "gluon_l1_anchor_viability": anchor_viability,
+        "not_viable_for_l1": anchor_viability == "not_viable_for_l1",
+        "overhead_source": task_meta.get("overhead_source_to_record") if anchor_viability != "viable_for_l1" else None,
         "fallback_used": required_output_dialect == "amd_gluon" and best_actual_output_dialect != "amd_gluon",
         "llm_selection_analysis": (
             f"Deterministic: baseline={baseline_ms:.4f}ms ({baseline_source}), "
@@ -947,6 +1043,8 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
             f"Speedup={best_speedup:.4f}x. Patch={best_patch_size}B."
         ),
     }
+    result.update(optional_meta)
+    return result
 
 
 def _invalidate_existing_best_result(
@@ -999,6 +1097,15 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
             pf = existing.get("best_patch_file")
             task_meta = _find_task_metadata_for_patch_dir(patch_dir)
             required_output_dialect = _required_output_dialect(task_meta, label=patch_dir.name)
+            for key, _tag in _OPTIONAL_GLUON_RESULT_METADATA:
+                if task_meta.get(key) not in (None, ""):
+                    existing[key] = task_meta.get(key)
+            existing["required_output_dialect"] = required_output_dialect
+            existing["gluon_execution_contract_satisfied"] = (
+                bool(existing.get("gluon_execution_contract_satisfied"))
+                if required_output_dialect in {"amd_gluon", "mixed"}
+                else False
+            )
 
             if not pf:
                 invalid = _invalidate_existing_best_result(
