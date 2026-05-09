@@ -81,6 +81,7 @@ from minisweagent.run.preprocess.discovery_types import (
     feature_uses_gluon_guidance_from_meta,
 )
 from minisweagent.run.gluon_doc_profiles import add_unique_doc_key, required_doc_keys_for_profile
+from minisweagent.run.target_contracts import target_symbols_from_scoped_text
 
 logger = logging.getLogger(__name__)
 _GEAK_REPO_ROOT = get_repo_root()
@@ -1196,21 +1197,13 @@ def _infer_required_patch_target_symbols(task_prompt: str, item: dict[str, Any] 
         task_prompt,
         re.IGNORECASE | re.MULTILINE,
     ):
-        symbols.extend(part.strip().strip("`") for part in match.group(1).split(","))
+        value = match.group(1)
+        symbols.extend(part.strip().strip("`") for part in value.split(","))
+        symbols.extend(target_symbols_from_scoped_text(value))
     for field in ("Allowed change", "Target component"):
         tagged = _parse_prompt_field_value(task_prompt, field)
         if tagged:
-            symbols.extend(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", tagged))
-            target_groups = re.finditer(
-                r"(?:expressions?|components?|symbols?|variables?|paths?|loads?|stores?|tensors?)\s*\(([^)]*)\)",
-                tagged,
-                re.IGNORECASE,
-            )
-            for group_match in target_groups:
-                group = group_match.group(1)
-                group_symbols = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", group)
-                if len(group_symbols) > 1:
-                    symbols.extend(group_symbols)
+            symbols.extend(target_symbols_from_scoped_text(tagged))
 
     unique: list[str] = []
     for symbol in symbols:
@@ -1899,6 +1892,7 @@ def _build_search_space_allocation_guidance(
         "- Required Gluon docs for priority: `00_always_read.md`, `10_search_policies.md` (`optimization_direction_dialect_overlay`, `overlay_priority_routing`), plus `20_component_traits.md` / `60_real_patterns.md` / `50_api_reference.md` only when their routed details apply.",
         "- AMD Gluon overlay prompts must include `Extension layer: L0|L1|Hybrid`, `Optimization direction:`, `Source Base family:`, `Plain competitor:`, `Gluon overlay reason:`, `Overlay priority: Prefer` or `Overlay priority: high-confidence Consider`, `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`. Do not write plain `Overlay priority: Consider` for Round-1 L0.",
         "- Required Gluon worker contract: ask for `Gluon knowledge lookup plan`, `Gluon implementation plan`, `Performance hypothesis:`, `Same ABI comparison:`, and `Patch evolution:` before editing; stage/helper/local-expression scoped tasks must include `Target symbol:` or `Target component:` and wrap local target names in backticks inside `Allowed change`; reject non-executed Gluon, target-symbol mismatch, leftover plain Triton device APIs inside edited `@gluon.jit`, backup/temp files, and bundled unrelated changes without `bundle_allowed=true`. Keep API-level Gluon rewrite details in the routed skills/docs.",
+        "- L0 overlay prompts must not ask the worker to convert an entire stage/helper/kernel just to prove Gluon. Scope L0 to one named subpath/component, such as a load/store, layout, mask, or matrix subpath; only use a whole helper as the target when the task explicitly explains why the helper is the smallest viable component.",
         "- L1 tasks additionally require an executed Gluon/mixed anchor (`Anchor patch`, `Anchor speedup`, `Anchor execution: true`, `Comparison target: anchor_patch`) and stage-specific tasks require target metadata such as `Target symbol` / `Target component` plus top-level `required_patch_target_symbols` when available.",
         "- If a plain Triton candidate wins, accept it as the best result rather than forcing more Gluon work.",
         "- If a Triton strategy wins and maps cleanly to Gluon traits, a later round may create an AMD Gluon variant of that winning strategy only with a concrete performance hypothesis.",
@@ -2000,6 +1994,7 @@ def _build_gluon_planning_traits_guidance(
             "",
             "Escalation rules:",
             "- Round 1 may include at most one L0 minimal AMD Gluon overlay when the priority docs place it in the Prefer or high-confidence Consider bucket; do not create a Gluon task unless it includes the full planner-audited fields: `Optimization direction:`, `Source Base family:`, `Plain competitor:`, `Gluon overlay reason:`, `Overlay priority:`, `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`.",
+            "- L0 prompts must name one target component and must not instruct the worker to convert a full multi-stage kernel/helper unless that whole helper is explicitly the smallest viable component.",
             "- Additional overlay layers may become L1 trait-specific AMD Gluon tasks only after the L0 path is executed and performance-viable, or after local shape/sub-operation evidence shows Gluon beats the safe anchor.",
             "- In later rounds, if Gluon failed, shrink the next attempt to layout-only, translation-only, or memory-only work; if correctness passed but performance regressed, escalate memory/matrix lowering before scheduler or persistent work.",
             "- In later rounds, if either the plain Triton competitor or AMD Gluon overlay wins on only part of the benchmark surface, plan a mixed/hybrid candidate only when it preserves the plain Triton no-regression path and uses host-side dispatch or explicit feature checks to choose between plain Triton and AMD Gluon.",

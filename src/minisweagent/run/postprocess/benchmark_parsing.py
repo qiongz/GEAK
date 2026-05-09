@@ -20,6 +20,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from minisweagent.run.target_contracts import target_symbols_from_scoped_text
+
 logger = logging.getLogger(__name__)
 _AMD_GLUON_PATCH_MARKERS = (
     "@gluon.jit",
@@ -433,21 +435,13 @@ def _infer_required_patch_target_symbols(task_body: str, task_meta: dict[str, An
         task_body,
         re.IGNORECASE | re.MULTILINE,
     ):
-        symbols.extend(part.strip().strip("`") for part in match.group(1).split(","))
+        value = match.group(1)
+        symbols.extend(part.strip().strip("`") for part in value.split(","))
+        symbols.extend(target_symbols_from_scoped_text(value))
     for field in ("Allowed change", "Target component"):
         value = _parse_tagged_task_value(task_body, field)
         if value:
-            symbols.extend(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", value))
-            target_groups = re.finditer(
-                r"(?:expressions?|components?|symbols?|variables?|paths?|loads?|stores?|tensors?)\s*\(([^)]*)\)",
-                value,
-                re.IGNORECASE,
-            )
-            for group_match in target_groups:
-                group = group_match.group(1)
-                group_symbols = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", group)
-                if len(group_symbols) > 1:
-                    symbols.extend(group_symbols)
+            symbols.extend(target_symbols_from_scoped_text(value))
 
     unique: list[str] = []
     for symbol in symbols:

@@ -7,6 +7,7 @@ from minisweagent.run.postprocess.benchmark_parsing import (
     _has_added_generic_gluon_dot,
     _has_added_plain_exception_fallback,
     _infer_required_patch_target_symbols,
+    _patch_touches_any_target_symbol,
     _patch_touches_backup_file,
     _required_amd_gluon_static_contract_error,
     _required_output_dialect,
@@ -113,10 +114,29 @@ def test_infer_required_patch_target_symbols_from_allowed_change_components() ->
     assert _infer_required_patch_target_symbols(body, {}) == ["tile_load_a", "tile_load_b", "tile_load_c"]
 
 
+def test_infer_required_patch_target_symbols_from_stage_scoped_allowed_change() -> None:
+    body = "Allowed change: layout specification for tensor creation and load/store in stage1 inner loop"
+
+    assert _infer_required_patch_target_symbols(body, {}) == ["stage1"]
+
+
 def test_infer_required_patch_target_symbols_ignores_non_target_parentheses() -> None:
     body = "Allowed change: specialize the shape bucket (B, H, S) without naming local target components."
 
     assert _infer_required_patch_target_symbols(body, {}) == []
+
+
+def test_stage_scope_target_does_not_accept_other_stage_patch() -> None:
+    patch = "\n".join(
+        [
+            "diff --git a/kernel.py b/kernel.py",
+            "+@gluon.jit",
+            "+def _fwd_kernel_stage2_gluon(x):",
+            "+    return x",
+        ]
+    )
+
+    assert _patch_touches_any_target_symbol(patch, ["stage1"]) is False
 
 
 def test_required_amd_gluon_static_contract_rejects_generic_gluon_dot() -> None:

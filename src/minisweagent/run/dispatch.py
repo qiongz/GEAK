@@ -30,6 +30,7 @@ from minisweagent.run.gluon_doc_profiles import (
     required_doc_keys_for_profile,
     task_requires_gluon_worker_docs,
 )
+from minisweagent.run.target_contracts import target_symbols_from_scoped_text
 
 _GEAK_REPO_ROOT = get_repo_root()
 _GLUON_GATE_FALLBACK_RELS = {
@@ -202,21 +203,13 @@ def _task_required_patch_target_symbols(meta: dict[str, Any], task_body: str = "
         task_body or "",
         re.IGNORECASE | re.MULTILINE,
     ):
-        symbols.extend(part.strip().strip("`") for part in match.group(1).split(","))
+        value = match.group(1)
+        symbols.extend(part.strip().strip("`") for part in value.split(","))
+        symbols.extend(target_symbols_from_scoped_text(value))
     for field in ("Allowed change", "Target component"):
         tagged = _task_body_field(task_body, field)
         if tagged:
-            symbols.extend(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", tagged))
-            target_groups = re.finditer(
-                r"(?:expressions?|components?|symbols?|variables?|paths?|loads?|stores?|tensors?)\s*\(([^)]*)\)",
-                tagged,
-                re.IGNORECASE,
-            )
-            for group_match in target_groups:
-                group = group_match.group(1)
-                group_symbols = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", group)
-                if len(group_symbols) > 1:
-                    symbols.extend(group_symbols)
+            symbols.extend(target_symbols_from_scoped_text(tagged))
 
     unique: list[str] = []
     for symbol in symbols:
