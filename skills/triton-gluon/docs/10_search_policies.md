@@ -294,7 +294,7 @@ the source of truth for worker `save_and_test` gating; heuristic inference is
 only for old or hand-written tasks.
 
 ```yaml
-gluon_doc_profile: extension_l0_minimal | nv_to_amd_translation | memory_lowering | matrix_lowering | shape_bucketed_dispatch | jit_aot_sensitive | shared_transplant | gluon_variant_from_anchor | hybrid_dispatch | hybrid_dispatch_from_evidence
+gluon_doc_profile: extension_l0_minimal | nv_to_amd_translation | memory_lowering | matrix_lowering | shape_bucketed_dispatch | jit_aot_sensitive | shared_transplant | gluon_variant_from_anchor | hybrid_dispatch | hybrid_dispatch_from_evidence | base_or_shared_gluon
 required_gluon_docs:
   - gluon_skill_path
   - gluon_always_read_path
@@ -342,6 +342,22 @@ Profile guidance:
 - `hybrid_dispatch_from_evidence`: add `gluon_component_traits_path`,
   `gluon_architecture_notes_path`, and `gluon_real_patterns_path`. The task must
   name per-shape or sub-operation evidence for each dispatch branch.
+- `base_or_shared_gluon`: compatibility profile for Base/Shared tasks carrying
+  Gluon metadata but no narrower implementation profile. It keeps planner and
+  result attribution metadata aligned, but does not by itself require a plain
+  Triton Base worker to read Gluon implementation docs.
+
+Documentation-gate merge order is additive: mandatory docs
+(`gluon_skill_path`, `gluon_always_read_path`, `gluon_search_policies_path`),
+profile docs, explicit `required_gluon_docs`, then heuristic docs for old or
+hand-written tasks. Explicit docs augment the profile; they must not replace the
+mandatory/profile set.
+
+Run-level Gluon feature metadata is a planner/search-space switch. Task-level
+`required_output_dialect`, `implementation_layer`, and `extension_layer` are the
+worker/selector contract. Legacy `search_set` values are audit metadata and
+must not be the sole reason a plain Triton task receives a Gluon implementation
+doc gate.
 
 Do not include `gluon_examples_doc_path` unless the task explicitly needs a
 schematic example. Examples are not common context.

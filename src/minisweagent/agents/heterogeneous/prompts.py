@@ -355,7 +355,9 @@ backticks inside `Allowed change` are also treated as required target symbols.
 `extension_l0_minimal`, `nv_to_amd_translation`, `memory_lowering`,
 `matrix_lowering`, `shape_bucketed_dispatch`, `jit_aot_sensitive`,
 `shared_transplant`, `gluon_variant_from_anchor`, `hybrid_dispatch`, or
-`hybrid_dispatch_from_evidence` when one applies.
+`hybrid_dispatch_from_evidence` when one applies. Use
+`base_or_shared_gluon` only as a compatibility profile for Base/Shared tasks
+that carry Gluon metadata but do not map to a narrower profile.
 `required_gluon_docs` should list doc path
 metadata keys such as `gluon_skill_path`, `gluon_always_read_path`,
 `gluon_search_policies_path`, `gluon_component_traits_path`,
@@ -410,13 +412,13 @@ Generate optimization tasks for the kernel at {{ kernel_path }}.
 {% endif %}{% if knowledge_base_path %}- **Knowledge base** (optimization strategies): {{ knowledge_base_path }}
 {% endif %}{% if gluon_skill_path %}- **Triton-Gluon skill**: {{ gluon_skill_path }}
 {% endif %}{% if gluon_always_read_path %}- **Triton-Gluon split-doc entrypoint**: {{ gluon_always_read_path }}
-{% endif %}{% if gluon_search_policies_path %}- **Triton-Gluon planner/search policies**: {{ gluon_search_policies_path }}
-{% endif %}{% if gluon_component_traits_path %}- **Triton-Gluon component traits**: {{ gluon_component_traits_path }}
-{% endif %}{% if gluon_architecture_notes_path %}- **Triton-Gluon architecture/runtime notes**: {{ gluon_architecture_notes_path }}
-{% endif %}{% if gluon_api_reference_path %}- **Triton-Gluon API reference**: {{ gluon_api_reference_path }}
-{% endif %}{% if gluon_real_patterns_path %}- **Triton-Gluon real patterns and benchmark rules**: {{ gluon_real_patterns_path }}
-{% endif %}{% if gluon_examples_doc_path %}- **Triton-Gluon schematic examples**: {{ gluon_examples_doc_path }}
-{% endif %}{% if gluon_backup_details_path %}- **Triton-Gluon residual backup routing**: {{ gluon_backup_details_path }}
+{% endif %}{% if gluon_search_policies_path %}- **Triton-Gluon planner/search policies** (planner default): {{ gluon_search_policies_path }}
+{% endif %}{% if gluon_component_traits_path %}- **Triton-Gluon component traits** (read only when routed by detected traits or overlay reason): {{ gluon_component_traits_path }}
+{% endif %}{% if gluon_architecture_notes_path %}- **Triton-Gluon architecture/runtime notes** (read only for target/JIT/AOT/matrix-sensitive planning): {{ gluon_architecture_notes_path }}
+{% endif %}{% if gluon_api_reference_path %}- **Triton-Gluon API reference** (worker implementation doc; planner should route it via `required_gluon_docs` for API-sensitive tasks, not copy API tutorials into task prompts): {{ gluon_api_reference_path }}
+{% endif %}{% if gluon_real_patterns_path %}- **Triton-Gluon real patterns and benchmark rules** (read for source-first, end-to-end, benchmark-boundary, or real-operator risks): {{ gluon_real_patterns_path }}
+{% endif %}{% if gluon_examples_doc_path %}- **Triton-Gluon schematic examples** (optional, at most one relevant section): {{ gluon_examples_doc_path }}
+{% endif %}{% if gluon_backup_details_path %}- **Triton-Gluon residual backup routing** (last resort for missing routed details): {{ gluon_backup_details_path }}
 {% endif %}{% if gluon_kb_path %}- **Gluon knowledge base** (structured AMD Gluon knowledge): {{ gluon_kb_path }}
 {% endif %}{% if gluon_examples_path %}- **Gluon examples** (repo examples and harness expectations): {{ gluon_examples_path }}
 {% endif %}{% if deep_search_path %}- **Deep search findings**: {{ deep_search_path }}

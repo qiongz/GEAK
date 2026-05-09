@@ -458,7 +458,7 @@ Triton-family task frontmatter may include:
 
 ```yaml
 required_output_dialect: plain_triton | amd_gluon | mixed | any
-gluon_doc_profile: extension_l0_minimal | nv_to_amd_translation | memory_lowering | matrix_lowering | shape_bucketed_dispatch | jit_aot_sensitive | shared_transplant | gluon_variant_from_anchor | hybrid_dispatch | hybrid_dispatch_from_evidence
+gluon_doc_profile: extension_l0_minimal | nv_to_amd_translation | memory_lowering | matrix_lowering | shape_bucketed_dispatch | jit_aot_sensitive | shared_transplant | gluon_variant_from_anchor | hybrid_dispatch | hybrid_dispatch_from_evidence | base_or_shared_gluon
 search_set: base | shared | extension  # optional compatibility bucket
 ```
 
@@ -467,7 +467,15 @@ Rules:
 - `required_output_dialect`, `Implementation layer`, and `Extension layer` are
   the output contract source of truth.
 - `search_set` is optional compatibility metadata, not the optimization
-  direction.
+  direction and not sufficient by itself to trigger a worker Gluon doc gate.
+- Run-level Gluon feature metadata decides whether the planner may widen the
+  Triton search space with Gluon guidance; task-level `required_output_dialect`,
+  `Implementation layer`, and `Extension layer` decide whether a dispatched
+  worker must read implementation docs and produce a real Gluon path.
+- `base_or_shared_gluon` is a compatibility documentation profile for Base or
+  Shared tasks that carry Gluon metadata but do not map to a narrower
+  implementation profile. It must not by itself turn a plain Triton Base task
+  into a Gluon worker task.
 - `required_output_dialect=amd_gluon` means a real AMD Gluon patch is required.
 - Plain Triton fallback is not a valid success for required AMD Gluon tasks.
 - Fallback is only evidence after a real Gluon patch was saved/tested and
