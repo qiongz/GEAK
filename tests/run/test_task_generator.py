@@ -21,6 +21,7 @@ from minisweagent.agents.heterogeneous.task_generator import (
     _gluon_extension_strength,
     _extract_kernel_meta,
     _infer_gluon_planning_traits,
+    _infer_required_patch_target_symbols,
     _is_plain_competitor_task,
     _parse_llm_response,
     _previous_gluon_signal,
@@ -137,6 +138,18 @@ def test_infer_gluon_planning_traits_for_source_first_scaled_descriptor() -> Non
     assert "matrix_scaled_dot" in traits
     assert "matrix_wmma_descriptor" in traits
     assert "version_sensitive" in traits
+
+
+def test_infer_required_patch_target_symbols_from_allowed_change_components() -> None:
+    prompt = "\n".join(
+        [
+            "Extension layer: L0",
+            "Allowed change: Replace the scoped local expressions (tile_load_a, tile_load_b, tile_load_c) in the inner loop.",
+            "Reject if: target-symbol mismatch.",
+        ]
+    )
+
+    assert _infer_required_patch_target_symbols(prompt) == ["tile_load_a", "tile_load_b", "tile_load_c"]
 
 
 def test_build_gluon_planning_traits_guidance_includes_candidate_slots(tmp_path: Path) -> None:

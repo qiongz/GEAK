@@ -429,11 +429,25 @@ def _resolve_anchor_text(patch_dir: Path, anchor: str) -> tuple[str, str] | None
 def _infer_required_patch_target_symbols(task_body: str, task_meta: dict[str, Any]) -> list[str]:
     symbols = _metadata_list(task_meta.get("required_patch_target_symbols"))
     for match in re.finditer(
-        r"^\s*(?:Target symbol|Required patch target symbols?)\s*:\s*(.+?)\s*$",
+        r"^\s*(?:Target symbol|Target component|Required patch target symbols?)\s*:\s*(.+?)\s*$",
         task_body,
         re.IGNORECASE | re.MULTILINE,
     ):
         symbols.extend(part.strip().strip("`") for part in match.group(1).split(","))
+    for field in ("Allowed change", "Target component"):
+        value = _parse_tagged_task_value(task_body, field)
+        if value:
+            symbols.extend(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", value))
+            target_groups = re.finditer(
+                r"(?:expressions?|components?|symbols?|variables?|paths?|loads?|stores?|tensors?)\s*\(([^)]*)\)",
+                value,
+                re.IGNORECASE,
+            )
+            for group_match in target_groups:
+                group = group_match.group(1)
+                group_symbols = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", group)
+                if len(group_symbols) > 1:
+                    symbols.extend(group_symbols)
 
     unique: list[str] = []
     for symbol in symbols:

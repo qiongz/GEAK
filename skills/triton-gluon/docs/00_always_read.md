@@ -256,7 +256,9 @@ Planner task prompts and worker strategy notes have different contracts:
   direction`, `Source Base family`, `Plain competitor`, `Gluon overlay reason`,
   `Overlay priority`, `Implementation layer`, `Performance hypothesis`,
   `Measurement boundary`, `Comparison target`, `Allowed change`, and
-  `Reject if`.
+  `Reject if`. If `Allowed change` names local expressions or variables, wrap
+  those names in backticks so dispatch and selection can enforce the scoped
+  target component.
 - Worker pre-edit plan fields: the full `Gluon knowledge lookup plan` and
   `Gluon implementation plan` below. These are written in strategy notes before
   code edits; they do not all need to appear as top-level planner prompt fields.
@@ -308,6 +310,9 @@ Gluon implementation plan:
   If the task names a stage or helper, include `Target symbol: <symbol>` and
   only report success if the patch touches that exact symbol and executes the
   intended Gluon path.
+- If the task names local target expressions, list them as `Target component:`
+  or wrap them in backticks inside `Allowed change`; changing a different stage
+  is not a valid success.
 - Patch hygiene: files that will be modified. Do not create backup or temporary
   source copies such as `.bak`, `.backup`, `.orig`, `.tmp`, or editor-swap
   files.
