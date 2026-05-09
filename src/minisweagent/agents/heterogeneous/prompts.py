@@ -423,12 +423,9 @@ Generate optimization tasks for the kernel at {{ kernel_path }}.
 {% endif %}{% if gluon_search_policies_path %}- **Triton-Gluon planner/search policies** (planner default): {{ gluon_search_policies_path }}
 {% endif %}{% if gluon_component_traits_path %}- **Triton-Gluon component traits** (read only when routed by detected traits or overlay reason): {{ gluon_component_traits_path }}
 {% endif %}{% if gluon_architecture_notes_path %}- **Triton-Gluon architecture/runtime notes** (read only for target/JIT/AOT/matrix-sensitive planning): {{ gluon_architecture_notes_path }}
-{% endif %}{% if gluon_api_reference_path %}- **Triton-Gluon API reference** (worker implementation doc; planner should route it via `required_gluon_docs` for API-sensitive tasks, not copy API tutorials into task prompts): {{ gluon_api_reference_path }}
 {% endif %}{% if gluon_real_patterns_path %}- **Triton-Gluon real patterns and benchmark rules** (read for source-first, end-to-end, benchmark-boundary, or real-operator risks): {{ gluon_real_patterns_path }}
-{% endif %}{% if gluon_examples_doc_path %}- **Triton-Gluon schematic examples** (optional, at most one relevant section): {{ gluon_examples_doc_path }}
-{% endif %}{% if gluon_backup_details_path %}- **Triton-Gluon residual backup routing** (last resort for missing routed details): {{ gluon_backup_details_path }}
+{% endif %}{% if gluon_api_reference_path %}- **Worker-routed Gluon implementation docs**: choose API/example/backup docs through `gluon_doc_profile` and `required_gluon_docs`; do not read or inline API tutorials by default while planning.
 {% endif %}{% if gluon_kb_path %}- **Gluon knowledge base** (structured AMD Gluon knowledge): {{ gluon_kb_path }}
-{% endif %}{% if gluon_examples_path %}- **Gluon examples** (repo examples and harness expectations): {{ gluon_examples_path }}
 {% endif %}{% if deep_search_path %}- **Deep search findings**: {{ deep_search_path }}
 {% endif %}{% if previous_results_path %}- **Prior round results** (what actually happened): {{ previous_results_path }}
 {% endif %}{% if previous_tasks_path %}- **Prior tasks planned** (avoid repeating): {{ previous_tasks_path }}

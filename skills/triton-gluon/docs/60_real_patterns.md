@@ -1,8 +1,24 @@
 # Triton-Gluon Real Patterns And Benchmark Rules
 
-Read this file when docs or examples are not enough: architecture families,
-real operator patterns, benchmark rules, repo-local defaults, and source-first
-triggers live here.
+Worker-routed evidence and benchmark doc. Read this file when docs or examples
+are not enough: source-first triggers, benchmark boundary, real operator
+patterns, repo-local defaults, and negative evidence live here. API syntax and
+small skeletons belong in `50_api_reference.md`.
+
+## Profile Routing Hints
+
+- `nv_to_amd_translation`: use `nvidia_amd_family_differences` and source-first
+  triggers to separate concepts that translate from APIs that must not be
+  renamed.
+- `shape_bucketed_dispatch` / `hybrid_dispatch*`: use benchmark boundary and
+  real-pattern evidence to justify visible host dispatch. A kernel-only Gluon win
+  does not replace a fair/full-operator path without same-ABI evidence.
+- `shared_transplant` / `gluon_variant_from_anchor`: use safe-anchor evidence and
+  portable-component rules. Preserve the anchor algorithm before changing memory,
+  matrix, or dispatch behavior.
+- Real attention/GEMM/descriptor paths are source-first. If the task shows
+  `DistributedLinearLayout`, host `TensorDescriptor`, unshuffle transforms, or
+  JIT/AOT gates, read operator-local source before generic rewriting.
 
 Do not read this whole file by default. Use the routed section(s) below.
 

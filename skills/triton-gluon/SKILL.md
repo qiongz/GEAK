@@ -33,75 +33,51 @@ torch2hip tasks.
 - Compile-only success is not enough; benchmark against the same correctness
   and performance contract.
 
+## Audience And Routing
+
+- Planner: use `00_always_read.md` and `10_search_policies.md` to decide whether
+  a Triton optimization direction deserves an AMD Gluon implementation layer and
+  which `gluon_doc_profile` / `required_gluon_docs` to emit.
+- Worker: use the task's doc gate and profile to read only the implementation
+  package needed for the scoped patch. Do not read API/examples/backup docs by
+  default.
+
 ## Required Before Editing
 
 1. Read `skills/triton-gluon/docs/00_always_read.md`.
-2. Use its `stable_split_doc_index` and `Task routing` table to map the task to
-   exact split-doc files and headings.
-3. If task metadata provides `required_gluon_docs`, view every listed absolute
-   path with `str_replace_editor command="view"` before editing or calling
+2. View every doc path listed in task metadata or in the injected
+   `REQUIRED BEFORE EDITING OR SAVE_AND_TEST` block with
+   `str_replace_editor command="view"` before editing or calling
    `save_and_test`.
-4. Do not implement from memory or guess Gluon API names. If routed primary docs
-   lack detail, read `skills/triton-gluon/docs/70_backup_details.md`; if the
-   detail is still missing, report the missing split-doc route so it can be
-   added.
-5. Before the first edit, write a short Gluon knowledge lookup plan in your
-   strategy notes. It must list:
-   - task signals found in the kernel or task prompt, such as `tl.arange`,
-     `tl.dot`, MFMA, buffer ops, `[:, None]`, `BlockedLayout`, AOT/JIT, or
-     module wiring;
-   - the exact split-doc file and heading for each signal;
-   - whether that heading has been viewed;
-   - any missing detail that must be resolved before editing.
-6. After the lookup plan is complete, write a short Gluon implementation plan in your
-   strategy notes. It must name:
-   - the parent layout for each logical 1D/2D expression;
-   - every `tl.arange` / tensor creation that will become
-     `gl.arange(..., layout=...)`, `gl.zeros(..., layout=...)`, or
-     `gl.full(..., layout=...)`;
-   - every broadcast or `[:, None]` / `[None, :]` expression and its matching
-     `SliceLayout(axis, parent)`;
-   - where each `BlockedLayout`, `SliceLayout`, `DotOperandLayout`, or other
-     layout object is constructed on the host and passed as `gl.constexpr`;
-     layout objects must not be newly constructed inside `@gluon.jit`;
-   - every `tl.*` device scalar/math use in the edited Gluon path and its
-     `gl.*` equivalent (`gl.cdiv`, `gl.minimum`, `gl.maximum`, `gl.max`,
-     `gl.sum`, `gl.exp`, `gl.where`, etc.); `tl.sigmoid` must be lowered with
-     documented Gluon math such as `1 / (1 + gl.exp(-x))` if there is no local
-     `gl.sigmoid` evidence;
-   - every `tl.dot` / `tl.dot_scaled` in scope and the full Gluon matrix path:
-     result layout, `DotOperandLayout`s, `convert_layout`, and target op such as
-     `gl.amd.cdna3.mfma`; never leave `tl.dot` inside `@gluon.jit`, and do not
-     replace it with a generic `gl.dot` when the task hypothesis requires MFMA
-     or operand-layout lowering;
-   - for buffer ops, the loaded element dtype, typed `other` value/layout, and
-     `stored_value` dtype before using `buffer_load` / `buffer_store`;
-   - the performance hypothesis before editing: why this Gluon change might help
-     versus the safe Base/plain path, what overhead it may add, and what evidence
-     would make it neutral or slower instead of a win;
-   - the patch evolution plan: `patch_0` should be the smallest real executed
-     Gluon path that can pass correctness; each later patch should change one
-     component or one dispatch decision and record the expected and observed
-     effect before moving on;
-   - whether any quick direction, checked-in example, or real operator pattern is
-     being used only as a starting point. These guides help produce a valid or
-     promising first candidate; they are not proof of the final fastest layout,
-     launch config, or matrix path;
-   - whether the task is L0, L1, or Hybrid, and the single subpath/component it
-     is allowed to change. If the task names a stage/helper, write
-     `Target symbol: <symbol>` and do not modify a different stage as the
-     successful patch. If you define a new `_..._gluon` helper, wire the host or
-     caller so that helper is actually executed; a definition-only helper while
-     the dispatch still uses the plain Triton path is not a valid result, even
-     if compile/correctness passes through the unchanged path;
-   - whether a required `amd_gluon` task adds broad `try/except Exception`
-     fallback to a plain Triton launcher. Required pure Gluon tasks must fail
-     visibly rather than count a silent plain fallback as success;
-   - whether the patch creates any backup or temporary files. Do not add
-     `.bak`, `.backup`, `.orig`, `.tmp`, or editor-swap copies; patches should
-     contain only the intended source/config changes.
+3. Write these strategy-note blocks before the first edit:
+   `Gluon knowledge lookup plan`, `Gluon implementation plan`,
+   `Performance hypothesis`, `Same ABI comparison`, and `Patch evolution`.
+4. Use only supported imports:
 
-`save_and_test` enforces the required-doc gate for Gluon tasks.
+```python
+from triton.experimental import gluon
+from triton.experimental.gluon import language as gl
+```
+
+Do not use `from triton import gluon` as an availability probe.
+
+Hard contracts:
+
+- Required AMD Gluon tasks must execute real Gluon code; import-only,
+  helper-only, empty, or pure plain Triton fallback patches are not success.
+- Do not add broad `try/except Exception` fallback that silently succeeds through
+  the plain Triton path.
+- Change one subpath/component unless the task explicitly says
+  `bundle_allowed=true`.
+- If the task names `Target symbol`, `Target component`,
+  `required_patch_target_symbols`, or scoped names in `Allowed change`, only
+  report success when that target path is modified and executes the intended
+  Gluon code.
+- Do not create backup or temporary files such as `.bak`, `.backup`, `.orig`,
+  `.tmp`, or editor-swap copies.
+
+`save_and_test` enforces the required-doc gate for Gluon tasks before patch
+contract checks.
 
 ## Workflow
 
@@ -139,44 +115,18 @@ torch2hip tasks.
 
 For `required_output_dialect=amd_gluon`, do not start by wrapping the original
 plain Triton kernel in `@gluon.jit`. First produce the lookup plan and
-implementation plan above, then edit only the scoped path.
+implementation plan, then edit only the scoped path.
 
-- Extension L0: make one small Gluon subpath compile and preserve correctness
-  semantics. For layout-heavy kernels, this is usually one index/mask
-  expression, one load/store path, or one matrix-layout skeleton, not the full
-  attention/decode/GEMM body. L0 success is a real executed Gluon anchor; it may
-  be slower than Base. Do not keep tuning `num_warps` / block sizes as if L0 is a
-  performance win unless the hypothesis explains which overhead was removed. For
-  low-latency kernels or tiny stages (roughly sub-100us benchmark cases), L0
-  should stop after the smallest correctness-passing executed anchor; if it is
-  slower than Base, record overhead evidence and do not spend later patches on
-  launch-constant sweeps.
-- Extension L1: refine a correctness-passing Gluon or mixed anchor. If no anchor
-  exists, shrink the task to an L0-style layout/memory smoke path. L1 tasks must
-  name `Anchor patch`, `Anchor speedup`, `Anchor execution: true`,
-  `Comparison target: anchor_patch`, and exactly one `Allowed change`. If the
-  anchor is below `0.5x`, has significant per-shape regression, or did not
-  execute AMD Gluon, L1 is not valid; write an anchor-diagnosis or smaller L0
-  task instead.
-- Matrix/MFMA work: do not introduce MFMA until result layout, operand layouts,
-  `convert_layout`, valid `AMDMFMALayout.instr_shape`, and a plausible
-  performance reason are known. If the plan cannot say why MFMA reduces a real
-  hot path rather than adding layout conversion, extra loops, or dispatch
-  overhead, keep the task at L0 layout/memory viability.
-- Module wiring: define the Gluon helper in the edited module before importing
-  or dispatching to it. Do not reference guessed `_..._gluon` symbols.
-- Stage execution: for stage-specific L1 tasks, touching a target symbol means
-  exact identifier use plus an executed Gluon path. A `_target_gluon` helper does
-  not satisfy `target` unless the patch also dispatches/calls that helper.
-- Buffer ops: prefer generic `gl.load` / `gl.store` first. When using AMD
-  `buffer_load`, create `other` as a typed Gluon tensor compatible with
-  `ptr.dtype.element_ty`; when using `buffer_store`, cast `stored_value` to the
-  destination pointer element dtype if needed.
-- Patch evolution: keep patch history useful for later rounds. Do not bundle
-  buffer ops, MFMA, layout rewrites, scheduler changes, and launch tuning in one
-  patch unless the task explicitly says `bundle_allowed=true`. After each
-  `save_and_test`, record whether the changed component should be kept, reverted,
-  or composed later.
+- L0 proves the smallest real executed Gluon anchor. It may be slower than Base;
+  record that as evidence instead of launch-tuning blindly.
+- L1 memory/MFMA work must refine an executed Gluon/mixed anchor or shrink back
+  to L0. It must name anchor evidence and one allowed change.
+- Matrix/MFMA work requires result layout, operand layouts, `convert_layout`,
+  target op, epilogue/store plan, and a performance reason before editing.
+- Buffer work starts with generic `gl.load` / `gl.store`; use AMD buffer ops only
+  after dtype/layout preconditions are known.
+- Profile-routed implementation details live in `20_component_traits.md`,
+  `30_architecture_notes.md`, `50_api_reference.md`, and `60_real_patterns.md`.
 
 ## Planner Metadata Contract
 

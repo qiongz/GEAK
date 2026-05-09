@@ -28,8 +28,8 @@ from minisweagent.run.preprocess.discovery_types import (
     SHAPE_COVERAGE_BUCKETED,
     SHAPE_COVERAGE_MULTI,
     build_gluon_feature_prompt_block,
-    feature_uses_gluon_guidance_from_meta,
 )
+from minisweagent.run.gluon_doc_profiles import task_requires_gluon_worker_docs
 from minisweagent.run.utils.gpu_arch import (
     detect_gpu_arch,
     is_wmma_capable,
@@ -914,50 +914,14 @@ def _task_needs_gluon_worker_context(
 ) -> bool:
     """Return whether this dispatched task should receive Gluon worker guidance."""
     feature_metadata = feature_metadata or {}
-    if str(feature_metadata.get("kernel_type") or "").strip().lower() != "triton":
-        return False
-
-    required_output = str(feature_metadata.get("required_output_dialect") or "").strip().lower()
-    implementation_layer = str(feature_metadata.get("implementation_layer") or "").strip().lower()
-    extension_layer = str(feature_metadata.get("extension_layer") or "").strip().lower()
-    doc_profile = str(feature_metadata.get("gluon_doc_profile") or "").strip().lower()
-    text = "\n".join(
-        str(part or "")
-        for part in (
-            task_body,
-            implementation_layer,
-            extension_layer,
-            doc_profile,
-        )
-    ).lower()
-
-    if required_output in {"amd_gluon", "mixed"}:
-        return True
-    if "amd_gluon" in implementation_layer or "amd-gluon" in implementation_layer:
-        return True
-    if extension_layer in {"l0", "l1", "hybrid"}:
-        return True
-    if doc_profile in {
-        "extension_l0_minimal",
-        "nv_to_amd_translation",
-        "shared_transplant",
-        "gluon_variant_from_anchor",
-        "hybrid_dispatch",
-        "hybrid_dispatch_from_evidence",
-    }:
-        return True
-    return any(
-        marker in text
-        for marker in (
-            "composition type: shared_transplant",
-            "composition type: gluon_variant",
-            "composition type: hybrid_dispatch",
-            "shared_transplant",
-            "gluon_variant",
-            "@gluon.jit",
-            "amd gluon overlay",
-            "amd_gluon variant",
-        )
+    return task_requires_gluon_worker_docs(
+        kernel_type=str(feature_metadata.get("kernel_type") or ""),
+        required_output=str(feature_metadata.get("required_output_dialect") or ""),
+        implementation_layer=str(feature_metadata.get("implementation_layer") or ""),
+        extension_layer=str(feature_metadata.get("extension_layer") or ""),
+        doc_profile=str(feature_metadata.get("gluon_doc_profile") or ""),
+        task_body=task_body,
+        label=str(feature_metadata.get("label") or ""),
     )
 
 
@@ -1251,7 +1215,7 @@ def inject_pipeline_context(
             )
         )
         ctx.append("")
-        if feature_uses_gluon_guidance_from_meta(feature_metadata) and _task_needs_gluon_worker_context(
+        if _task_needs_gluon_worker_context(
             feature_metadata,
             task_body,
         ):

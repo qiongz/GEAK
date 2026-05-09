@@ -1,7 +1,9 @@
 # Triton-Gluon Backup Details
 
-Read this file only after `00_always_read.md` routes the task to the primary
-split docs and those routed docs still do not contain the required detail.
+Backup routing doc. Read this file only after `00_always_read.md` routes the
+task to the primary split docs and those routed docs still do not contain the
+required detail. It is not planner-default context and not an implementation
+cookbook.
 
 This file is intentionally small. Most long-form details now live in their
 proper primary docs:

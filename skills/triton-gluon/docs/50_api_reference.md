@@ -1,8 +1,23 @@
 # Triton-Gluon API Reference
 
-Read this file when a worker needs concrete API surface, code skeletons, or
-failure-driven debug order. It expands the concise rules in
-`20_component_traits.md`.
+Worker-routed API cookbook. Read this file when a worker needs concrete API
+surface, code skeletons, small rewrite tables, or failure-driven debug order. It
+expands the concise rules in `20_component_traits.md`.
+
+## Profile Routing Hints
+
+- `extension_l0_minimal`: read `imports`, `jit_entry_and_host_launcher`,
+  `core_language_and_layout_surface`, and `common_rewrite_table`. Keep the first
+  patch small enough to prove real execution.
+- `memory_lowering`: read `common_rewrite_table` and AMD buffer sections only
+  after the task names loaded dtype, `other` value/layout, store dtype, and why
+  the memory path is hot.
+- `matrix_lowering`: read `matrix_lowering_ladders_by_arch` before copying
+  quick patterns. API syntax is not enough; the plan must name result layout,
+  operand layouts, conversion cost, target op, and epilogue.
+- `jit_aot_sensitive`: read `aot_compile_api_surface` and
+  `version_and_compatibility_checklist` before changing signatures, scratch, or
+  prebuilt/JIT gates.
 
 Do not read this whole file by default. Use the routed section(s) below.
 

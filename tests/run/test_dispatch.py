@@ -114,6 +114,59 @@ def test_plain_base_task_with_gluon_run_meta_does_not_enable_doc_gate(tmp_path) 
     assert "## REQUIRED BEFORE EDITING OR SAVE_AND_TEST" not in task.task
 
 
+def test_required_block_matches_gluon_doc_gate_even_when_run_guidance_off(tmp_path) -> None:
+    task_path = tmp_path / "required_gluon_feature_off.md"
+    write_task_file(
+        task_path,
+        {
+            "label": "ext-required-feature-off",
+            "priority": 6,
+            "kernel_type": "triton",
+            "kernel_path": str(tmp_path / "kernel.py"),
+            "repo_root": str(tmp_path),
+            "input_dialect": "plain_triton",
+            "gluon_feature_mode": "off",
+            "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+            "required_output_dialect": "amd_gluon",
+            "implementation_layer": "amd_gluon overlay",
+            "extension_layer": "L0",
+            "gluon_doc_profile": "extension_l0_minimal",
+        },
+        "Extension layer: L0\nImplementation layer: amd_gluon overlay\n",
+    )
+
+    task = task_file_to_agent_task(task_path)
+
+    assert task.config["gluon_doc_gate_enabled"] is True
+    assert "## Gluon Working Set" in task.task
+    assert "## REQUIRED BEFORE EDITING OR SAVE_AND_TEST" in task.task
+
+
+def test_label_only_gluon_variant_gate_also_injects_required_block(tmp_path) -> None:
+    task_path = tmp_path / "label_only_gluon_variant.md"
+    write_task_file(
+        task_path,
+        {
+            "label": "manual-gluon_variant-label-only",
+            "priority": 6,
+            "kernel_type": "triton",
+            "kernel_path": str(tmp_path / "kernel.py"),
+            "repo_root": str(tmp_path),
+            "input_dialect": "plain_triton",
+            "gluon_feature_mode": "auto",
+            "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+            "required_output_dialect": "any",
+        },
+        "Manual task that relies on its label for Gluon variant routing.",
+    )
+
+    task = task_file_to_agent_task(task_path)
+
+    assert task.config["gluon_doc_gate_enabled"] is True
+    assert "## Gluon Working Set" in task.task
+    assert "## REQUIRED BEFORE EDITING OR SAVE_AND_TEST" in task.task
+
+
 def test_task_file_to_agent_task_keeps_general_skill_tiers_for_raw_profile(tmp_path) -> None:
     task_path = tmp_path / "triton_raw.md"
     write_task_file(
@@ -398,6 +451,73 @@ def test_explicit_required_gluon_docs_merge_with_profile_docs(tmp_path) -> None:
     assert _has_doc(paths, "skills/triton-gluon/docs/30_architecture_notes.md")
     assert _has_doc(paths, "skills/triton-gluon/docs/50_api_reference.md")
     assert _has_doc(paths, "skills/triton-gluon/docs/60_real_patterns.md")
+
+
+def test_explicit_examples_and_backup_doc_keys_resolve_to_split_docs(tmp_path) -> None:
+    task_path = tmp_path / "explicit_examples_backup.md"
+    write_task_file(
+        task_path,
+        {
+            "label": "ext-explicit-examples-backup",
+            "priority": 6,
+            "kernel_type": "triton",
+            "kernel_path": str(tmp_path / "kernel.py"),
+            "repo_root": str(tmp_path),
+            "input_dialect": "plain_triton",
+            "gluon_feature_mode": "auto",
+            "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+            "required_output_dialect": "amd_gluon",
+            "gluon_doc_profile": "extension_l0_minimal",
+            "required_gluon_docs": ["gluon_examples_doc_path", "gluon_backup_details_path"],
+        },
+        "Extension layer: L0\nImplementation layer: amd_gluon overlay\n",
+    )
+
+    task = task_file_to_agent_task(task_path)
+    paths = task.config["gluon_doc_gate_required_paths"]
+    assert _has_doc(paths, "skills/triton-gluon/docs/40_examples.md")
+    assert _has_doc(paths, "skills/triton-gluon/docs/70_backup_details.md")
+    assert not any(path.endswith("/gluon_examples_doc_path") for path in paths)
+    assert not any(path.endswith("/gluon_backup_details_path") for path in paths)
+
+
+def test_worker_gate_keeps_memory_and_matrix_implementation_docs(tmp_path) -> None:
+    expected = {
+        "memory_lowering": [
+            "skills/triton-gluon/docs/20_component_traits.md",
+            "skills/triton-gluon/docs/50_api_reference.md",
+        ],
+        "matrix_lowering": [
+            "skills/triton-gluon/docs/20_component_traits.md",
+            "skills/triton-gluon/docs/30_architecture_notes.md",
+            "skills/triton-gluon/docs/50_api_reference.md",
+        ],
+    }
+    for profile, suffixes in expected.items():
+        task_path = tmp_path / f"{profile}.md"
+        write_task_file(
+            task_path,
+            {
+                "label": f"ext-{profile}",
+                "priority": 6,
+                "kernel_type": "triton",
+                "kernel_path": str(tmp_path / "kernel.py"),
+                "repo_root": str(tmp_path),
+                "input_dialect": "plain_triton",
+                "gluon_feature_mode": "auto",
+                "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+                "required_output_dialect": "amd_gluon",
+                "implementation_layer": "amd_gluon overlay",
+                "extension_layer": "L1",
+                "gluon_doc_profile": profile,
+            },
+            "Extension layer: L1\nImplementation layer: amd_gluon overlay\n",
+        )
+
+        task = task_file_to_agent_task(task_path)
+        paths = task.config["gluon_doc_gate_required_paths"]
+        for suffix in suffixes:
+            assert _has_doc(paths, suffix), f"{profile} missing {suffix}"
 
 
 def test_gluon_doc_gate_not_enabled_for_hip_task(tmp_path) -> None:

@@ -1,7 +1,22 @@
 # Triton-Gluon Architecture Notes
 
-Read this file when a task mentions target backend, architecture guards,
-Triton versions, JIT/AOT, MFMA, WMMA, descriptors, or prebuilt kernels.
+Worker-routed architecture doc. Read this file when a task mentions target
+backend, architecture guards, Triton versions, JIT/AOT, MFMA, WMMA, descriptors,
+or prebuilt kernels.
+
+## Profile Routing Hints
+
+- `nv_to_amd_translation`: check target family before carrying over NVIDIA
+  layout, async-copy, descriptor, or tensor-memory assumptions. Translation
+  should preserve semantics first, then optimize AMD-specific paths.
+- `matrix_lowering`: choose CDNA3 MFMA, CDNA4 scaled MFMA, or RDNA WMMA from
+  target evidence. Do not infer `instr_shape`, K width, or scale layout from
+  local block constants.
+- `jit_aot_sensitive`: treat Triton version, target triple, signature, scratch,
+  and prebuilt assets as execution contract. Preserve gates unless the same
+  benchmark boundary proves they are irrelevant.
+- `shape_bucketed_dispatch`: target family and layout version can change which
+  shape buckets are valid. Keep arch-sensitive dispatch visible to audit.
 
 ## Internal Index
 
