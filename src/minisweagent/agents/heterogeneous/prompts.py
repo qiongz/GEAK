@@ -375,8 +375,11 @@ these files to be viewed before saving or benchmarking.
 Optional Gluon metadata may be supplied when useful, and may also be inferred
 from task_prompt tags: `extension_intent`, `expected_outcome`,
 `not_viable_for_l1_if_slower_than_base`, `overhead_source_to_record`,
-`allowed_execution_path`, `scope_infeasible_policy`, `target_symbol`, and
-`target_component`. Do not add these fields to plain
+`minimum_executable_unit`, `allowed_execution_path`, `scope_infeasible_policy`,
+`whole_kernel_required_reason`, `target_symbol`, and `target_component`. For
+Round-1 L0 AMD Gluon overlays, the execution-boundary fields are mandatory; do
+not emit a required AMD Gluon task when the scoped path is infeasible. Do not add
+these fields to plain
 Triton tasks or to Gluon tasks where they would be noise.
 
 **Composition tags**: If Evidence-Anchored Composition is present, every

@@ -100,6 +100,11 @@ policy and task allocation live in `10_search_policies.md`.
   `idx_x` tensor.
 - If a broadcast expression cannot name one parent layout shared by both sliced
   axes, the patch scope is too large. Split the task before editing.
+- A local broadcast expression inside an otherwise plain Triton kernel is not by
+  itself an executable L0 Gluon overlay. Use it only when the task's
+  `minimum_executable_unit` names an inline scoped helper, a separate Gluon
+  kernel whose output feeds correctness, or an explicitly allowed
+  `whole_jit_kernel` anchor.
 
 ### Trait: layout_source_first_required
 

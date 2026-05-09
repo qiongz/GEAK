@@ -366,14 +366,17 @@ extension_intent: execution_anchor | performance_candidate
 expected_outcome: correctness_anchor_not_speedup | possible_speedup
 not_viable_for_l1_if_slower_than_base: true
 overhead_source_to_record: launch_layout_overhead | conversion_overhead | memory_path_overhead
-allowed_execution_path: inline_scoped_helper | separate_gluon_kernel | infeasible
-scope_infeasible_policy: shrink_or_report | separate_kernel_if_allowed | do_not_widen
+minimum_executable_unit: inline_scoped_helper | separate_gluon_kernel | whole_jit_kernel | infeasible
+allowed_execution_path: inline_scoped_helper | separate_gluon_kernel | whole_jit_kernel
+scope_infeasible_policy: do_not_emit | shrink_or_report | separate_kernel_if_allowed
+whole_kernel_required_reason: <required when a scoped component needs whole_jit_kernel>
 target_symbol: <symbol or helper>
 target_component: <scoped component description>
 ```
 
-These fields are optional and may be inferred from task prompt tags. Do not add
-them to plain Triton tasks or to Gluon tasks where they would be noise.
+The execution-boundary fields are mandatory for Round-1 L0 AMD Gluon overlays.
+Do not add them to plain Triton tasks or to Gluon tasks where they would be
+noise.
 
 ## round_progression
 
@@ -390,7 +393,17 @@ Round 1:
 - L0 execution path must be explicit: use `inline_scoped_helper` only when the
   language boundary permits the scoped change, `separate_gluon_kernel` only when
   second launch/temp buffer overhead is accepted as execution-anchor evidence,
-  and `infeasible` when the scoped change would require whole-kernel widening;
+  `whole_jit_kernel` only when the whole helper/kernel is the minimum executable
+  unit, and `infeasible` when the scoped change would require widening into
+  forbidden paths;
+- if `minimum_executable_unit=infeasible`, do not emit a
+  `required_output_dialect=amd_gluon` task. Keep the slot for Base/Shared or
+  emit a non-dispatched infeasibility report;
+- a local expression such as a scale epilogue is not an executable Gluon overlay
+  unless the task can name an inline scoped helper or a separate kernel whose
+  output feeds the measured correctness result. If the whole kernel is the
+  minimum executable unit, say so with `whole_kernel_required_reason` and do not
+  forbid whole-kernel rewrite in the same task;
 - make the first Gluon patch prove the smallest real executed Gluon path. Later
   patches in the same task should be single-variable experiments so round 2 can
   attribute which component helped or hurt;

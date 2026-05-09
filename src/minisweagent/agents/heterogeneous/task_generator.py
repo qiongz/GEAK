@@ -81,7 +81,11 @@ from minisweagent.run.preprocess.discovery_types import (
     feature_uses_gluon_guidance_from_meta,
 )
 from minisweagent.run.gluon_doc_profiles import add_unique_doc_key, required_doc_keys_for_profile
-from minisweagent.run.target_contracts import target_symbols_from_scoped_text
+from minisweagent.run.target_contracts import (
+    do_not_clauses,
+    forbidden_symbols_from_scoped_text,
+    target_symbols_from_scoped_text,
+)
 
 logger = logging.getLogger(__name__)
 _GEAK_REPO_ROOT = get_repo_root()
@@ -159,11 +163,13 @@ _OPTIONAL_GLUON_TASK_METADATA_FIELDS: tuple[tuple[str, str], ...] = (
     ("expected_outcome", "Expected outcome"),
     ("not_viable_for_l1_if_slower_than_base", "Not viable for L1 if slower than Base"),
     ("overhead_source_to_record", "Overhead source to record"),
+    ("minimum_executable_unit", "Minimum executable unit"),
     ("target_symbol", "Target symbol"),
     ("target_component", "Target component"),
     ("forbidden_change", "Forbidden change"),
     ("allowed_execution_path", "Allowed execution path"),
     ("scope_infeasible_policy", "Scope infeasible policy"),
+    ("whole_kernel_required_reason", "Whole kernel required reason"),
 )
 
 _VALID_SEARCH_SETS = {"base", "shared", "extension"}
@@ -1924,8 +1930,8 @@ def _build_search_space_allocation_guidance(
         "- L0 scope ladder is generic across kernels: prefer the smallest executable, attributable, low-coupling subpath (scalar/1D stage, one load/store, one index/mask layout smoke path). Consider matrix/MFMA subpaths only after an executed anchor or when the task explicitly proves the matrix subpath is the smallest viable component.",
         "- Required Gluon docs for priority: `00_always_read.md`, `10_search_policies.md` (`optimization_direction_dialect_overlay`, `overlay_priority_routing`), plus `20_component_traits.md` / `60_real_patterns.md` / `50_api_reference.md` only when their routed details apply.",
         "- AMD Gluon overlay prompts must include `Extension layer: L0|L1|Hybrid`, `Optimization direction:`, `Source Base family:`, `Plain competitor:`, `Gluon overlay reason:`, `Overlay priority: Prefer` or `Overlay priority: high-confidence Consider`, `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`. Do not write plain `Overlay priority: Consider` for Round-1 L0.",
-        "- Optional L0 metadata may be top-level fields or task body tags: `extension_intent: execution_anchor|performance_candidate`, `expected_outcome: correctness_anchor_not_speedup|possible_speedup`, `not_viable_for_l1_if_slower_than_base: true`, `overhead_source_to_record: ...`, `allowed_execution_path: inline_scoped_helper|separate_gluon_kernel|infeasible`, `scope_infeasible_policy: shrink_or_report|separate_kernel_if_allowed|do_not_widen`, `Target symbol:`, and `Target component:`. Do not add these fields to tasks that do not need them.",
-        "- L0 execution path must be exactly one of: `inline_scoped_helper` when the language boundary permits the scoped change; `separate_gluon_kernel` when the task explicitly allows a second launch/temp buffer and marks the task as an execution anchor; or `infeasible` when the scoped change would require widening into forbidden paths.",
+        "- Round-1 L0 metadata is mandatory for AMD Gluon overlays: `minimum_executable_unit: inline_scoped_helper|separate_gluon_kernel|whole_jit_kernel|infeasible`, `allowed_execution_path: inline_scoped_helper|separate_gluon_kernel|whole_jit_kernel`, and `scope_infeasible_policy: do_not_emit|shrink_or_report|separate_kernel_if_allowed`. Optional tags include `extension_intent: execution_anchor|performance_candidate`, `expected_outcome: correctness_anchor_not_speedup|possible_speedup`, `not_viable_for_l1_if_slower_than_base: true`, `overhead_source_to_record: ...`, `whole_kernel_required_reason: ...`, `Target symbol:`, and `Target component:`.",
+        "- L0 execution path must be exactly one of: `inline_scoped_helper` when the language boundary permits the scoped change; `separate_gluon_kernel` when the task explicitly allows a second launch/temp buffer and marks the task as an execution anchor; `whole_jit_kernel` only when the whole helper/kernel is the minimum executable unit and the task does not forbid whole-kernel rewrite; or `infeasible` as `minimum_executable_unit` only when no required Gluon task should be emitted.",
         "- Required Gluon worker contract: ask for `Gluon knowledge lookup plan`, `Gluon implementation plan`, `Performance hypothesis:`, `Same ABI comparison:`, and `Patch evolution:` before editing; stage/helper/local-expression scoped tasks must include `Target symbol:` or `Target component:` and wrap local target names in backticks inside `Allowed change`; reject non-executed Gluon, target-symbol mismatch, leftover plain Triton device APIs inside edited `@gluon.jit`, backup/temp files, and bundled unrelated changes without `bundle_allowed=true`. Keep API-level Gluon rewrite details in the routed skills/docs.",
         "- L0 overlay prompts must not ask the worker to convert an entire stage/helper/kernel just to prove Gluon. Scope L0 to one named subpath/component, such as a load/store, layout, mask, or matrix subpath; only use a whole helper as the target when the task explicitly explains why the helper is the smallest viable component.",
         "- Round-1 L0 overlays must bind to the same component and same optimization direction as `Plain competitor`, not merely to the same broad `Source Base family`. Use `Target component:` to make that binding auditable.",
@@ -2917,6 +2923,88 @@ def _has_valid_l0_overlay_priority(task: AgentTask) -> bool:
     return not _gluon_overlay_priority_errors(task)
 
 
+_VALID_MINIMUM_EXECUTABLE_UNITS = {"inline_scoped_helper", "separate_gluon_kernel", "whole_jit_kernel", "infeasible"}
+_VALID_L0_ALLOWED_EXECUTION_PATHS = {"inline_scoped_helper", "separate_gluon_kernel", "whole_jit_kernel"}
+_VALID_SCOPE_INFEASIBLE_POLICIES = {"do_not_emit", "shrink_or_report", "separate_kernel_if_allowed"}
+
+
+def _task_contract_value(task: AgentTask, key: str, field: str) -> str:
+    value = task.config.get(key)
+    if value in (None, ""):
+        value = _parse_prompt_field_value(task.task, field)
+    return str(value or "").strip().strip("`").lower()
+
+
+def _task_forbidden_symbols(task: AgentTask) -> list[str]:
+    symbols: list[str] = []
+    raw = task.config.get("forbidden_patch_target_symbols")
+    if isinstance(raw, str):
+        symbols.extend(part.strip().strip("`") for part in raw.split(","))
+    elif isinstance(raw, list):
+        symbols.extend(str(part).strip().strip("`") for part in raw)
+    for key in ("forbidden_change", "forbidden_changes"):
+        symbols.extend(forbidden_symbols_from_scoped_text(task.config.get(key)))
+    for field in ("Forbidden change", "Reject if"):
+        value = _parse_prompt_field_value(task.task, field)
+        if value:
+            symbols.extend(forbidden_symbols_from_scoped_text(value))
+    for value in do_not_clauses(task.task):
+        symbols.extend(forbidden_symbols_from_scoped_text(value))
+    unique: list[str] = []
+    for symbol in symbols:
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", symbol) and symbol not in unique:
+            unique.append(symbol)
+    return unique
+
+
+def _gluon_l0_execution_boundary_errors(task: AgentTask) -> list[str]:
+    if not _is_l0_gluon_overlay_task(task):
+        return []
+
+    minimum_unit = _task_contract_value(task, "minimum_executable_unit", "Minimum executable unit")
+    allowed_path = _task_contract_value(task, "allowed_execution_path", "Allowed execution path")
+    infeasible_policy = _task_contract_value(task, "scope_infeasible_policy", "Scope infeasible policy")
+    required_output = str(task.config.get("required_output_dialect") or "").strip().lower()
+    errors: list[str] = []
+
+    if not minimum_unit:
+        errors.append(f"{task.label} missing L0 execution-boundary field: Minimum executable unit")
+    elif minimum_unit not in _VALID_MINIMUM_EXECUTABLE_UNITS:
+        errors.append(f"{task.label} has invalid Minimum executable unit `{minimum_unit}`")
+
+    if not allowed_path:
+        errors.append(f"{task.label} missing L0 execution-boundary field: Allowed execution path")
+    elif allowed_path not in _VALID_L0_ALLOWED_EXECUTION_PATHS:
+        errors.append(f"{task.label} has invalid Allowed execution path `{allowed_path}`")
+
+    if infeasible_policy and infeasible_policy not in _VALID_SCOPE_INFEASIBLE_POLICIES:
+        errors.append(f"{task.label} has invalid Scope infeasible policy `{infeasible_policy}`")
+
+    if minimum_unit == "infeasible" and required_output == "amd_gluon":
+        errors.append(f"{task.label} cannot require AMD Gluon output when Minimum executable unit is infeasible")
+    if infeasible_policy == "do_not_emit" and required_output == "amd_gluon":
+        errors.append(f"{task.label} cannot be emitted as required AMD Gluon when Scope infeasible policy is do_not_emit")
+    if minimum_unit in _VALID_L0_ALLOWED_EXECUTION_PATHS and allowed_path and minimum_unit != allowed_path:
+        errors.append(
+            f"{task.label} Minimum executable unit `{minimum_unit}` must match Allowed execution path `{allowed_path}`"
+        )
+
+    forbidden_symbols = _task_forbidden_symbols(task)
+    if allowed_path == "whole_jit_kernel" and "whole_kernel_rewrite" in forbidden_symbols:
+        errors.append(f"{task.label} allows whole_jit_kernel but forbids whole-kernel rewrite")
+
+    target_component = str(task.config.get("target_component") or _parse_prompt_field_value(task.task, "Target component") or "").strip()
+    whole_reason = str(
+        task.config.get("whole_kernel_required_reason")
+        or _parse_prompt_field_value(task.task, "Whole kernel required reason")
+        or ""
+    ).strip()
+    if minimum_unit == "whole_jit_kernel" and target_component and not whole_reason:
+        errors.append(f"{task.label} uses whole_jit_kernel for a scoped Target component but lacks Whole kernel required reason")
+
+    return errors
+
+
 def _filter_low_priority_l0_overlays(tasks: list[AgentTask]) -> list[AgentTask]:
     filtered: list[AgentTask] = []
     for task in tasks:
@@ -3006,6 +3094,7 @@ def _audit_base_family_coverage(
     for task in extension_tasks:
         extension_errors.extend(_gluon_overlay_contract_errors(task))
         extension_errors.extend(_gluon_overlay_priority_errors(task))
+        extension_errors.extend(_gluon_l0_execution_boundary_errors(task))
         extension_errors.extend(_gluon_overlay_binding_errors(task, tasks))
         extension_errors.extend(_l1_anchor_contract_errors(task))
 

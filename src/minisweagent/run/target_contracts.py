@@ -43,7 +43,9 @@ def forbidden_symbols_from_scoped_text(value: str | None) -> list[str]:
     text = str(value or "").lower()
     symbols: list[str] = []
     if re.search(r"\b(?:whole|full|entire)\s+(?:kernel|stage|helper)\b", text):
-        symbols.append("whole_kernel_or_helper")
+        symbols.append("whole_kernel_rewrite")
+    if re.search(r"\bhelper[-\s]*only\b|\b(?:add|define|create)\s+(?:an?\s+)?(?:unused\s+)?(?:gluon\s+)?helper\b", text):
+        symbols.append("new_gluon_helper")
     if re.search(r"\b(?:main\s+)?dot\s+loop\b|\btl\.dot\b|\bmatrix\s+subpath\b", text):
         symbols.append("dot_loop")
     if re.search(r"\bmfma\b|\bdotoperandlayout\b|\bgl\.amd\.[a-z0-9_]+\.mfma\b", text):
@@ -65,3 +67,64 @@ def forbidden_symbols_from_scoped_text(value: str | None) -> list[str]:
 def do_not_clauses(value: str | None) -> list[str]:
     """Return standalone Do NOT clauses from a task body."""
     return [match.group(1).strip() for match in _DO_NOT_RE.finditer(str(value or ""))]
+
+
+def _added_lines(patch_text: str) -> list[str]:
+    return [line[1:].strip() for line in patch_text.splitlines() if line.startswith("+") and not line.startswith("+++")]
+
+
+def _patch_adds_gluon_jit(patch_text: str) -> bool:
+    return bool(re.search(r"(?m)^\+@gluon\.jit\b", patch_text.lower()))
+
+
+def _extract_added_gluon_jit_defs(patch_text: str) -> list[str]:
+    defs: list[str] = []
+    pending_gluon_jit = False
+    for line in _added_lines(patch_text):
+        if line.startswith("@gluon.jit"):
+            pending_gluon_jit = True
+            continue
+        match = re.match(r"def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", line)
+        if match:
+            if pending_gluon_jit:
+                defs.append(match.group(1))
+            pending_gluon_jit = False
+            continue
+        if line and not line.startswith("@"):
+            pending_gluon_jit = False
+    return defs
+
+
+def _patch_rewrites_whole_kernel_or_helper(patch_text: str) -> bool:
+    raw = patch_text.lower()
+    if "-@triton.jit" in raw and "+@gluon.jit" in raw:
+        return True
+    for name in _extract_added_gluon_jit_defs(patch_text):
+        lowered = name.lower()
+        if "gluon" not in lowered and not lowered.endswith(("_g", "_gl")):
+            return True
+    return False
+
+
+def patch_touches_forbidden_target_symbol(patch_text: str, forbidden_symbols: list[str]) -> str | None:
+    """Return the first coarse forbidden target scope touched by a patch."""
+    if not forbidden_symbols:
+        return None
+    added = "\n".join(_added_lines(patch_text)).lower()
+    checks = {
+        # Legacy metadata emitted before the split. Keep broad behavior only when
+        # a task explicitly carries the legacy symbol.
+        "whole_kernel_or_helper": lambda: _patch_adds_gluon_jit(patch_text),
+        "whole_kernel_rewrite": lambda: _patch_rewrites_whole_kernel_or_helper(patch_text),
+        "new_gluon_helper": lambda: _patch_adds_gluon_jit(patch_text),
+        "dot_loop": lambda: bool(re.search(r"\b(?:gl\.dot|gl\.dot_fma|mfma)\s*\(", added)),
+        "mfma_path": lambda: bool(re.search(r"\b(?:dotoperandlayout|amdmfmalayout|amdwmmalayout|mfma)\b", added)),
+        "ab_input_loads": lambda: bool(re.search(r"\b[ab]\s*=\s*gl\.load\s*\(\s*[ab]_ptrs\b", added)),
+        "buffer_ops": lambda: "buffer_load" in added or "buffer_store" in added,
+        "bias_load": lambda: bool(re.search(r"\bbias\s*=\s*gl\.load\b|\bbias_ptr", added)),
+    }
+    for symbol in forbidden_symbols:
+        check = checks.get(str(symbol).strip().lower())
+        if check and check():
+            return symbol
+    return None

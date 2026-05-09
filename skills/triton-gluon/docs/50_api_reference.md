@@ -8,7 +8,10 @@ expands the concise rules in `20_component_traits.md`.
 
 - `extension_l0_minimal`: read `imports`, `jit_entry_and_host_launcher`,
   `core_language_and_layout_surface`, and `common_rewrite_table`. Keep the first
-  patch small enough to prove real execution.
+  patch small enough to prove real execution. If the task declares
+  `minimum_executable_unit=whole_jit_kernel`, keep the rewrite mechanical and do
+  not add MFMA, buffer ops, split-K, persistent scheduling, or shape dispatch
+  unless the task explicitly allows those L1 mechanisms.
 - `memory_lowering`: read `common_rewrite_table` and AMD buffer sections only
   after the task names loaded dtype, `other` value/layout, store dtype, and why
   the memory path is hot.

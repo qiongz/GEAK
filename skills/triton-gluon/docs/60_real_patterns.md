@@ -263,6 +263,10 @@ execution path policy:
   measured path without changing forbidden code.
 - `separate_gluon_kernel`: only when the task accepts second-launch/temp-buffer
   overhead and marks the result as an execution anchor.
+- `whole_jit_kernel`: only when the task explicitly states that the whole
+  helper/kernel is the minimum executable unit. Keep this as a mechanical anchor
+  unless the task separately allows matrix, buffer, scheduler, or dispatch
+  lowering.
 - `infeasible`: report the scope as infeasible and keep the next search width on
   Base/Shared or a separately named full-kernel performance candidate.
 

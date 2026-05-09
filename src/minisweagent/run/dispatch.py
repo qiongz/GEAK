@@ -370,11 +370,13 @@ def _task_feature_metadata(meta: dict[str, Any], task_body: str = "") -> dict[st
         "expected_outcome",
         "not_viable_for_l1_if_slower_than_base",
         "overhead_source_to_record",
+        "minimum_executable_unit",
         "target_symbol",
         "target_component",
         "forbidden_change",
         "allowed_execution_path",
         "scope_infeasible_policy",
+        "whole_kernel_required_reason",
     ):
         if key in meta and meta.get(key) not in (None, ""):
             feature_meta[key] = meta.get(key)

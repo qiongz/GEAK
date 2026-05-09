@@ -118,9 +118,15 @@ def scan_single_round_results(results_dir: Path) -> list[str]:
                             else ""
                         )
                     )
-                if br.get("allowed_execution_path") or br.get("scope_infeasible_policy") or br.get("scope_infeasible_reported") is not None:
+                if (
+                    br.get("minimum_executable_unit")
+                    or br.get("allowed_execution_path")
+                    or br.get("scope_infeasible_policy")
+                    or br.get("scope_infeasible_reported") is not None
+                ):
                     section.append(
                         "- Scope execution path: "
+                        f"minimum_executable_unit={br.get('minimum_executable_unit') or 'unknown'}, "
                         f"allowed_execution_path={br.get('allowed_execution_path') or 'unknown'}"
                         + (
                             f", scope_infeasible_policy={br.get('scope_infeasible_policy')}"

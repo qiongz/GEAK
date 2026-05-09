@@ -153,7 +153,7 @@ def test_infer_forbidden_patch_target_symbols_from_reject_if_and_do_not() -> Non
     assert _infer_forbidden_patch_target_symbols(body, {}) == [
         "dot_loop",
         "ab_input_loads",
-        "whole_kernel_or_helper",
+        "whole_kernel_rewrite",
     ]
 
 
@@ -171,7 +171,27 @@ def test_patch_touches_forbidden_dot_loop_and_input_loads() -> None:
 
     assert _patch_touches_forbidden_target_symbol(patch, ["dot_loop"]) == "dot_loop"
     assert _patch_touches_forbidden_target_symbol(patch, ["ab_input_loads"]) == "ab_input_loads"
-    assert _patch_touches_forbidden_target_symbol(patch, ["whole_kernel_or_helper"]) == "whole_kernel_or_helper"
+    assert _patch_touches_forbidden_target_symbol(patch, ["whole_kernel_rewrite"]) == "whole_kernel_rewrite"
+
+
+def test_forbidden_whole_kernel_does_not_reject_scoped_helper() -> None:
+    patch = "\n".join(
+        [
+            "diff --git a/kernel.py b/kernel.py",
+            "+@gluon.jit",
+            "+def scale_epilogue_gluon(x):",
+            "+    return x",
+        ]
+    )
+
+    assert _patch_touches_forbidden_target_symbol(patch, ["whole_kernel_rewrite"]) is None
+    assert _patch_touches_forbidden_target_symbol(patch, ["new_gluon_helper"]) == "new_gluon_helper"
+
+
+def test_infer_forbidden_new_helper_only_scope() -> None:
+    body = "Reject if: helper-only path is added next to an unchanged plain Triton path."
+
+    assert _infer_forbidden_patch_target_symbols(body, {}) == ["new_gluon_helper"]
 
 
 def test_required_amd_gluon_static_contract_rejects_generic_gluon_dot() -> None:
@@ -568,9 +588,11 @@ def test_compute_best_patch_marks_slower_execution_anchor_not_viable_for_l1(tmp_
             "expected_outcome": "correctness_anchor_not_speedup",
             "not_viable_for_l1_if_slower_than_base": True,
             "overhead_source_to_record": "launch_layout_overhead",
+            "minimum_executable_unit": "separate_gluon_kernel",
             "target_component": "one 1D subpath",
             "allowed_execution_path": "separate_gluon_kernel",
             "scope_infeasible_policy": "separate_kernel_if_allowed",
+            "whole_kernel_required_reason": "not needed for separate kernel",
         },
         "Extension L0\nTarget component: one 1D subpath\n",
     )
@@ -586,6 +608,7 @@ def test_compute_best_patch_marks_slower_execution_anchor_not_viable_for_l1(tmp_
     assert result["extension_intent"] == "execution_anchor"
     assert result["expected_outcome"] == "correctness_anchor_not_speedup"
     assert result["target_component"] == "one 1D subpath"
+    assert result["minimum_executable_unit"] == "separate_gluon_kernel"
     assert result["allowed_execution_path"] == "separate_gluon_kernel"
     assert result["scope_infeasible_policy"] == "separate_kernel_if_allowed"
     assert result["scope_infeasible_reported"] is False
@@ -771,9 +794,11 @@ def test_preprocess_and_postprocess_preserve_gluon_anchor_metadata(tmp_path: Pat
             "expected_outcome": "correctness_anchor_not_speedup",
             "not_viable_for_l1_if_slower_than_base": True,
             "overhead_source_to_record": "launch_layout_overhead",
+            "minimum_executable_unit": "separate_gluon_kernel",
             "target_component": "one 1D subpath",
             "allowed_execution_path": "separate_gluon_kernel",
             "scope_infeasible_policy": "separate_kernel_if_allowed",
+            "whole_kernel_required_reason": "not needed for separate kernel",
         },
         "Extension L0\nTarget component: one 1D subpath\n",
     )
@@ -793,8 +818,10 @@ def test_preprocess_and_postprocess_preserve_gluon_anchor_metadata(tmp_path: Pat
         assert result["extension_intent"] == "execution_anchor"
         assert result["expected_outcome"] == "correctness_anchor_not_speedup"
         assert result["target_component"] == "one 1D subpath"
+        assert result["minimum_executable_unit"] == "separate_gluon_kernel"
         assert result["allowed_execution_path"] == "separate_gluon_kernel"
         assert result["scope_infeasible_policy"] == "separate_kernel_if_allowed"
+        assert result["whole_kernel_required_reason"] == "not needed for separate kernel"
         assert result["gluon_execution_contract_satisfied"] is True
         assert result["gluon_l1_anchor_viability"] == "viable_for_l1"
 

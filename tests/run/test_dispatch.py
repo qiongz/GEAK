@@ -259,10 +259,12 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
             "extension_intent": "execution_anchor",
             "expected_outcome": "correctness_anchor_not_speedup",
             "overhead_source_to_record": "launch_layout_overhead",
+            "minimum_executable_unit": "separate_gluon_kernel",
             "target_symbol": "target_stage",
             "target_component": "one memory subpath",
             "allowed_execution_path": "separate_gluon_kernel",
             "scope_infeasible_policy": "separate_kernel_if_allowed",
+            "whole_kernel_required_reason": "not needed for separate kernel",
         },
         "Extension task using AMD Gluon.",
     )
@@ -281,11 +283,14 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
     assert "Task extension_intent: execution_anchor" in task.task
     assert "Task expected_outcome: correctness_anchor_not_speedup" in task.task
     assert "Task overhead_source_to_record: launch_layout_overhead" in task.task
+    assert "Task minimum_executable_unit: separate_gluon_kernel" in task.task
     assert "Task target_symbol: target_stage" in task.task
     assert "Task target_component: one memory subpath" in task.task
     assert "Task allowed_execution_path: separate_gluon_kernel" in task.task
     assert "Task scope_infeasible_policy: separate_kernel_if_allowed" in task.task
+    assert "Task whole_kernel_required_reason: not needed for separate kernel" in task.task
     assert "Extension intent: `execution_anchor`" in task.task
+    assert "Minimum executable unit: `separate_gluon_kernel`" in task.task
     assert "Allowed execution path: `separate_gluon_kernel`" in task.task
     assert "Scope infeasible policy: `separate_kernel_if_allowed`" in task.task
 
@@ -387,7 +392,7 @@ def test_worker_context_infers_forbidden_scope_from_reject_if(tmp_path) -> None:
     assert task.config["forbidden_patch_target_symbols"] == [
         "dot_loop",
         "ab_input_loads",
-        "whole_kernel_or_helper",
+        "whole_kernel_rewrite",
     ]
 
 
@@ -900,7 +905,7 @@ def test_save_and_test_rejects_forbidden_dot_loop_scope(tmp_path) -> None:
             patch_output_dir=None,
             required_output_dialect="amd_gluon",
             required_patch_target_symbols=["scale_a", "scale_b"],
-            forbidden_patch_target_symbols=["dot_loop", "ab_input_loads", "whole_kernel_or_helper"],
+            forbidden_patch_target_symbols=["dot_loop", "ab_input_loads", "whole_kernel_rewrite"],
         )
     )
 
