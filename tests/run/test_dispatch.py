@@ -1027,8 +1027,9 @@ def test_save_and_test_rejects_helper_without_execution_with_wiring_hint(tmp_pat
     result = tool(description="helper not executed")
 
     assert result["returncode"] == 1
-    assert "helper wiring, launch, or measured-output feeding" in result["output"]
-    assert "do not widen the target scope" in result["output"]
+    assert "NEXT_PATCH_SCOPE=wiring_only" in result["output"]
+    assert "target association" in result["output"]
+    assert "do not edit layout factories" in result["output"]
 
 
 def test_save_and_test_allows_required_gluon_generic_dot_without_matrix_contract(tmp_path) -> None:

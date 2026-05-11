@@ -94,6 +94,9 @@ CDNA3 / `gfx942` quick direction:
 - Use MFMA only for a real matrix hot path. `tl.dot` lowering still requires
   result layout, operand layouts, `convert_layout`, target op, and epilogue
   planning.
+- For `AMDMFMALayout`, choose `elem_type` from the accumulator/result layout
+  types accepted by the local verifier. Do not reuse fp16/bf16 input operand
+  dtype as the MFMA result layout element type.
 - Treat MI300X-style CU count and HBM bandwidth as parallelism/bandwidth
   context, not as a universal partition formula.
 

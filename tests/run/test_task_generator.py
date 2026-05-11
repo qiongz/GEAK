@@ -984,6 +984,82 @@ def test_l0_soft_audit_diagnostics_cover_atomic_component_scope() -> None:
     assert "component_bundle_too_broad" in summary["soft_audit_diagnostics"]
 
 
+def test_required_gluon_high_risk_soft_diagnostics_fail_before_dispatch() -> None:
+    payload = json.dumps(
+        [
+            {
+                "label": "base-paged-load",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "plain_triton",
+                "task_prompt": "\n".join(
+                    [
+                        "Base Set task",
+                        "Base family: base_hot_path_streamline",
+                        "Optimization direction: reduce paged load traffic",
+                        "Target component: K/V load path",
+                        "Allowed change: optimize `K/V load path` in plain Triton.",
+                    ]
+                ),
+            },
+            {
+                "label": "gluon-paged-load",
+                "priority": 8,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "amd_gluon",
+                "implementation_layer": "amd_gluon overlay",
+                "extension_layer": "L0",
+                "source_base_family": "base_hot_path_streamline",
+                "plain_competitor": "base-paged-load",
+                "minimum_executable_unit": "whole_jit_kernel",
+                "allowed_execution_path": "whole_jit_kernel",
+                "scope_infeasible_policy": "shrink_or_report",
+                "whole_kernel_required_reason": "paged load path is coupled to tl.dot, online softmax, mask broadcast, and wrapper integration",
+                "task_signals": "index_map, load_store, layout_broadcast, matrix_operand, reduction_accumulator",
+                "failure_layers": "layout_construction",
+                "expected_failure_layers": "layout_construction",
+                "kernel_family_signal": "attention_decode",
+                "task_prompt": "\n".join(
+                    [
+                        "Extension task",
+                        "Extension layer: L0",
+                        "Optimization direction: reduce paged load traffic",
+                        "Source Base family: base_hot_path_streamline",
+                        "Plain competitor: base-paged-load",
+                        "Gluon overlay reason: explicit_layout",
+                        "Overlay priority: high-confidence Consider",
+                        "Implementation layer: amd_gluon overlay",
+                        "Performance hypothesis: explicit layout may help paged load coalescing",
+                        "Measurement boundary: kernel_only",
+                        "Comparison target: true_baseline",
+                        "Target component: K/V load path",
+                        "Allowed change: optimize K/V load path only",
+                        "Reject if: correctness fails",
+                        "L0 scope classification: high_coupling",
+                        "L0 coupling reasons: paged attention load path touches tl.dot, online softmax, mask broadcast, and wrapper integration",
+                        "Minimum executable unit: whole_jit_kernel",
+                        "Allowed execution path: whole_jit_kernel",
+                        "Scope infeasible policy: shrink_or_report",
+                        "Whole kernel required reason: paged load path is coupled to tl.dot, online softmax, mask broadcast, and wrapper integration",
+                        "Task signals: index_map, load_store, layout_broadcast, matrix_operand, reduction_accumulator",
+                        "Failure layers: layout_construction",
+                        "Expected failure layers: layout_construction",
+                        "Kernel family signal: attention_decode",
+                        "Matrix lowering required: false",
+                        "Do not optimize before compile: true",
+                        "First patch compile goal: true",
+                    ]
+                ),
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="high-risk Gluon L0 diagnostics require repair before dispatch"):
+        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+
+
 def test_audit_rejects_l0_overlay_without_same_batch_plain_competitor() -> None:
     payload = json.dumps(
         [

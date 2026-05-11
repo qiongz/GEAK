@@ -276,6 +276,42 @@ def test_required_amd_gluon_static_contract_rejects_plain_exception_fallback() -
     assert "plain Triton launcher" in (_required_amd_gluon_static_contract_error(patch, "amd_gluon") or "")
 
 
+def test_required_gluon_static_contract_rejects_public_api_removal() -> None:
+    patch = "\n".join(
+        [
+            "diff --git a/kernel.py b/kernel.py",
+            "-def decode_attention_fwd_grouped_rope(q, k):",
+            "-    return _plain(q, k)",
+            "+def decode_grouped_att_fwd_rope(q, k):",
+            "+    return _gluon(q, k)",
+        ]
+    )
+
+    error = _required_amd_gluon_static_contract_error(patch, "amd_gluon")
+
+    assert error is not None
+    assert "preserve public API wrappers" in error
+    assert "decode_attention_fwd_grouped_rope" in error
+
+
+def test_required_gluon_static_contract_rejects_bad_mfma_result_elem_type() -> None:
+    patch = "\n".join(
+        [
+            "diff --git a/kernel.py b/kernel.py",
+            "+from triton.experimental.gluon import language as gl",
+            "+def _make_layout(dtype):",
+            "+    elem_type = gl.float16",
+            "+    return gl.amd.AMDMFMALayout(version=3, instr_shape=[16, 16], elem_type=elem_type)",
+        ]
+    )
+
+    error = _required_amd_gluon_static_contract_error(patch, "amd_gluon")
+
+    assert error is not None
+    assert "AMDMFMALayout result elem_type" in error
+    assert "fp16/bf16" in error
+
+
 def test_classify_patch_output_dialect_ignores_context_lines() -> None:
     patch = "\n".join(
         [
