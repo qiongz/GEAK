@@ -3202,11 +3202,16 @@ def _gluon_l0_soft_diagnostics(task: AgentTask) -> list[str]:
     """
     if not _is_l0_gluon_overlay_task(task):
         return []
+    task_body_without_rejects = "\n".join(
+        line
+        for line in (task.task or "").splitlines()
+        if not line.strip().lower().startswith(("reject if", "matrix lowering required"))
+    )
     text = "\n".join(
         str(part or "")
         for part in (
             task.label,
-            task.task,
+            task_body_without_rejects,
             task.config.get("task_signals"),
             task.config.get("failure_layers"),
             task.config.get("expected_failure_layers"),
@@ -3217,6 +3222,7 @@ def _gluon_l0_soft_diagnostics(task: AgentTask) -> list[str]:
     ).lower()
     minimum_unit = _task_contract_value(task, "minimum_executable_unit", "Minimum executable unit")
     target_component = _task_contract_raw_value(task, "target_component", "Target component").lower()
+    whole_reason = _task_contract_raw_value(task, "whole_kernel_required_reason", "Whole kernel required reason").lower()
     failure_text = " ".join(
         str(part or "")
         for part in (
@@ -3233,9 +3239,22 @@ def _gluon_l0_soft_diagnostics(task: AgentTask) -> list[str]:
     local_markers = ("load", "store", "index", "mask", "path", "offset", "pointer")
     broad_markers = ("whole", "helper", "kernel", "stage")
     if minimum_unit == "whole_jit_kernel" and any(marker in target_component for marker in local_markers):
-        if not any(marker in target_component for marker in broad_markers):
+        high_coupling_markers = {
+            "matrix": ("matrix", "dot", "mfma", "wmma"),
+            "reduction": ("reduction", "softmax", "accumulator", "sum", "max"),
+            "wrapper": ("wrapper", "dispatch", "public api", "import path"),
+            "layout": ("broadcast", "slice", "mask", "layout", "rope"),
+        }
+        missing_layers = [
+            layer
+            for layer, markers in high_coupling_markers.items()
+            if any(marker in text or marker in whole_reason for marker in markers) and layer not in failure_text
+        ]
+        if not whole_reason or missing_layers:
             diagnostics.append("local_target_promoted_to_whole_kernel")
-        elif not all(layer in failure_text for layer in ("layout", "matrix")):
+        elif any(marker in target_component for marker in broad_markers) and not all(
+            layer in failure_text for layer in ("layout", "matrix")
+        ):
             diagnostics.append("local_target_promoted_to_whole_kernel")
 
     if any(marker in text for marker in ("matrix", "dot", "mfma", "wmma")) and not matrix_required:
@@ -3283,6 +3302,34 @@ def _gluon_l0_soft_diagnostics(task: AgentTask) -> list[str]:
         if diagnostic not in unique:
             unique.append(diagnostic)
     return unique
+
+
+_REQUIRED_GLUON_REPAIR_DIAGNOSTICS = {
+    "local_target_promoted_to_whole_kernel",
+    "matrix_metadata_inconsistent",
+    "component_bundle_too_broad",
+    "unknown_family_whole_kernel",
+}
+
+
+def _required_gluon_soft_diagnostic_errors(task: AgentTask) -> list[str]:
+    """Return repair-before-dispatch errors for required Gluon L0 plans."""
+    if not _is_l0_gluon_overlay_task(task):
+        return []
+    required_output = str(task.config.get("required_output_dialect") or "").strip().lower()
+    if required_output != "amd_gluon":
+        return []
+    diagnostics = [
+        diagnostic
+        for diagnostic in _gluon_l0_soft_diagnostics(task)
+        if diagnostic in _REQUIRED_GLUON_REPAIR_DIAGNOSTICS
+    ]
+    if not diagnostics:
+        return []
+    return [
+        f"{task.label} high-risk Gluon L0 diagnostics require repair before dispatch: "
+        + ", ".join(diagnostics)
+    ]
 
 
 def _gluon_l0_execution_boundary_errors(task: AgentTask) -> list[str]:
@@ -3516,6 +3563,7 @@ def _audit_base_family_coverage(
         extension_errors.extend(_gluon_l0_execution_boundary_errors(task))
         extension_errors.extend(_gluon_overlay_binding_errors(task, tasks))
         extension_errors.extend(_l1_anchor_contract_errors(task))
+        extension_errors.extend(_required_gluon_soft_diagnostic_errors(task))
 
     errors = []
     if missing:

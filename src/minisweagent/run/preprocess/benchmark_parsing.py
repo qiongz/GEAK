@@ -30,6 +30,7 @@ from minisweagent.run.target_contracts import (
 from minisweagent.run.postprocess.benchmark_parsing import (
     _gluon_evidence_summary,
     _legacy_classify_patch_output_dialect,
+    _required_amd_gluon_static_contract_error as _postprocess_required_amd_gluon_static_contract_error,
     _scope_escalation_violation,
     classify_gluon_api_contract,
     classify_layout_contract,
@@ -651,13 +652,11 @@ def _required_amd_gluon_static_contract_error(
     required_output_dialect: str,
     task_meta: dict[str, Any] | None = None,
 ) -> str | None:
-    if str(required_output_dialect or "").strip().lower() != "amd_gluon":
-        return None
-    if _has_added_plain_exception_fallback(patch_text):
-        return "required AMD Gluon patches must not add broad exception fallback to a plain Triton launcher"
-    if _task_requires_matrix_lowering_contract(task_meta) and _has_added_generic_gluon_dot(patch_text):
-        return "required AMD Gluon patches must not use generic gl.dot as a mechanical dot rewrite"
-    return None
+    return _postprocess_required_amd_gluon_static_contract_error(
+        patch_text,
+        required_output_dialect,
+        task_meta,
+    )
 
 
 def _extract_added_gluon_jit_defs(patch_text: str) -> list[str]:

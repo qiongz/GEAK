@@ -292,6 +292,9 @@ Hard rules:
 - If the task names `Target symbol`, `Target component`, scoped names in
   `Allowed change`, or `required_patch_target_symbols`, success requires touching
   and executing that exact target path.
+- Preserve public API/import contracts. Do not rename, delete, or replace the
+  exported wrapper that the harness imports. Add an internal Gluon helper or
+  guarded dispatch inside the existing public function instead.
 - Do not create backup or temporary files (`*.bak`, `*.backup`, `*.orig`,
   `*.tmp`, editor swap files).
 - L0 is the smallest executed Gluon anchor and may be slower than Base. L1
@@ -309,6 +312,10 @@ Hard rules:
 - Patch evolution after failure is constrained: helper-not-executed fixes only
   wiring/launch/output feeding; forbidden-scope failures must revert forbidden
   changes; slow correctness passes may only change one named overhead source.
+- If `save_and_test` reports helper-only / not-executed Gluon, the next patch is
+  wiring-only: launch the existing helper from the target path or feed its output
+  into measured correctness. Do not continue editing layout, matrix, memory, or
+  wrapper ABI until that execution contract is satisfied.
 
 ## semantic_contract
 

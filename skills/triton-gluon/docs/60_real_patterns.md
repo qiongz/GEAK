@@ -317,6 +317,10 @@ Patch evolution model:
 - After helper-not-executed, fix only wiring/launch/output feeding. After a
   forbidden-scope failure, revert the forbidden change before any other edit.
   After a slow correctness pass, change only one named overhead source.
+- Helper-only failure is not a layout or matrix failure. The next patch should
+  only connect the already-written Gluon helper to the declared target path and
+  measured output. Do not add new layout factories, MFMA paths, or wrapper API
+  changes while the helper is still unexecuted.
 - If a patch bundles unrelated changes, later rounds cannot tell whether Gluon
   helped or was masked by another regression.
 - Quick directions and checked-in examples are starting points for `patch_0` or
@@ -402,6 +406,18 @@ Whole-kernel L0 comparison anchor:
   buffer ops stay in `Gluon overlay reason`, `Performance hypothesis`, and
   `Allowed change`. They should explain how the Gluon implementation tests the
   same goal, not create a separate optimization direction.
+
+Public API freeze:
+
+- The harness-visible wrapper is part of the benchmark contract. Keep exported
+  function names, module import paths, wrapper arguments, and return behavior
+  stable.
+- If a Gluon path needs host dispatch, add the dispatch inside the existing
+  wrapper or behind an internal helper. Do not rename `decode_*`, `matmul_*`,
+  `softmax_*`, or other public entrypoints that tests import.
+- A patch that cannot wire Gluon without changing the public API should report
+  the integration boundary and request a separate task, not mutate the harness
+  contract.
 
 ## broadcast_heavy_whole_kernel_l0
 

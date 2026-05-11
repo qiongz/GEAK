@@ -720,6 +720,45 @@ def _task_requires_matrix_lowering_contract(task_meta: dict[str, Any] | None = N
     )
 
 
+def _removed_public_def_names(patch_text: str) -> list[str]:
+    names: list[str] = []
+    for raw_line in patch_text.splitlines():
+        if not raw_line.startswith("-") or raw_line.startswith("---"):
+            continue
+        line = raw_line[1:].strip()
+        match = re.match(r"def\s+([A-Za-z][A-Za-z0-9_]*)\s*\(", line)
+        if match and not match.group(1).startswith("_") and match.group(1) not in names:
+            names.append(match.group(1))
+    return names
+
+
+def _added_public_def_names(patch_text: str) -> set[str]:
+    names: set[str] = set()
+    for line in _added_lines(patch_text):
+        match = re.match(r"def\s+([A-Za-z][A-Za-z0-9_]*)\s*\(", line)
+        if match and not match.group(1).startswith("_"):
+            names.add(match.group(1))
+    return names
+
+
+def _has_public_api_removal(patch_text: str) -> list[str]:
+    added = _added_public_def_names(patch_text)
+    return [name for name in _removed_public_def_names(patch_text) if name not in added]
+
+
+def _has_unsupported_mfma_result_elem_type(patch_text: str) -> bool:
+    if "AMDMFMALayout" not in patch_text:
+        return False
+    added_text = "\n".join(_added_lines(patch_text))
+    if re.search(r"elem_type\s*=\s*gl\.(?:float16|bfloat16|float8|float8e5|float8e4nv)", added_text):
+        return True
+    assigned_bad_elem_type = re.search(
+        r"\belem_type\s*=\s*gl\.(?:float16|bfloat16|float8|float8e5|float8e4nv)\b",
+        added_text,
+    )
+    return bool(assigned_bad_elem_type and re.search(r"elem_type\s*=\s*elem_type\b", added_text))
+
+
 def _required_amd_gluon_static_contract_error(
     patch_text: str,
     required_output_dialect: str,
@@ -731,6 +770,18 @@ def _required_amd_gluon_static_contract_error(
         return "required AMD Gluon patches must not add broad exception fallback to a plain Triton launcher"
     if _task_requires_matrix_lowering_contract(task_meta) and _has_added_generic_gluon_dot(patch_text):
         return "required AMD Gluon patches must not use generic gl.dot as a mechanical dot rewrite"
+    removed_public_defs = _has_public_api_removal(patch_text)
+    if removed_public_defs:
+        return (
+            "required AMD Gluon patches must preserve public API wrappers; removed or renamed exported "
+            + "function(s): "
+            + ", ".join(removed_public_defs)
+        )
+    if _has_unsupported_mfma_result_elem_type(patch_text):
+        return (
+            "AMDMFMALayout result elem_type must use a verifier-supported accumulator/result type "
+            "(for example float32/float64/int32), not fp16/bf16 input operand dtype"
+        )
     return None
 
 

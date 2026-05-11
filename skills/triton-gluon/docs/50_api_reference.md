@@ -381,6 +381,17 @@ Minimal order:
 3. Create operand layouts with `DotOperandLayout` from the result layout.
 4. Convert A/B operands into their operand layouts with `convert_layout`.
 5. Create the accumulator in the result layout.
+
+MFMA layout dtype note:
+
+- `AMDMFMALayout.elem_type` describes the MFMA result/accumulator layout type
+  accepted by the installed Gluon verifier. Do not pass the input operand dtype
+  such as fp16 or bf16 as the result-layout `elem_type`.
+- Use the routed architecture docs and local Triton version to choose an
+  accepted result type such as fp32/fp64/int32 when constructing result layouts.
+  Keep fp16/bf16 on operand tensors and operand layouts.
+  A verifier error like `element type must be float32, float64, or int32` means
+  the result layout was built from the wrong dtype family.
 6. Call the target-specific matrix op.
 7. Convert or cast epilogue/store values only after matrix correctness is clear.
 
