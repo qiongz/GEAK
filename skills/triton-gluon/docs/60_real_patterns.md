@@ -228,8 +228,11 @@ Layout-heavy signals include:
 - `[:, None]` / `[None, :]` broadcasts;
 - masks built from multiple axes;
 - reductions such as `sum`, `max`, softmax, or online softmax;
-- more than one matrix path (`QK` and `PV`, for example);
-- RoPE, preshuffle, descriptor, or nested layout transformations.
+- more than one matrix path or dataflow branch in the same stage;
+- positional transforms, preshuffle/unshuffle transforms, descriptor paths, or
+  nested layout transformations;
+- boundary-specific transform branches such as "last block", "last token",
+  "tail tile", "split boundary", or other special-case data paths.
 
 Prefer one of these L0 scopes:
 
@@ -241,16 +244,19 @@ Prefer one of these L0 scopes:
 
 Anti-example pattern:
 
-- A decode-attention stage containing RoPE, last-token replacement, multiple QK
-  or PV dot paths, online softmax, split-boundary logic, and K/V indirection is
-  not a good Round-1 full-stage L0 target. Prefer a smaller reduction, one
-  isolated load/store, or one index/mask layout probe that executes and feeds the
+- A stage that combines a positional transform, boundary-specific replacement,
+  multiple matrix/dataflow paths, online reduction, split-boundary logic, and
+  indirect memory access is not a good Round-1 full-stage L0 target.
+- Prefer a smaller scoped path: one reduction, one load/store path, one
+  index/mask layout probe, or one transform branch that executes and feeds the
   measured output.
 
 For the chosen L0 scope, fully convert that subpath to Gluon. Do not leave a
-plain Triton island such as `tl.arange(0, BLOCK_R)` in a RoPE or mask branch
-inside `@gluon.jit`; if a branch is too hard to convert, it is outside the L0
-scope and should remain outside the patch.
+plain Triton island inside the edited `@gluon.jit` branch. For example, if the
+selected path is one transform or mask branch, its index creation, masks,
+loads/stores, tensor creation, and reductions must all be layout-aware Gluon.
+If a branch is too hard to convert completely, it is outside the L0 scope and
+should remain outside the patch.
 
 Treat L0 as an execution and layout anchor, not a performance promise. A useful
 L0 patch proves that the selected Gluon path really runs, preserves correctness,

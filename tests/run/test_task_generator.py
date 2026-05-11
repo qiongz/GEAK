@@ -577,6 +577,7 @@ def test_audit_failure_writes_raw_and_parsed_task_diagnostics(tmp_path: Path) ->
     data = json.loads(dumps[0].read_text())
     assert "gluon-l0-load-store-layout" in data["raw_submitted_json"]
     assert "Plain competitor `shared-paired-1d-acc-and-mask` is not a plain Triton competitor task" in data["error"]
+    assert any("required_output_dialect=plain_triton" in hint for hint in data["repair_hints"])
     summaries = {item["label"]: item for item in data["parsed_task_summaries"]}
     assert summaries["gluon-l0-load-store-layout"]["plain_competitor"] == "shared-paired-1d-acc-and-mask"
     assert summaries["gluon-l0-load-store-layout"]["minimum_executable_unit"] == ""
@@ -753,6 +754,57 @@ def test_audit_rejects_l0_overlay_when_optimization_direction_differs_from_plain
 
     with pytest.raises(ValueError, match="Optimization direction"):
         _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+
+
+def test_audit_failure_hint_suggests_same_direction_plain_competitor(tmp_path: Path) -> None:
+    prompt = _gluon_overlay_prompt(
+        plain_competitor="precompute-rope-outside-loop",
+        target_component="_fwd_kernel_stage2",
+    ).replace(
+        "Optimization direction: memory/layout cleanup",
+        "Optimization direction: Explicit layout control for stage2 reduction kernel memory access",
+    )
+    payload = json.dumps(
+        [
+            {
+                "label": "precompute-rope-outside-loop",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "\n".join(
+                    [
+                        "Base Set task",
+                        "Base family: base_hot_path_streamline",
+                        "Optimization direction: Restructure RoPE application and inner loop to minimize conditional branches and redundant work",
+                        "Target component: rope_inner_loop",
+                        "Allowed change: simplify `rope_inner_loop` in plain Triton.",
+                    ]
+                ),
+            },
+            {
+                "label": "gluon-l0-stage2-layout-overlay",
+                "priority": 8,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": prompt,
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Optimization direction"):
+        _parse_llm_response(
+            payload,
+            FakeAgentClass,
+            expected_extension_slots=1,
+            audit_diagnostics_dir=tmp_path,
+        )
+
+    data = json.loads(next(tmp_path.glob("task_generation_audit_failed_*.json")).read_text())
+    hint = "\n".join(data["repair_hints"])
+    assert "same-batch plain Triton Base competitor" in hint
+    assert "Explicit layout control for stage2 reduction kernel memory access" in hint
+    assert "_fwd_kernel_stage2" in hint
+    assert "precompute-rope-outside-loop" in hint
 
 
 def test_audit_rejects_l0_overlay_without_same_batch_plain_competitor() -> None:

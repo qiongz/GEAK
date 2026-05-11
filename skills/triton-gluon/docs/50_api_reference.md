@@ -261,10 +261,12 @@ Planning implications:
 | tensor descriptor helpers | target-specific descriptor family | Only when the target family actually supports descriptors or tensor memory |
 | implicit shared-memory staging | `allocate_shared_memory` after the first correct candidate | Only after blocked-layout or matrix path is correct |
 
-The table is per planned subpath, not per token. If L0 chooses one RoPE, mask,
-load, or matrix subpath, every tensor in that subpath must be layout-aware
-Gluon. Leaving one `tl.arange(0, BLOCK_R)` in a RoPE branch while the rest of the
-kernel is `@gluon.jit` is still an invalid rewrite.
+The table is per planned subpath, not per token. If L0 chooses one transform,
+mask, load/store, reduction, or matrix subpath, every tensor/dataflow operation
+in that subpath must be layout-aware Gluon. Leaving a plain Triton island such
+as `tl.arange`, `tl.load`, or `tl.dot` inside the selected `@gluon.jit` branch is
+still an invalid rewrite. If that branch cannot be fully converted, keep it out
+of the L0 patch and choose a smaller executable subpath.
 
 ## slice_broadcast_recipe
 

@@ -2000,7 +2000,7 @@ def _build_search_space_allocation_guidance(
         "- Generated overlays default to `gluon_tl_policy: strict_generated` and `layout_construction_policy: host_preferred`; production Gluon source may use `production_source_allowed` and `source_preserve` only when source evidence supports it.",
         "- Keep a plain Triton competitor for every high-value direction unless AMD Gluon is explicitly required. Layering order: plain Triton -> optional L0/paired mapping -> L1 from viable/local-win evidence -> later Hybrid/Mixed.",
         "- Round 1 plain Triton input may have at most one L0 overlay. Generate it only when `overlay_priority_routing` is Prefer/high-confidence Consider; otherwise spend the slot on another plain Triton direction.",
-        "- Before emitting a Round-1 L0 overlay, perform `Gluon L0 scope classification`: is the candidate layout-heavy, does it include RoPE/online softmax/multiple dot paths/multiple 2D parents/nested SliceLayout/last-token or split-boundary logic, can one exact subpath execute without translating the whole algorithm, and is the expected outcome `execution_anchor` or `performance_candidate`?",
+        "- Before emitting a Round-1 L0 overlay, perform `Gluon L0 scope classification`: is the candidate layout-heavy, does it include complex control flow, reductions, multiple matrix paths, multiple 2D parents, nested layouts, boundary-specific branches, or other high-coupling logic; can one exact subpath execute without translating the whole algorithm; and is the expected outcome `execution_anchor` or `performance_candidate`?",
         "- L0 scope ladder is generic across kernels: prefer the smallest executable, attributable, low-coupling subpath (scalar/1D stage, one load/store, one index/mask layout smoke path). Consider matrix/MFMA subpaths only after an executed anchor or when the task explicitly proves the matrix subpath is the smallest viable component.",
         "- Required Gluon docs for priority: `00_always_read.md`, `10_search_policies.md` (`optimization_direction_dialect_overlay`, `overlay_priority_routing`), plus `20_component_traits.md` / `60_real_patterns.md` / `50_api_reference.md` only when their routed details apply.",
         "- AMD Gluon overlay prompts must include `Extension layer: L0|L1|Hybrid`, `Optimization direction:`, `Source Base family:`, `Plain competitor:`, `Gluon overlay reason:`, `Overlay priority: Prefer` or `Overlay priority: high-confidence Consider`, `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`. Do not write plain `Overlay priority: Consider` for Round-1 L0.",
@@ -2009,6 +2009,8 @@ def _build_search_space_allocation_guidance(
         "- Required Gluon worker contract: ask for `Gluon knowledge lookup plan`, `Gluon implementation plan`, `Performance hypothesis:`, `Same ABI comparison:`, and `Patch evolution:` before editing; stage/helper/local-expression scoped tasks must include `Target symbol:` or `Target component:` and wrap local target names in backticks inside `Allowed change`; reject non-executed Gluon, target-symbol mismatch, leftover plain Triton device APIs inside edited `@gluon.jit`, backup/temp files, and bundled unrelated changes without `bundle_allowed=true`. Keep API-level Gluon rewrite details in the routed skills/docs.",
         "- L0 overlay prompts must not ask the worker to convert an entire stage/helper/kernel just to prove Gluon. Scope L0 to one named subpath/component, such as a load/store, layout, mask, or matrix subpath; only use a whole helper as the target when the task explicitly explains why the helper is the smallest viable component.",
         "- Round-1 L0 overlays must bind to the same component and same optimization direction as `Plain competitor`, not merely to the same broad `Source Base family`. The referenced plain Triton task and the L0 overlay must use the exact same `Optimization direction:` text and must both include an auditable `Target component:` or `Allowed change:` with the same scoped symbol/stage.",
+        "- If the desired Gluon L0 target component does not already have a same-direction plain Base task in this batch, first emit that plain Base competitor, then point `Plain competitor:` at it. Example: if the overlay targets component B's memory/layout path, emit a plain component-B memory/layout Base task; do not bind it to a component-A cleanup, control-flow, or generic same-family task.",
+        "- If you cannot produce a same-direction same-component plain Base competitor for an L0 overlay, do not emit that Gluon overlay in this round; spend the slot on the missing Base competitor instead.",
         "- L1 tasks additionally require an executed Gluon/mixed anchor (`Anchor patch`, `Anchor speedup`, `Anchor execution: true`, `Comparison target: anchor_patch`) and stage-specific tasks require target metadata such as `Target symbol` / `Target component` plus top-level `required_patch_target_symbols` when available.",
         "- If a plain Triton candidate wins, accept it as the best result rather than forcing more Gluon work.",
         "- If a Triton strategy wins and maps cleanly to Gluon traits, a later round may create an AMD Gluon variant of that winning strategy only with a concrete performance hypothesis.",
@@ -2118,7 +2120,7 @@ def _build_gluon_planning_traits_guidance(
             "",
             "Escalation rules:",
             "- Round 1 may include at most one L0 minimal AMD Gluon overlay when the priority docs place it in the Prefer or high-confidence Consider bucket; do not create a Gluon task unless it includes the full planner-audited fields: `Optimization direction:`, `Source Base family:`, `Plain competitor:`, `Gluon overlay reason:`, `Overlay priority:`, `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`.",
-            "- Round 1 L0 is an execution anchor or one-subpath probe. Classify the scope before emitting it: avoid full-stage rewrites when the candidate includes RoPE, online softmax, multiple dot paths, multiple 2D parents, nested SliceLayout, last-token/split-boundary logic, or a tiny sub-100us stage.",
+            "- Round 1 L0 is an execution anchor or one-subpath probe. Classify the scope before emitting it: avoid full-stage rewrites when the candidate includes complex control flow, online reductions, multiple matrix paths, multiple parent layouts, nested layout transforms, boundary-specific logic, or a tiny sub-100us stage.",
             "- Prefer the smallest executable target component for L0: scalar/1D stage, one load/store, one index/mask layout smoke path, or another explicitly smaller subpath. Do not hardcode any sample-specific stage name as the default.",
             "- L0 prompts must name one target component and must not instruct the worker to convert a full multi-stage kernel/helper unless that whole helper is explicitly the smallest viable component.",
             "- Additional overlay layers may become L1 trait-specific AMD Gluon tasks only after the L0 path is executed and performance-viable, or after local shape/sub-operation evidence shows Gluon beats the safe anchor.",
@@ -3248,6 +3250,86 @@ def _task_audit_summary(task: AgentTask) -> dict[str, Any]:
     }
 
 
+def _task_label_map(tasks: list[AgentTask]) -> dict[str, dict[str, Any]]:
+    return {_task_audit_summary(task)["label"]: _task_audit_summary(task) for task in tasks}
+
+
+def _audit_repair_hints(errors: list[str], tasks: list[AgentTask]) -> list[str]:
+    """Return planner-facing repair hints for common task-generation audit errors."""
+    summaries = _task_label_map(tasks)
+    hints: list[str] = []
+    for error in errors:
+        direction_match = re.search(
+            r"(?:Task-generation coverage audit failed:\s*)?(?P<label>\S+) Optimization direction `(?P<gluon>.*?)` does not match Plain competitor `(?P<plain>.*?)` direction `(?P<plain_dir>.*?)`$",
+            error,
+        )
+        if direction_match:
+            label = direction_match.group("label")
+            plain = direction_match.group("plain")
+            gluon_direction = direction_match.group("gluon")
+            summary = summaries.get(label, {})
+            target_component = summary.get("target_component") or "<same target component as the Gluon L0>"
+            source_family = summary.get("source_base_family") or "matching Base family"
+            hints.append(
+                f"{label}: create a same-batch plain Triton Base competitor for optimization direction "
+                f"`{gluon_direction}` and target component `{target_component}`, then set `Plain competitor` "
+                f"to that new Base task. Do not bind this overlay to `{plain}` because its direction is different. "
+                f"The plain task should use `Base family: {source_family}`, `required_output_dialect: plain_triton`, "
+                "and the exact same `Optimization direction:` text."
+            )
+            continue
+
+        component_match = re.search(
+            r"(?:Task-generation coverage audit failed:\s*)?(?P<label>\S+) Target component `(?P<gluon>.*?)` does not match Plain competitor `(?P<plain>.*?)` component `(?P<plain_component>.*?)`$",
+            error,
+        )
+        if component_match:
+            label = component_match.group("label")
+            plain = component_match.group("plain")
+            gluon_component = component_match.group("gluon")
+            summary = summaries.get(label, {})
+            direction = summary.get("optimization_direction") or "<same optimization direction as the Gluon L0>"
+            hints.append(
+                f"{label}: bind to a plain Base task whose `Target component` / `Allowed change` names "
+                f"`{gluon_component}` and whose `Optimization direction:` is `{direction}`. "
+                f"The current competitor `{plain}` targets a different component."
+            )
+            continue
+
+        missing_component_match = re.search(
+            r"(?:Task-generation coverage audit failed:\s*)?(?P<label>\S+) Plain competitor `(?P<plain>.*?)` lacks auditable Target component or Allowed change",
+            error,
+        )
+        if missing_component_match:
+            label = missing_component_match.group("label")
+            plain = missing_component_match.group("plain")
+            summary = summaries.get(label, {})
+            hints.append(
+                f"{label}: update plain competitor `{plain}` to include an auditable `Target component:` "
+                f"or backticked/scoped `Allowed change:` matching `{summary.get('target_component') or '<Gluon target component>'}`."
+            )
+            continue
+
+        if "Plain competitor `" in error and "does not match a task label" in error:
+            hints.append(
+                "Add the referenced plain Triton Base competitor to the same submitted batch, or remove the L0 overlay for this round."
+            )
+        elif "is not a plain Triton competitor task" in error:
+            hints.append(
+                "Point `Plain competitor:` at a Base task with `required_output_dialect=plain_triton`, not at Shared, Gluon, mixed, or hybrid tasks."
+            )
+        elif "missing L0 execution-boundary field" in error:
+            hints.append(
+                "Add `Minimum executable unit`, `Allowed execution path`, and `Scope infeasible policy` to the Round-1 L0 overlay, or do not emit the overlay."
+            )
+
+    unique: list[str] = []
+    for hint in hints:
+        if hint not in unique:
+            unique.append(hint)
+    return unique
+
+
 def _write_task_generation_audit_failure(
     *,
     diagnostics_dir: Path | None,
@@ -3273,6 +3355,7 @@ def _write_task_generation_audit_failure(
             "raw_submitted_json": raw_content,
             "raw_tasks": raw_tasks,
             "parsed_task_summaries": [_task_audit_summary(task) for task in parsed_tasks],
+            "repair_hints": _audit_repair_hints([part.strip() for part in str(error).split(";")], parsed_tasks),
         }
         path.write_text(json.dumps(payload, indent=2, default=str))
         logger.error("Task-generation audit failure diagnostics written to %s", path)
