@@ -2061,14 +2061,14 @@ def _build_search_space_allocation_guidance(
         "- Classify candidate signals by failure layer rather than operator name: attention-like composite path, matrix-like composite path, broadcast-heavy layout path, reduction/accumulator path, conditional/source-first path, or wrapper/integration boundary.",
         "- Every Gluon task must expose planner doc routing metadata: `task_signals: ...`, `routed_doc_reasons: ...`, `kernel_family_signal: ...`, and `failure_layers: ...`. These fields should explain which split docs/headings the worker must use and why.",
         "- Map docs to planner fields before emitting the task: layout/broadcast signals require component traits and failure recipes; dot/matrix signals require matrix lowering docs and `matrix_lowering_required`; target backend/runtime signals require architecture notes; source-first/integration signals require real-pattern docs and explicit measurement boundary.",
-        "- Required Gluon docs for priority: `00_always_read.md`, `10_search_policies.md` (`optimization_direction_dialect_overlay`, `overlay_priority_routing`), plus `20_component_traits.md` / `60_real_patterns.md` / `50_api_reference.md` only when their routed details apply.",
+        "- Required Gluon docs for priority: `00_always_read.md`, `10_search_policies.md` (`optimization_direction_dialect_overlay`, `overlay_direction_vs_mechanism`, `overlay_priority_routing`), plus `20_component_traits.md` / `60_real_patterns.md` / `50_api_reference.md` only when their routed details apply.",
         "- AMD Gluon overlay prompts must include `Extension layer: L0|L1|Hybrid`, `Optimization direction:`, `Source Base family:`, `Plain competitor:`, `Gluon overlay reason:`, `Overlay priority: Prefer` or `Overlay priority: high-confidence Consider`, `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`. Do not write plain `Overlay priority: Consider` for Round-1 L0.",
         "- Round-1 L0 metadata is mandatory for AMD Gluon overlays, and later L0/L1/variant/hybrid tasks must preserve or reference it from the verified anchor: `l0_scope_classification: low_coupling|high_coupling|infeasible`, `l0_coupling_reasons: ...`, `minimum_executable_unit: inline_scoped_helper|separate_gluon_kernel|whole_jit_kernel|infeasible`, `allowed_execution_path: inline_scoped_helper|separate_gluon_kernel|whole_jit_kernel`, and `scope_infeasible_policy: do_not_emit|shrink_or_report|separate_kernel_if_allowed`. Optional tags include `extension_intent: execution_anchor|performance_candidate`, `expected_outcome: correctness_anchor_not_speedup|possible_speedup`, `not_viable_for_l1_if_slower_than_base: true`, `overhead_source_to_record: ...`, `whole_kernel_required_reason: ...`, `Target symbol:`, and `Target component:`.",
         "- L0 execution path must be exactly one of: `inline_scoped_helper` when the language boundary permits the scoped change; `separate_gluon_kernel` when the task explicitly allows a second launch/temp buffer and marks the task as an execution anchor; `whole_jit_kernel` only when the whole helper/kernel is the minimum executable unit and the task does not forbid whole-kernel rewrite; or `infeasible` as `minimum_executable_unit` only when no required Gluon task should be emitted.",
         "- `inline_scoped_helper` is invalid for high-coupling L0 targets such as online softmax accumulator loops, `tl.dot`/matrix paths, loop-carried reductions, cross-stage ABI changes, or wrapper reroutes. Shrink to a lower-coupling index/mask/load/store smoke path, use a justified `whole_jit_kernel`, or do not emit the Gluon task.",
         "- `whole_jit_kernel` is a compile-risk anchor, not the default L0 shape. If used, the task must include `expected_failure_layers`, `first_patch_compile_goal`, `do_not_optimize_before_compile: true`, and `matrix_lowering_required: true|false`. `patch_0` should aim for a compile anchor before performance tuning.",
-        "- Before submitting a Gluon task, perform a task consistency check: `Target component` must match `minimum_executable_unit` and `Allowed change`; `Allowed change` must match `whole_jit_kernel`, `separate_gluon_kernel`, or `inline_scoped_helper`; whole-kernel matrix/dot paths must set `matrix_lowering_required` or list matrix/dot in expected failure layers; and `Plain competitor` must be the same optimization direction and target component.",
-        "- Required Gluon worker contract: ask for `Gluon knowledge lookup plan`, `Gluon implementation plan`, `Performance hypothesis:`, `Same ABI comparison:`, and `Patch evolution:` before editing. The `Patch evolution:` section must be task-specific natural language: `patch_0` states the compile/execute/correctness anchor or verified-anchor-preserving first change; if `patch_N` passes, `patch_N+1` may change exactly one allowed variable/component; if `patch_N` fails, `patch_N+1` fixes only the current failure layer before adding any new optimization. Do not add new metadata fields such as `patch_evolution_strategy`, `patch_0_goal`, or `patch_1_plus_rule`; use existing `failure_layers` / `expected_failure_layers` when present and otherwise rely on worker notes. Stage/helper/local-expression scoped tasks must include `Target symbol:` or `Target component:` and wrap local target names in backticks inside `Allowed change`; reject non-executed Gluon, target-symbol mismatch, leftover plain Triton device APIs inside edited `@gluon.jit`, backup/temp files, and bundled unrelated changes without `bundle_allowed=true`. Keep API-level Gluon rewrite details in the routed skills/docs.",
+        "- Before submitting a Gluon task, do a concise consistency pass using `10_search_policies.md::overlay_direction_vs_mechanism` and `60_real_patterns.md::Task consistency check`: keep `Optimization direction` as the shared performance goal and put Gluon-specific mechanisms in overlay fields.",
+        "- Required Gluon worker contract: ask for `Gluon knowledge lookup plan`, `Gluon implementation plan`, `Performance hypothesis:`, `Same ABI comparison:`, and `Patch evolution:` before editing. Keep API-level rewrite and pass/fail patch details in the routed skills/docs, not in the prompt body.",
         "- For an L0 `extension_intent=execution_anchor`, keep `Performance hypothesis:` to execution and attribution: verify the explicit layout/scoped helper can execute and record layout construction or conversion overhead. Do not claim MFMA utilization or broad throughput improvement unless the task is matrix-lowering/L1 or prior evidence supports that mechanism.",
         "- L0 overlay prompts must not ask the worker to convert an entire stage/helper/kernel just to prove Gluon. Scope L0 to one named subpath/component, such as a load/store, layout, mask, or matrix subpath; only use a whole helper as the target when the task explicitly explains why the helper is the smallest viable component.",
         "- Round-1 L0 overlays must bind to the same component and same optimization direction as `Plain competitor`, not merely to the same broad `Source Base family`. The referenced plain Triton task and the L0 overlay must use the exact same `Optimization direction:` text and must both include an auditable `Target component:` or `Allowed change:` with the same scoped symbol/stage.",
@@ -3555,9 +3555,11 @@ def _audit_repair_hints(errors: list[str], tasks: list[AgentTask]) -> list[str]:
             hints.append(
                 f"{label}: create a same-batch plain Triton Base competitor for optimization direction "
                 f"`{gluon_direction}` and target component `{target_component}`, then set `Plain competitor` "
-                f"to that new Base task. Do not bind this overlay to `{plain}` because its direction is different. "
-                f"The plain task should use `Base family: {source_family}`, `required_output_dialect: plain_triton`, "
-                "and the exact same `Optimization direction:` text."
+                f"to that new Base task, or reuse `{plain}` only if the Gluon task adopts that exact shared "
+                "`Optimization direction:`. Keep Gluon mechanisms such as explicit layouts, DotOperandLayout, "
+                f"or buffer ops in `Gluon overlay reason` / `Performance hypothesis`. The plain task should use "
+                f"`Base family: {source_family}`, `required_output_dialect: plain_triton`, and the exact same "
+                "`Optimization direction:` text."
             )
             continue
 
@@ -3574,7 +3576,8 @@ def _audit_repair_hints(errors: list[str], tasks: list[AgentTask]) -> list[str]:
             hints.append(
                 f"{label}: bind to a plain Base task whose `Target component` / `Allowed change` names "
                 f"`{gluon_component}` and whose `Optimization direction:` is `{direction}`. "
-                f"The current competitor `{plain}` targets a different component."
+                f"If the existing competitor `{plain}` is intentionally local, shrink the Gluon L0 to that "
+                "local component instead of using a broader helper target."
             )
             continue
 
@@ -3592,7 +3595,8 @@ def _audit_repair_hints(errors: list[str], tasks: list[AgentTask]) -> list[str]:
             hints.append(
                 f"{label}: create a same-batch plain Triton Base competitor for target `{target_component}` "
                 f"with `Base family: {source_family}`, `required_output_dialect: plain_triton`, "
-                f"and `Optimization direction: {direction}`. Do not bind this overlay to `{plain}` because it targets a different stage/helper/component."
+                f"and `Optimization direction: {direction}`. If `{plain}` is the desired anchor, shrink the "
+                "Gluon task to the same stage/helper/component rather than binding a whole-helper overlay to a local task."
             )
             continue
 

@@ -132,6 +132,19 @@ def _gluon_overlay_prompt(
     return "\n".join(lines)
 
 
+def test_overlay_direction_policy_lives_in_split_docs() -> None:
+    repo = Path(__file__).resolve().parents[2]
+    search_doc = (repo / "skills/triton-gluon/docs/10_search_policies.md").read_text()
+    routing_doc = (repo / "skills/triton-gluon/docs/00_always_read.md").read_text()
+    patterns_doc = (repo / "skills/triton-gluon/docs/60_real_patterns.md").read_text()
+
+    assert "### Search policy: overlay_direction_vs_mechanism" in search_doc
+    assert "Use `Optimization direction` for the shared performance or algorithmic goal" in search_doc
+    assert "Gluon-specific mechanisms" in patterns_doc
+    assert "Whole-kernel L0 comparison anchor" in patterns_doc
+    assert "overlay_direction_vs_mechanism" in routing_doc
+
+
 def test_infer_gluon_planning_traits_for_plain_triton_dot() -> None:
     traits = _infer_gluon_planning_traits(
         _gluon_feature_meta("plain_triton"),
@@ -248,10 +261,9 @@ def test_search_space_allocation_for_two_gpus_preserves_base_without_weak_gluon(
     assert "layout/broadcast micro-anchor" in guidance
     assert "attention-like composite path" in guidance
     assert "do_not_optimize_before_compile: true" in guidance
-    assert "if `patch_N` passes" in guidance
-    assert "if `patch_N` fails" in guidance
-    assert "Do not add new metadata fields such as `patch_evolution_strategy`" in guidance
-    assert "perform a task consistency check" in guidance
+    assert "overlay_direction_vs_mechanism" in guidance
+    assert "Keep API-level rewrite and pass/fail patch details in the routed skills/docs" in guidance
+    assert "patch_evolution_strategy" not in guidance
 
 
 def test_search_space_allocation_for_large_budget_keeps_full_base() -> None:
@@ -910,6 +922,8 @@ def test_audit_failure_hint_suggests_same_direction_plain_competitor(tmp_path: P
     hint = "\n".join(data["repair_hints"])
     assert "same-batch plain Triton Base competitor" in hint
     assert "Explicit layout control for stage2 reduction kernel memory access" in hint
+    assert "Gluon mechanisms such as explicit layouts" in hint
+    assert "Gluon overlay reason" in hint
     assert "_fwd_kernel_stage2" in hint
     assert "precompute-rope-outside-loop" in hint
 
@@ -1850,9 +1864,9 @@ def test_run_task_agent_plain_triton_auto_prefers_amd_gluon_first(
     assert "Gluon implementation plan" in system_prompt
     assert "Performance hypothesis" in system_prompt
     assert "Patch evolution" in system_prompt
-    assert "after a passing patch, the next patch" in system_prompt
-    assert "after a failing patch, the" in system_prompt
-    assert "Do not create extra patch-evolution metadata fields" in system_prompt
+    assert "overlay_direction_vs_mechanism" in system_prompt
+    assert "after a passing patch, the next patch" not in system_prompt
+    assert "Do not create extra patch-evolution metadata fields" not in system_prompt
     assert "Optimization direction:" in system_prompt
     assert "Measurement boundary:" in system_prompt
     assert "Comparison target:" in system_prompt
