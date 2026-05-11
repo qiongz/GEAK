@@ -1009,6 +1009,10 @@ def _build_gluon_working_set(
     first_patch_compile_goal = str(feature_metadata.get("first_patch_compile_goal") or "").strip()
     do_not_optimize_before_compile = str(feature_metadata.get("do_not_optimize_before_compile") or "").strip()
     matrix_lowering_required = str(feature_metadata.get("matrix_lowering_required") or "").strip()
+    task_signals = str(feature_metadata.get("task_signals") or "").strip()
+    routed_doc_reasons = str(feature_metadata.get("routed_doc_reasons") or "").strip()
+    kernel_family_signal = str(feature_metadata.get("kernel_family_signal") or "").strip()
+    failure_layers = str(feature_metadata.get("failure_layers") or "").strip()
     minimum_executable_unit = str(feature_metadata.get("minimum_executable_unit") or "").strip()
     target_symbol = str(feature_metadata.get("target_symbol") or "").strip()
     target_component = str(feature_metadata.get("target_component") or "").strip()
@@ -1065,6 +1069,14 @@ def _build_gluon_working_set(
         lines.append(f"- Do not optimize before compile: `{do_not_optimize_before_compile}`.")
     if matrix_lowering_required:
         lines.append(f"- Matrix lowering required: `{matrix_lowering_required}`.")
+    if task_signals:
+        lines.append(f"- Task signals: {task_signals}")
+    if routed_doc_reasons:
+        lines.append(f"- Routed doc reasons: {routed_doc_reasons}")
+    if kernel_family_signal:
+        lines.append(f"- Kernel family signal: `{kernel_family_signal}`.")
+    if failure_layers:
+        lines.append(f"- Failure layers: {failure_layers}")
     if minimum_executable_unit:
         lines.append(f"- Minimum executable unit: `{minimum_executable_unit}`.")
     if target_symbol:

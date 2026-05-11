@@ -122,6 +122,10 @@ def _gluon_overlay_prompt(
             [
                 "L0 scope classification: low_coupling",
                 "L0 coupling reasons: single local memory/layout component without loop-carried state",
+                "Task signals: layout, memory, l0",
+                "Routed doc reasons: layout signal -> 20_component_traits.md; api signal -> 50_api_reference.md",
+                "Kernel family signal: generic_memory_layout",
+                "Failure layers: broadcast/layout layer, memory/load-store layer",
             ]
         )
     lines.extend(extra or [])
@@ -728,6 +732,10 @@ def test_parse_l0_metadata_from_snake_case_prompt_fields() -> None:
             "layout_construction_policy: host_preferred",
             "l0_scope_classification: low_coupling",
             "l0_coupling_reasons: selected load path only",
+            "task_signals: layout, memory, l0",
+            "routed_doc_reasons: layout signal -> component traits; api signal -> api reference",
+            "kernel_family_signal: generic_memory_layout",
+            "failure_layers: broadcast/layout layer, memory/load-store layer",
             "minimum_executable_unit: separate_gluon_kernel",
             "allowed_execution_path: separate_gluon_kernel",
             "scope_infeasible_policy: shrink_or_report",
@@ -1123,6 +1131,86 @@ def test_l0_overlay_binding_rejects_mismatched_target_component() -> None:
     )
 
     with pytest.raises(ValueError, match="does not match Plain competitor"):
+        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+
+
+def test_l0_overlay_binding_rejects_same_family_different_target_scope() -> None:
+    payload = json.dumps(
+        [
+            {
+                "label": "stage1-register-pressure",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "plain_triton",
+                "task_prompt": "\n".join(
+                    [
+                        "Base Set task",
+                        "Base family: base_hot_path_streamline",
+                        "Optimization direction: memory/layout cleanup",
+                        "Target component: shared_load_path",
+                        "Target symbol: stage1_kernel",
+                        "Allowed change: simplify `shared_load_path` in stage1_kernel.",
+                    ]
+                ),
+            },
+            {
+                "label": "gluon-l0-stage2-reduction",
+                "priority": 6,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "amd_gluon",
+                "target_symbol": "stage2_kernel",
+                "target_component": "shared_load_path",
+                "task_prompt": _gluon_overlay_prompt(
+                    extra=[
+                        "Optimization direction: reduce pointer arithmetic",
+                        "Target symbol: stage2_kernel",
+                        "Target component: shared_load_path",
+                        "Allowed change: convert `shared_load_path` in stage2_kernel only.",
+                    ],
+                    plain_competitor="stage1-register-pressure",
+                    target_component="shared_load_path",
+                ),
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Target scope"):
+        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+
+
+def test_l0_audit_requires_planner_doc_routing_metadata() -> None:
+    prompt = _gluon_overlay_prompt()
+    for line in (
+        "Task signals: layout, memory, l0",
+        "Routed doc reasons: layout signal -> 20_component_traits.md; api signal -> 50_api_reference.md",
+        "Kernel family signal: generic_memory_layout",
+        "Failure layers: broadcast/layout layer, memory/load-store layer",
+    ):
+        prompt = prompt.replace(f"\n{line}", "")
+    payload = json.dumps(
+        [
+            {
+                "label": "triton-eliminate-redundant-ops-streamline",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "plain_triton",
+                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nOptimization direction: memory/layout cleanup\nTarget component: streamline_component\nAllowed change: simplify `streamline_component`.",
+            },
+            {
+                "label": "gluon-l0-missing-routing",
+                "priority": 6,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "amd_gluon",
+                "task_prompt": prompt,
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="missing L0 planner routing field"):
         _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
 
 

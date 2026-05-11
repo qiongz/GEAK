@@ -745,6 +745,10 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
     first_patch_compile_goal = feature_meta.get("first_patch_compile_goal")
     do_not_optimize_before_compile = feature_meta.get("do_not_optimize_before_compile")
     matrix_lowering_required = feature_meta.get("matrix_lowering_required")
+    task_signals = feature_meta.get("task_signals")
+    routed_doc_reasons = feature_meta.get("routed_doc_reasons")
+    kernel_family_signal = feature_meta.get("kernel_family_signal")
+    failure_layers = feature_meta.get("failure_layers")
     minimum_executable_unit = feature_meta.get("minimum_executable_unit")
     target_symbol = feature_meta.get("target_symbol")
     target_component = feature_meta.get("target_component")
@@ -817,6 +821,14 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
         lines.append(f"- Task do_not_optimize_before_compile: {do_not_optimize_before_compile}")
     if matrix_lowering_required not in (None, ""):
         lines.append(f"- Task matrix_lowering_required: {matrix_lowering_required}")
+    if task_signals:
+        lines.append(f"- Task task_signals: {task_signals}")
+    if routed_doc_reasons:
+        lines.append(f"- Task routed_doc_reasons: {routed_doc_reasons}")
+    if kernel_family_signal:
+        lines.append(f"- Task kernel_family_signal: {kernel_family_signal}")
+    if failure_layers:
+        lines.append(f"- Task failure_layers: {failure_layers}")
     if minimum_executable_unit:
         lines.append(f"- Task minimum_executable_unit: {minimum_executable_unit}")
     if target_symbol:
