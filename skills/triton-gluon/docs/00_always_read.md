@@ -179,15 +179,19 @@ Task routing:
 | --- | --- |
 | Any Triton-Gluon task | `00_always_read.md`, `product_contract`, `semantic_contract`, `output_and_fallback_contract` |
 | Planning optimization-direction overlays or compatibility metadata | `10_search_policies.md`, `### Search policy: optimization_direction_metadata_sets`, `### Search policy: optimization_direction_dialect_overlay`, `### Search policy: overlay_priority_routing`, `### Search policy: dialect_contract_metadata` |
+| L0 scope classification, micro-anchor, or compile-risk whole-kernel task | `10_search_policies.md`, `### Search policy: l0_scope_classification`; `20_component_traits.md`, `whole_kernel_layout_map_recipe` |
 | Later-round composition from prior results | `10_search_policies.md`, `### Search policy: evidence_anchored_composition` |
 | End-to-end, wrapper-heavy, or multi-stage operator pipeline | `10_search_policies.md`, `### Search policy: measurement_boundary_policy`; `60_real_patterns.md`, `benchmark_boundary_and_integration_costs` |
 | `plain_triton -> amd_gluon` | `00_always_read.md`, `### Trait: dialect_plain_triton`; then relevant traits in `20_component_traits.md` |
 | `nv_gluon -> amd_gluon` | `00_always_read.md`, `### Trait: dialect_nv_gluon`; `60_real_patterns.md`, `nvidia_amd_family_differences`; optionally `40_examples.md`, `nv_gluon_to_amd_gluon_translation` |
 | existing `amd_gluon` input | `00_always_read.md`, `### Trait: dialect_amd_gluon`; `30_architecture_notes.md`, `### Trait: operator_support_sensitive` |
 | `tl.arange`, block sizes, layout, masks, broadcasts, `[:, None]`, `expand_dims`, `BlockedLayout`, `SliceLayout`, `convert_layout` | `20_component_traits.md`, `### Trait: layout_basic`, `### Trait: layout_slice_broadcast`, and `layout_derivation_and_cost_model` |
+| broadcast or layout compile error such as `expected expand_dims input layout`, rank mismatch, or parent-layout mismatch | `20_component_traits.md`, `### Trait: layout_slice_broadcast` and `whole_kernel_layout_map_recipe`; `50_api_reference.md`, `broadcast_failure_debug_recipe` |
 | `tl.load` / `tl.store`, buffer ops, memory-bound path | `20_component_traits.md`, `### Trait: memory_generic` and/or `### Trait: memory_amd_buffer` |
 | shared memory, swizzle, async, descriptor, `tdm`, cluster, scheduler hints | `20_component_traits.md`, `### Trait: memory_shared_async_descriptor`; `50_api_reference.md`, `shared_memory_synchronization_cluster` and `descriptor_and_tensor_memory_surface` |
 | `tl.dot`, `tl.dot_scaled`, MFMA, WMMA, FP8/FP4/scales, `AMDMFMALayout`, `AMDWMMALayout`, `DotOperandLayout` | `20_component_traits.md`, `### Trait: matrix_dot`, `### Trait: matrix_scaled_dot`, and/or `### Trait: matrix_wmma_descriptor`; `50_api_reference.md`, `matrix_lowering_ladders_by_arch` and `amd_quick_patterns`; `30_architecture_notes.md`, `amd_arch_family_quick_directions` |
+| dot or matrix compile error such as `DotOperandEncodingAttr`, `tt.dot failed to infer`, or missing `gl.dot` | `20_component_traits.md`, `### Trait: matrix_dot`; `50_api_reference.md`, `dot_lowering_minimal_recipe` and `matrix_lowering_ladders_by_arch` |
+| reduction or accumulator layout mismatch | `20_component_traits.md`, `layout_derivation_and_cost_model`; `50_api_reference.md`, `reduction_accumulator_layout_recipe` |
 | target backend, `gfx942`, `gfx950`, `gfx1250`, arch guards, wave32/wave64 assumptions | `30_architecture_notes.md`, `amd_arch_family_quick_directions`, target section, and `runtime_target_resolution`; `60_real_patterns.md`, `nvidia_amd_family_differences` |
 | Triton version, `instr_shape`, JIT/AOT, prebuilt kernels | `30_architecture_notes.md`, `### Trait: version_sensitive` and `### Trait: execution_jit_aot_sensitive`; `50_api_reference.md`, `version_and_compatibility_checklist` |
 | multi-shape or bucketed benchmark | `20_component_traits.md`, relevant `shape_coverage_*` trait plus `### Trait: shape_layout_constexpr_risk` / `### Trait: shape_dispatch_required` |
@@ -241,6 +245,10 @@ Signal routing examples:
 - `BlockedLayout` verifier, `size_per_thread`, parent-layout mismatch ->
   `20_component_traits.md` / `layout_basic`, `layout_slice_broadcast`, and
   `layout_derivation_and_cost_model`.
+- compile-risk whole-kernel or composite path -> `10_search_policies.md` /
+  `l0_scope_classification`, `20_component_traits.md` /
+  `whole_kernel_layout_map_recipe`, and `50_api_reference.md` /
+  `broadcast_failure_debug_recipe` / `dot_lowering_minimal_recipe` as needed.
 - `gfx950`, CDNA4, scaled MFMA, FP8/FP4, or backend-only support evidence ->
   `60_real_patterns.md` / `evidence_inventory_for_guide_authoring`,
   `30_architecture_notes.md` / `amd_arch_family_quick_directions`, and

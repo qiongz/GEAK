@@ -241,6 +241,9 @@ def test_search_space_allocation_for_two_gpus_preserves_base_without_weak_gluon(
     assert "minimum_executable_unit: inline_scoped_helper|separate_gluon_kernel|whole_jit_kernel|infeasible" in guidance
     assert "allowed_execution_path: inline_scoped_helper|separate_gluon_kernel|whole_jit_kernel" in guidance
     assert "L0 execution path must be exactly one of" in guidance
+    assert "layout/broadcast micro-anchor" in guidance
+    assert "attention-like composite path" in guidance
+    assert "do_not_optimize_before_compile: true" in guidance
 
 
 def test_search_space_allocation_for_large_budget_keeps_full_base() -> None:
@@ -632,6 +635,10 @@ def test_audit_accepts_whole_kernel_anchor_when_declared() -> None:
         extra=[
             "Target component: scale_epilogue_load_broadcast",
             "Whole kernel required reason: scale epilogue cannot feed measured output as an isolated subpath",
+                "Expected failure layers: broadcast/layout layer, memory/load-store layer",
+                "First patch compile goal: compile a minimal whole-kernel anchor before tuning",
+                "Do not optimize before compile: true",
+                "Matrix lowering required: false",
             "Reject if: MFMA or buffer_load is introduced.",
         ],
         target_component="scale_epilogue_load_broadcast",
@@ -670,6 +677,10 @@ def test_audit_accepts_whole_kernel_anchor_with_do_not_emit_fallback_policy() ->
             extra=[
                 "Target component: _fwd_kernel_stage2 1D load/store and accumulator layout",
                 "Whole kernel required reason: _fwd_kernel_stage2 is a self-contained reduction kernel and the smallest viable Gluon target component",
+                    "Expected failure layers: reduction/accumulator layer, memory/load-store layer",
+                    "First patch compile goal: compile the reduction kernel anchor before tuning",
+                    "Do not optimize before compile: true",
+                    "Matrix lowering required: false",
                 "Reject if: non-executed Gluon, target-symbol mismatch, or leftover plain Triton device APIs.",
             ],
             plain_competitor="triton-stage2-load-store-layout",
@@ -1156,6 +1167,51 @@ def test_l0_audit_rejects_high_coupling_inline_scoped_helper() -> None:
     )
 
     with pytest.raises(ValueError, match="cannot use inline_scoped_helper for high-coupling L0 target"):
+        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+
+
+def test_l0_audit_rejects_whole_jit_without_compile_risk_fields() -> None:
+    payload = json.dumps(
+        [
+            {
+                "label": "base-composite-path",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "plain_triton",
+                "task_prompt": "\n".join(
+                    [
+                        "Base Set task",
+                        "Base family: base_hot_path_streamline",
+                        "Optimization direction: memory/layout cleanup",
+                        "Target component: composite_path",
+                        "Allowed change: optimize `composite_path` in plain Triton.",
+                    ]
+                ),
+            },
+            {
+                "label": "gluon-l0-composite-whole",
+                "priority": 6,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "amd_gluon",
+                "target_component": "composite_path",
+                "task_prompt": _gluon_overlay_prompt(
+                    extra=[
+                        "L0 scope classification: high_coupling",
+                        "L0 coupling reasons: broadcast-heavy layout plus matrix-like and reduction/accumulator layers",
+                        "Minimum executable unit: whole_jit_kernel",
+                        "Allowed execution path: whole_jit_kernel",
+                        "Whole kernel required reason: no smaller subpath executes independently",
+                    ],
+                    plain_competitor="base-composite-path",
+                    target_component="composite_path",
+                ).replace("Minimum executable unit: inline_scoped_helper", "Minimum executable unit: whole_jit_kernel").replace("Allowed execution path: inline_scoped_helper", "Allowed execution path: whole_jit_kernel"),
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="whole_jit_kernel compile-risk anchor missing fields"):
         _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
 
 

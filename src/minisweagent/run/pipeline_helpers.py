@@ -1005,6 +1005,10 @@ def _build_gluon_working_set(
     expected_outcome = str(feature_metadata.get("expected_outcome") or "").strip()
     l0_scope_classification = str(feature_metadata.get("l0_scope_classification") or "").strip()
     l0_coupling_reasons = str(feature_metadata.get("l0_coupling_reasons") or "").strip()
+    expected_failure_layers = str(feature_metadata.get("expected_failure_layers") or "").strip()
+    first_patch_compile_goal = str(feature_metadata.get("first_patch_compile_goal") or "").strip()
+    do_not_optimize_before_compile = str(feature_metadata.get("do_not_optimize_before_compile") or "").strip()
+    matrix_lowering_required = str(feature_metadata.get("matrix_lowering_required") or "").strip()
     minimum_executable_unit = str(feature_metadata.get("minimum_executable_unit") or "").strip()
     target_symbol = str(feature_metadata.get("target_symbol") or "").strip()
     target_component = str(feature_metadata.get("target_component") or "").strip()
@@ -1031,6 +1035,10 @@ def _build_gluon_working_set(
         "- Required AMD Gluon patches must be real executed Gluon paths, not import-only, helper-only, empty, or plain Triton fallbacks.",
         "- Keep task scope narrow: one subpath/component unless `bundle_allowed=true`; use the docs for detailed rejection conditions and fix order.",
         "- L0 patch evolution: `patch_0` should prove the smallest correctness anchor; `patch_1+` should change exactly one layout parameter, launch constant, memory path, matrix subpath, or dispatch condition.",
+        "- Failure-driven routing: `expected expand_dims input layout`, `Cannot broadcast rank mismatch`, or parent/slice mismatch -> read `20_component_traits.md::layout_slice_broadcast` and `50_api_reference.md::slice_broadcast_recipe`; `DotOperandEncodingAttr`, `tt.dot failed to infer`, or missing `gl.dot` -> read `20_component_traits.md::matrix_dot` and `50_api_reference.md::matrix_lowering_ladders_by_arch`; layout verifier, wave-size, or target-arch mismatch -> read `20_component_traits.md::layout_derivation_and_cost_model` and `30_architecture_notes.md::amd_arch_family_quick_directions`.",
+        "- Patch evolution must declare one `declared_failure_layer` before editing and report one `changed_failure_layer` after editing. Do not mix broadcast/layout, memory/load-store, matrix/dot lowering, reduction/accumulator, conditional/source-first, and wrapper/integration fixes in one patch unless `bundle_allowed=true`.",
+        "- For whole-kernel Gluon tasks, write a generic failure-layer decomposition before editing: broadcast/layout layer; memory/load-store layer; matrix/dot lowering layer; reduction/accumulator layer; conditional/source-first layer; wrapper/integration layer.",
+        "- For whole-kernel or broadcast-heavy tasks, write a layout map table before editing with columns: expression, parent layout, slice axis, expand direction, expected rank, owner tensor. Build `SliceLayout`, `DotOperandLayout`, and shape/launch-dependent `BlockedLayout` in host/layout-factory code and pass them as `gl.constexpr`; do not construct them dynamically inside `@gluon.jit`.",
         "- If the scoped Gluon change cannot be implemented without touching forbidden paths, do not widen the scope. Use the task's allowed execution path, shrink/report infeasible, or ask for a new task.",
         "- For low-latency kernels or tiny stages, L0 is a smallest executed anchor. If a correctness-passing L0 is slower than Base, record the overhead evidence and avoid repeated `num_warps`, block-size, or launch-constant sweeps.",
         f"- Source origin: `{source_origin}`. Missing/unknown origin uses strict generated-overlay rules; only verified production Gluon source may preserve existing mixed `tl.*` patterns.",
@@ -1049,6 +1057,14 @@ def _build_gluon_working_set(
         lines.append(f"- L0 scope classification: `{l0_scope_classification}`.")
     if l0_coupling_reasons:
         lines.append(f"- L0 coupling reasons: {l0_coupling_reasons}")
+    if expected_failure_layers:
+        lines.append(f"- Expected failure layers: {expected_failure_layers}")
+    if first_patch_compile_goal:
+        lines.append(f"- First patch compile goal: {first_patch_compile_goal}")
+    if do_not_optimize_before_compile:
+        lines.append(f"- Do not optimize before compile: `{do_not_optimize_before_compile}`.")
+    if matrix_lowering_required:
+        lines.append(f"- Matrix lowering required: `{matrix_lowering_required}`.")
     if minimum_executable_unit:
         lines.append(f"- Minimum executable unit: `{minimum_executable_unit}`.")
     if target_symbol:

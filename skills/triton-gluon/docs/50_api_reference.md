@@ -36,6 +36,9 @@ Do not read this whole file by default. Use the routed section(s) below.
 | descriptor/TDM/tensor-memory concepts | `descriptor_and_tensor_memory_surface` |
 | `[:, None]`, `[None, :]`, or broadcast layout errors | `slice_broadcast_recipe` |
 | AMD MFMA/WMMA/scaled lowering order and quick syntax | `matrix_lowering_ladders_by_arch`, `amd_quick_patterns` |
+| broadcast/layout compile failure | `broadcast_failure_debug_recipe`, then `slice_broadcast_recipe` |
+| dot/MFMA operand compile failure | `dot_lowering_minimal_recipe`, then `matrix_lowering_ladders_by_arch` |
+| reduction or accumulator layout failure | `reduction_accumulator_layout_recipe` |
 | NVIDIA TMA/WGMMA/Blackwell recognition only | `nvidia_quick_patterns` |
 | failure triage | `common_failures_and_fix_order`; read `common_pitfalls` only if stuck |
 
@@ -48,6 +51,9 @@ Do not read this whole file by default. Use the routed section(s) below.
 - `common_rewrite_table`
 - `aot_compile_api_surface`
 - `slice_broadcast_recipe`
+- `broadcast_failure_debug_recipe`
+- `dot_lowering_minimal_recipe`
+- `reduction_accumulator_layout_recipe`
 - `shared_memory_synchronization_cluster`
 - `descriptor_and_tensor_memory_surface`
 - `matrix_lowering_ladders_by_arch`
@@ -336,6 +342,61 @@ Rules:
   `[:, None]` / `[None, :]`; regenerate the index from the right parent layout.
 - Mask tensors follow the same rule. Mask layout mismatches are correctness
   problems, not cleanup opportunities.
+
+## broadcast_failure_debug_recipe
+
+Use this recipe for errors such as `expected expand_dims input layout`,
+`Cannot broadcast, rank mismatch`, or parent-layout mismatch.
+
+Debug order:
+
+1. Identify the expression that failed and its intended parent rank.
+2. Identify whether the failing 1D tensor is used as `x[:, None]`, `x[None, :]`,
+   or inside a higher-rank broadcast.
+3. Confirm that the 1D tensor was generated from `SliceLayout(axis, parent)` of
+   the same parent layout as the expression.
+4. Regenerate the index from the correct parent instead of using
+   `convert_layout` to re-parent a 1D tensor.
+5. If the expression is a mask or scalar/vector parameter used with a matrix
+   tile, expand it explicitly into the matrix parent before arithmetic.
+6. Keep the patch to this one failure layer; do not also change matrix lowering
+   or memory path in the same patch.
+
+## dot_lowering_minimal_recipe
+
+`tl.dot` is not a mechanical rename target and generic `gl.dot` is not a safe
+replacement for AMD matrix lowering.
+
+Minimal order:
+
+1. Choose the result layout for the output tile.
+2. Choose the target matrix family from architecture evidence.
+3. Create operand layouts with `DotOperandLayout` from the result layout.
+4. Convert A/B operands into their operand layouts with `convert_layout`.
+5. Create the accumulator in the result layout.
+6. Call the target-specific matrix op.
+7. Convert or cast epilogue/store values only after matrix correctness is clear.
+
+If any of these cannot be named before editing, split the task into a matrix
+operand layout probe or keep the first patch on non-matrix layout/memory work.
+
+## reduction_accumulator_layout_recipe
+
+Use this recipe for reductions, normalizers, running max/sum, or accumulator
+state that must broadcast into a higher-rank compute tile.
+
+Rules:
+
+1. Treat 1D reduction state as a slice of the compute parent layout it will
+   broadcast into.
+2. Name the owner tensor and parent layout for each reduction state before
+   arithmetic.
+3. Keep reduction layout fixes separate from matrix operand layout fixes.
+4. If the reduction state updates inside a loop, patch only layout/broadcast
+   correctness first. Do not tune launch constants or matrix path in the same
+   patch.
+5. For multi-shape tasks, ensure the reduction layout is derived from launch
+   constexprs or host-side shape buckets, not hardcoded shape literals.
 
 ## aot_compile_api_surface
 

@@ -51,7 +51,6 @@ class AmdClaudeModel(AmdLlmModelBase):
 
     def _init_client(self):
         api_key = self._get_api_key()
-        user = self._get_user()
         base_url = (
             self.config.base_url or self.config.model_kwargs.get("api_base") or "https://llm-api.amd.com/Anthropic"
         )
@@ -60,9 +59,9 @@ class AmdClaudeModel(AmdLlmModelBase):
             base_url=base_url,
             default_headers={
                 "Ocp-Apim-Subscription-Key": api_key,
-                "user": user,
                 "anthropic-version": self.config.api_version,
-            },
+            }
+            | self._gateway_user_headers(),
         )
 
     # ------------------------------------------------------------------
