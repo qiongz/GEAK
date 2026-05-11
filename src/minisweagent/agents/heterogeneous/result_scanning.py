@@ -94,6 +94,24 @@ def scan_single_round_results(results_dir: Path) -> list[str]:
                     f"gluon_execution_contract_satisfied={execution_ok}, "
                     f"required_patch_target_symbols={target_symbols}"
                 )
+                if br.get("gluon_api_contract_status") is not None or br.get("layout_contract_status") is not None:
+                    section.append(
+                        "- API/layout contracts: "
+                        f"gluon_api_contract_status={br.get('gluon_api_contract_status', 'unknown')}, "
+                        f"layout_contract_status={br.get('layout_contract_status', 'unknown')}"
+                        + (
+                            f", legacy_output_dialect_classification={br.get('legacy_output_dialect_classification')}"
+                            if br.get("legacy_output_dialect_classification")
+                            else ""
+                        )
+                    )
+                if br.get("source_origin") or br.get("gluon_tl_policy") or br.get("layout_construction_policy"):
+                    section.append(
+                        "- Source/API policy: "
+                        f"source_origin={br.get('source_origin', 'unknown')}, "
+                        f"gluon_tl_policy={br.get('gluon_tl_policy', 'unknown')}, "
+                        f"layout_construction_policy={br.get('layout_construction_policy', 'unknown')}"
+                    )
                 if br.get("has_significant_shape_regression") is not None:
                     section.append(
                         "- Shape regression: "

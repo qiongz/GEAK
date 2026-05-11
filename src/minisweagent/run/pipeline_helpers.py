@@ -861,6 +861,10 @@ def _build_gluon_working_set(
     feature_metadata = feature_metadata or {}
     input_dialect = str(feature_metadata.get("input_dialect") or "").strip().lower()
     entrypoint = str(gluon_always_read_path or "skills/triton-gluon/docs/00_always_read.md").strip()
+    source_origin = str(feature_metadata.get("source_origin") or "unknown").strip()
+    gluon_tl_policy = str(feature_metadata.get("gluon_tl_policy") or "strict_generated").strip()
+    layout_policy = str(feature_metadata.get("layout_construction_policy") or "host_preferred").strip()
+    execution_mode = str(feature_metadata.get("execution_mode") or "").strip()
     extension_intent = str(feature_metadata.get("extension_intent") or "").strip().lower()
     expected_outcome = str(feature_metadata.get("expected_outcome") or "").strip()
     minimum_executable_unit = str(feature_metadata.get("minimum_executable_unit") or "").strip()
@@ -891,7 +895,12 @@ def _build_gluon_working_set(
         "- L0 patch evolution: `patch_0` should prove the smallest correctness anchor; `patch_1+` should change exactly one layout parameter, launch constant, memory path, matrix subpath, or dispatch condition.",
         "- If the scoped Gluon change cannot be implemented without touching forbidden paths, do not widen the scope. Use the task's allowed execution path, shrink/report infeasible, or ask for a new task.",
         "- For low-latency kernels or tiny stages, L0 is a smallest executed anchor. If a correctness-passing L0 is slower than Base, record the overhead evidence and avoid repeated `num_warps`, block-size, or launch-constant sweeps.",
+        f"- Source origin: `{source_origin}`. Missing/unknown origin uses strict generated-overlay rules; only verified production Gluon source may preserve existing mixed `tl.*` patterns.",
+        f"- Gluon TL policy: `{gluon_tl_policy}`. `tl.arange`, `tl.load`, `tl.store`, `tl.zeros`, `tl.full`, and `tl.dot` are forbidden in newly generated Gluon device paths.",
+        f"- Layout construction policy: `{layout_policy}`. Generated L0 prefers host-created layouts; existing production `gl.constexpr` layout declarations may be preserved when the source contract is clear.",
     ]
+    if execution_mode:
+        lines.append(f"- Execution mode: `{execution_mode}`. Preserve AOT/JIT/prebuilt fallback and signature contracts unless the task explicitly changes that boundary.")
     if extension_intent == "execution_anchor":
         lines.append(
             "- Extension intent: `execution_anchor`. Treat correctness-passing but slower Gluon as overhead evidence, not as permission to expand the same scope into L1/MFMA without a named removable overhead."

@@ -14,6 +14,8 @@ from minisweagent.run.postprocess.benchmark_parsing import (
     _patch_touches_forbidden_target_symbol,
     _required_amd_gluon_static_contract_error,
     _required_output_dialect,
+    classify_gluon_api_contract,
+    classify_layout_contract,
     classify_patch_output_dialect,
     compute_best_patch,
     extract_latency_ms,
@@ -247,6 +249,82 @@ def test_classify_patch_output_dialect_ignores_context_lines() -> None:
     assert classify_patch_output_dialect(patch) == "amd_gluon"
 
 
+def test_gluon_api_contract_allows_only_strict_generated_tl_range() -> None:
+    patch = "\n".join(
+        [
+            "diff --git a/kernel.py b/kernel.py",
+            "+from triton.experimental import gluon",
+            "+import triton.language as tl",
+            "+@gluon.jit",
+            "+def kernel_gluon(ptr):",
+            "+    for _ in tl.range(0, 4):",
+            "+        pass",
+        ]
+    )
+
+    contract = classify_gluon_api_contract(patch, {"source_origin": "generated_overlay"})
+
+    assert contract["gluon_api_contract_status"] == "allowed_tl_only"
+    assert contract["forbidden_tl_symbols_seen"] == []
+    assert classify_patch_output_dialect(patch) == "amd_gluon"
+
+
+def test_gluon_api_contract_rejects_added_tl_where_in_generated_overlay() -> None:
+    patch = "\n".join(
+        [
+            "diff --git a/kernel.py b/kernel.py",
+            "+from triton.experimental import gluon",
+            "+import triton.language as tl",
+            "+@gluon.jit",
+            "+def kernel_gluon(x, y, mask):",
+            "+    return tl.where(mask, x, y)",
+        ]
+    )
+
+    contract = classify_gluon_api_contract(patch, {"source_origin": "generated_overlay"})
+
+    assert contract["gluon_api_contract_status"] == "leftover_tl_device_api"
+    assert contract["forbidden_tl_symbols_seen"][0]["symbol"] == "tl.where"
+    assert classify_patch_output_dialect(patch) == "amd_gluon"
+
+
+def test_gluon_api_contract_preserves_existing_tl_where_for_production_source() -> None:
+    patch = "\n".join(
+        [
+            "diff --git a/kernel.py b/kernel.py",
+            " import triton.language as tl",
+            " @gluon.jit",
+            " def kernel_gluon(x, y, mask):",
+            "     return tl.where(mask, x, y)",
+            "+    # patch edits surrounding source without adding tl.where",
+        ]
+    )
+
+    contract = classify_gluon_api_contract(
+        patch,
+        {"source_origin": "existing_amd_gluon_operator"},
+    )
+
+    assert contract["gluon_api_contract_status"] == "allowed_tl_only"
+    assert contract["tl_symbols_seen"][0]["change_kind"] == "preserved"
+
+
+def test_layout_contract_reports_runtime_layout_object() -> None:
+    patch = "\n".join(
+        [
+            "diff --git a/kernel.py b/kernel.py",
+            "+@gluon.jit",
+            "+def kernel_gluon(x):",
+            "+    layout = gl.BlockedLayout([1], [64], [4], [0])",
+            "+    return x",
+        ]
+    )
+
+    contract = classify_layout_contract(patch, {"layout_construction_policy": "host_preferred"})
+
+    assert contract["layout_contract_status"] == "runtime_layout_object"
+
+
 def test_compute_best_patch_includes_per_shape_speedups(tmp_path: Path) -> None:
     kernel_dir = tmp_path / "fused_rms_fp8"
     patch_dir = kernel_dir / "results" / "round_1" / "dispatch-path-check"
@@ -370,6 +448,10 @@ def test_compute_best_patch_uses_safe_anchor_for_composition_tasks(tmp_path: Pat
         "+@gluon.jit\n+def gluon_k():\n+    x = gl.load(ptr)\n"
         "+gluon_k[grid]()\n"
         "+@triton.jit\n+def triton_k():\n+    y = tl.load(ptr)\n"
+        "+def dispatch(use_gluon, grid):\n"
+        "+    if use_gluon:\n"
+        "+        return gluon_k[grid]()\n"
+        "+    return triton_kernel[grid]()\n"
     )
     (patch_dir / "patch_1_test.txt").write_text("case_small: 0.7 ms\ncase_medium: 0.7 ms\n")
 
@@ -1268,6 +1350,10 @@ def test_compute_best_patch_rejects_mixed_dead_gluon_helper(tmp_path: Path) -> N
                 "+    return gl.load(x)",
                 "+hybrid_gluon_helper[grid](x)",
                 "+y = tl.load(ptr)",
+                    "+def dispatch(use_gluon, grid):",
+                    "+    if use_gluon:",
+                    "+        return hybrid_gluon_helper[grid](x)",
+                    "+    return triton_kernel[grid]()",
             ]
         )
     )

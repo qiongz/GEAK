@@ -312,6 +312,11 @@ def test_classify_patch_output_dialect_detects_mixed() -> None:
             "import triton\nimport triton.language as tl\n"
             "@gluon.jit\ndef gluon_k():\n    x = gl.load(ptr)\n"
             "@triton.jit\ndef reduce_k():\n    y = tl.load(ptr)\n"
+            "def dispatch(use_gluon, grid):\n"
+            "    if use_gluon:\n"
+            "        return gluon_k[grid]()\n"
+            "    else:\n"
+            "        return reduce_kernel[grid]()\n"
         )
         == "mixed"
     )
@@ -344,6 +349,10 @@ def test_compute_best_patch_rejects_mixed_for_required_amd_gluon(tmp_path: Path)
         "+import triton\n+import triton.language as tl\n"
         "+@gluon.jit\n+def main_k():\n+    x = gl.load(ptr)\n"
         "+@triton.jit\n+def reduce_k():\n+    y = tl.load(ptr)\n"
+        "+def dispatch(use_gluon, grid):\n"
+        "+    if use_gluon:\n"
+        "+        return main_gluon[grid]()\n"
+        "+    return reduce_kernel[grid]()\n"
     )
     (patch_dir / "patch_1_test.txt").write_text("case_a: 0.9000 ms\ncase_b: 0.9000 ms\n")
 

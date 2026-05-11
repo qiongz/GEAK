@@ -727,6 +727,10 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
     required_output_dialect = feature_meta.get("required_output_dialect")
     gluon_doc_profile = feature_meta.get("gluon_doc_profile")
     required_docs = feature_meta.get("required_gluon_docs")
+    source_origin = feature_meta.get("source_origin")
+    gluon_tl_policy = feature_meta.get("gluon_tl_policy")
+    layout_construction_policy = feature_meta.get("layout_construction_policy")
+    execution_mode = feature_meta.get("execution_mode")
     source_base_family = feature_meta.get("source_base_family")
     plain_competitor = feature_meta.get("plain_competitor")
     implementation_layer = feature_meta.get("implementation_layer")
@@ -767,6 +771,14 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
         else:
             docs_text = ", ".join(str(item) for item in required_docs)
         lines.append(f"- Task required_gluon_docs: {docs_text}")
+    if source_origin:
+        lines.append(f"- Task source_origin: {source_origin}")
+    if gluon_tl_policy:
+        lines.append(f"- Task gluon_tl_policy: {gluon_tl_policy}")
+    if layout_construction_policy:
+        lines.append(f"- Task layout_construction_policy: {layout_construction_policy}")
+    if execution_mode:
+        lines.append(f"- Task execution_mode: {execution_mode}")
     if source_base_family:
         lines.append(f"- Task source_base_family: {source_base_family}")
     if plain_competitor:

@@ -43,6 +43,58 @@ _PLAIN_TRITON_PATCH_MARKERS = (
     "tl.store",
     "tl.dot",
 )
+_CONTRACT_SCHEMA_VERSION = 2
+_VALID_SOURCE_ORIGINS = {
+    "generated_overlay",
+    "existing_amd_gluon_operator",
+    "nv_gluon_translation",
+    "unknown",
+}
+_VALID_GLUON_TL_POLICIES = {
+    "strict_generated",
+    "preserve_existing_allowed",
+    "production_source_allowed",
+}
+_VALID_LAYOUT_POLICIES = {
+    "host_preferred",
+    "constexpr_in_kernel_allowed",
+    "source_preserve",
+}
+_STRICT_ALLOWED_TL_SYMBOLS = {
+    "tl.constexpr",
+    "tl.range",
+    "tl.float32",
+    "tl.float16",
+    "tl.bfloat16",
+    "tl.int1",
+    "tl.int8",
+    "tl.int16",
+    "tl.int32",
+    "tl.int64",
+    "tl.uint8",
+    "tl.uint16",
+    "tl.uint32",
+    "tl.uint64",
+}
+_CONDITIONAL_SOURCE_PRESERVE_TL_SYMBOLS = {
+    "tl.program_id",
+    "tl.cdiv",
+    "tl.where",
+}
+_DEFAULT_FORBIDDEN_TL_SYMBOLS = {
+    "tl.arange",
+    "tl.load",
+    "tl.store",
+    "tl.zeros",
+    "tl.full",
+    "tl.dot",
+}
+_TL_SYMBOL_RE = re.compile(r"\btl\.([A-Za-z_][A-Za-z0-9_]*)")
+_GLUON_LAYOUT_CONSTRUCTOR_RE = re.compile(
+    r"\b(?:gl|ttgl)\.(?:BlockedLayout|SliceLayout|DotOperandLayout|DistributedLinearLayout|"
+    r"SwizzledSharedLayout|PaddedSharedLayout|PartitionedSharedLayout)\s*\("
+    r"|\b(?:gl|ttgl)\.amd\.(?:AMDMFMALayout|AMDWMMALayout)\s*\("
+)
 
 
 def parse_median_latency_ms(output: str) -> float | None:
@@ -406,6 +458,22 @@ def _parse_tagged_task_values(task_body: str, tag: str) -> list[str]:
 
 
 _OPTIONAL_GLUON_RESULT_METADATA: tuple[tuple[str, str], ...] = (
+    ("source_origin", "Source origin"),
+    ("gluon_tl_policy", "Gluon TL policy"),
+    ("layout_construction_policy", "Layout construction policy"),
+    ("execution_mode", "Execution mode"),
+    ("aot_signature_contract", "AOT signature contract"),
+    ("target_triple", "Target triple"),
+    ("divisibility_hints", "Divisibility hints"),
+    ("scratch_requirement_check", "Scratch requirement check"),
+    ("prebuilt_artifact_contract", "Prebuilt artifact contract"),
+    ("jit_aot_fallback_preservation", "JIT AOT fallback preservation"),
+    ("target_stage", "Target stage"),
+    ("target_kernel_role", "Target kernel role"),
+    ("upstream_stage", "Upstream stage"),
+    ("downstream_stage", "Downstream stage"),
+    ("measured_output_dependency", "Measured output dependency"),
+    ("integration_boundary", "Integration boundary"),
     ("extension_intent", "Extension intent"),
     ("expected_outcome", "Expected outcome"),
     ("not_viable_for_l1_if_slower_than_base", "Not viable for L1 if slower than Base"),
@@ -905,7 +973,219 @@ def _gluon_execution_contract_satisfied(
     return False
 
 
-def classify_patch_output_dialect(patch_text: str) -> str:
+def _metadata_value(task_meta: dict[str, Any] | None, key: str, default: str = "") -> str:
+    if not task_meta:
+        return default
+    value = task_meta.get(key)
+    if value in (None, ""):
+        return default
+    return str(value).strip()
+
+
+def _normalize_source_origin(task_meta: dict[str, Any] | None = None) -> str:
+    value = _metadata_value(task_meta, "source_origin", "unknown").strip().lower()
+    return value if value in _VALID_SOURCE_ORIGINS else "unknown"
+
+
+def _normalize_gluon_tl_policy(task_meta: dict[str, Any] | None = None) -> str:
+    explicit = _metadata_value(task_meta, "gluon_tl_policy", "").strip().lower()
+    if explicit in _VALID_GLUON_TL_POLICIES:
+        return explicit
+    source_origin = _normalize_source_origin(task_meta)
+    if source_origin == "existing_amd_gluon_operator":
+        return "production_source_allowed"
+    if source_origin == "nv_gluon_translation":
+        return "preserve_existing_allowed"
+    return "strict_generated"
+
+
+def _normalize_layout_policy(task_meta: dict[str, Any] | None = None) -> str:
+    explicit = _metadata_value(task_meta, "layout_construction_policy", "").strip().lower()
+    if explicit in _VALID_LAYOUT_POLICIES:
+        return explicit
+    source_origin = _normalize_source_origin(task_meta)
+    if source_origin == "existing_amd_gluon_operator":
+        return "source_preserve"
+    return "host_preferred"
+
+
+def _metadata_symbol_set(task_meta: dict[str, Any] | None, key: str, defaults: set[str]) -> set[str]:
+    if not task_meta or key not in task_meta:
+        return set(defaults)
+    raw = task_meta.get(key)
+    if isinstance(raw, str):
+        values = [part.strip() for part in raw.split(",") if part.strip()]
+    elif isinstance(raw, list):
+        values = [str(item).strip() for item in raw if str(item).strip()]
+    else:
+        values = []
+    return {value if value.startswith("tl.") else f"tl.{value}" for value in values} or set(defaults)
+
+
+def _diff_code_entries(patch_text: str) -> list[tuple[str, str]]:
+    """Return (change_kind, code_line) for non-header, non-comment diff lines."""
+    entries: list[tuple[str, str]] = []
+    has_diff_prefix = any(line.startswith(("+", "-", " ")) for line in patch_text.splitlines())
+    for raw_line in patch_text.splitlines():
+        if raw_line.startswith(("+++", "---", "diff ", "index ", "@@")):
+            continue
+        prefix = raw_line[:1] if raw_line[:1] in {"+", "-", " "} else ""
+        if prefix == "-":
+            continue
+        text = raw_line[1:] if prefix else raw_line
+        stripped = text.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if prefix == "+":
+            change_kind = "added"
+        elif prefix == " ":
+            change_kind = "preserved"
+        else:
+            change_kind = "added" if not has_diff_prefix else "preserved"
+        entries.append((change_kind, text.rstrip()))
+    return entries
+
+
+def _gluon_jit_code_entries(patch_text: str) -> list[tuple[str, str]]:
+    entries = _diff_code_entries(patch_text)
+    result: list[tuple[str, str]] = []
+    pending_gluon_jit = False
+    in_gluon = False
+    body_indent = 0
+    for change_kind, text in entries:
+        stripped = text.lstrip()
+        indent = _indent_width(text)
+        if stripped.startswith("@gluon.jit"):
+            pending_gluon_jit = True
+            in_gluon = False
+            continue
+        if re.match(r"(?:async\s+)?def\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", stripped):
+            if pending_gluon_jit:
+                in_gluon = True
+                body_indent = indent
+                pending_gluon_jit = False
+            else:
+                in_gluon = False
+            continue
+        if pending_gluon_jit and stripped and not stripped.startswith("@"):
+            pending_gluon_jit = False
+        if in_gluon and stripped and indent <= body_indent and not stripped.startswith(("@", ")", ",")):
+            in_gluon = False
+        if in_gluon:
+            result.append((change_kind, text))
+    return result
+
+
+def classify_gluon_api_contract(
+    patch_text: str,
+    task_meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Classify tl.* usage inside @gluon.jit independently from output dialect."""
+    policy = _normalize_gluon_tl_policy(task_meta)
+    source_origin = _normalize_source_origin(task_meta)
+    allowed_symbols = _metadata_symbol_set(task_meta, "allowed_tl_symbols", _STRICT_ALLOWED_TL_SYMBOLS)
+    forbidden_symbols = _metadata_symbol_set(task_meta, "forbidden_tl_symbols", _DEFAULT_FORBIDDEN_TL_SYMBOLS)
+    seen: list[dict[str, str]] = []
+    forbidden_seen: list[dict[str, str]] = []
+    for change_kind, line in _gluon_jit_code_entries(patch_text):
+        for match in _TL_SYMBOL_RE.finditer(line):
+            symbol = f"tl.{match.group(1)}"
+            entry = {
+                "symbol": symbol,
+                "location": "inside_gluon_jit",
+                "change_kind": change_kind,
+            }
+            seen.append(entry)
+            if symbol in forbidden_symbols:
+                forbidden_seen.append(entry)
+                continue
+            if symbol in allowed_symbols:
+                continue
+            if symbol in _CONDITIONAL_SOURCE_PRESERVE_TL_SYMBOLS:
+                if policy in {"production_source_allowed", "preserve_existing_allowed"} and change_kind != "added":
+                    continue
+                forbidden_seen.append(entry)
+                continue
+            if change_kind == "added" or policy == "strict_generated":
+                forbidden_seen.append(entry)
+    if forbidden_seen:
+        status = "leftover_tl_device_api"
+    elif seen:
+        status = "allowed_tl_only"
+    else:
+        status = "ok"
+    return {
+        "gluon_api_contract_status": status,
+        "tl_symbols_seen": seen,
+        "forbidden_tl_symbols_seen": forbidden_seen,
+        "gluon_tl_policy": policy,
+        "source_origin": source_origin,
+        "contract_schema_version": _CONTRACT_SCHEMA_VERSION,
+    }
+
+
+def classify_layout_contract(
+    patch_text: str,
+    task_meta: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    policy = _normalize_layout_policy(task_meta)
+    runtime_layout_entries: list[dict[str, str]] = []
+    layout_entries: list[dict[str, str]] = []
+    for change_kind, line in _gluon_jit_code_entries(patch_text):
+        if not _GLUON_LAYOUT_CONSTRUCTOR_RE.search(line):
+            continue
+        entry = {
+            "line": line.strip(),
+            "location": "inside_gluon_jit",
+            "change_kind": change_kind,
+        }
+        layout_entries.append(entry)
+        if "constexpr" not in line:
+            runtime_layout_entries.append(entry)
+    if runtime_layout_entries:
+        status = "runtime_layout_object"
+    elif policy == "host_preferred" and any(entry["change_kind"] == "added" for entry in layout_entries):
+        status = "missing_layout_contract"
+    else:
+        status = "ok"
+    return {
+        "layout_contract_status": status,
+        "layout_construction_policy": policy,
+        "layout_symbols_seen": layout_entries,
+        "contract_schema_version": _CONTRACT_SCHEMA_VERSION,
+    }
+
+
+def _has_host_side_mixed_dispatch(patch_text: str) -> bool:
+    added_text = "\n".join(_added_lines(patch_text)) if _added_lines(patch_text) else patch_text
+    lowered = added_text.lower()
+    if not ("gluon" in lowered and ("triton" in lowered or "plain" in lowered)):
+        return False
+    has_gluon_launch = bool(
+        re.search(r"\b(?:gluon[A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*_?gluon[A-Za-z0-9_]*)\s*\[", added_text)
+    )
+    has_plain_launch = bool(
+        re.search(r"\b[A-Za-z_][A-Za-z0-9_]*(?:triton|plain)[A-Za-z0-9_]*\s*\[", added_text)
+        or re.search(r"\b[A-Za-z_][A-Za-z0-9_]*_kernel\s*\[", added_text)
+    )
+    dispatch_condition = any(
+        marker in lowered
+        for marker in (
+            "if ",
+            "elif ",
+            "else:",
+            "dispatch",
+            "use_gluon",
+            "use_triton",
+            "fallback",
+            "shape",
+            "bucket",
+        )
+    )
+    return has_gluon_launch and has_plain_launch and dispatch_condition
+
+
+def _legacy_classify_patch_output_dialect(patch_text: str) -> str:
     added = _added_lines(patch_text)
     added_text = "\n".join(added) if added else patch_text
     has_gluon = any(marker in added_text for marker in _AMD_GLUON_PATCH_MARKERS) or bool(
@@ -913,6 +1193,22 @@ def classify_patch_output_dialect(patch_text: str) -> str:
     )
     has_plain_triton = any(marker in added_text for marker in _PLAIN_TRITON_PATCH_MARKERS)
     if has_gluon and has_plain_triton:
+        return "mixed"
+    if has_gluon:
+        return "amd_gluon"
+    if has_plain_triton:
+        return "plain_triton"
+    return "unknown"
+
+
+def classify_patch_output_dialect(patch_text: str) -> str:
+    added = _added_lines(patch_text)
+    added_text = "\n".join(added) if added else patch_text
+    has_gluon = any(marker in added_text for marker in _AMD_GLUON_PATCH_MARKERS) or bool(
+        re.search(r"\bgl\.(?:load|store|program_id|arange|zeros|full|cdiv|maximum|minimum|exp)\b", added_text)
+    )
+    has_plain_triton = any(marker in added_text for marker in _PLAIN_TRITON_PATCH_MARKERS)
+    if has_gluon and has_plain_triton and _has_host_side_mixed_dispatch(patch_text):
         return "mixed"
     if has_gluon:
         return "amd_gluon"
@@ -1030,11 +1326,24 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
     best_candidate_shape_geomean: float | None = None
     best_has_shape_regression = False
     best_actual_output_dialect = "unknown"
+    best_legacy_output_dialect = "unknown"
+    best_api_contract: dict[str, Any] = {
+        "gluon_api_contract_status": "ok",
+        "gluon_tl_policy": _normalize_gluon_tl_policy({}),
+        "tl_symbols_seen": [],
+        "forbidden_tl_symbols_seen": [],
+    }
+    best_layout_contract: dict[str, Any] = {
+        "layout_contract_status": "ok",
+        "layout_construction_policy": _normalize_layout_policy({}),
+        "layout_symbols_seen": [],
+    }
     baseline_shape_geomean = _geomean_ms(baseline_shape_latencies)
     task_meta = _find_task_metadata_for_patch_dir(patch_dir)
     required_patch_target_symbols = _metadata_list(task_meta.get("required_patch_target_symbols"))
     forbidden_patch_target_symbols = _metadata_list(task_meta.get("forbidden_patch_target_symbols"))
     required_output_dialect = _required_output_dialect(task_meta, label=patch_dir.name)
+    legacy_output_dialect_classification = "unknown"
     true_baseline_ms = baseline_ms
     true_baseline_shape_latencies = dict(baseline_shape_latencies)
     comparison_target = str(task_meta.get("comparison_target") or "true_baseline").strip().lower()
@@ -1091,7 +1400,20 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         if forbidden_target:
             logger.info("Skipping %s because it touches forbidden target scope: %s", name, forbidden_target)
             continue
+        api_contract = classify_gluon_api_contract(patch_text, task_meta)
+        if api_contract["gluon_api_contract_status"] in {"leftover_tl_device_api", "invalid_plain_fallback"}:
+            logger.info(
+                "Skipping %s because Gluon API contract failed: %s",
+                name,
+                api_contract["forbidden_tl_symbols_seen"],
+            )
+            continue
+        layout_contract = classify_layout_contract(patch_text, task_meta)
+        if layout_contract["layout_contract_status"] == "runtime_layout_object":
+            logger.info("Skipping %s because layout contract failed: runtime layout object", name)
+            continue
         actual_output_dialect = classify_patch_output_dialect(patch_text)
+        legacy_output_dialect_classification = _legacy_classify_patch_output_dialect(patch_text)
         if not _dialect_contract_satisfied(required_output_dialect, actual_output_dialect):
             logger.info(
                 "Skipping %s because required_output_dialect=%s but patch classified as %s",
@@ -1140,6 +1462,9 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
             best_shape_speedups = shape_speedups
             best_has_shape_regression = has_shape_regression
             best_actual_output_dialect = actual_output_dialect
+            best_api_contract = api_contract
+            best_layout_contract = layout_contract
+            best_legacy_output_dialect = legacy_output_dialect_classification
 
     if best_patch_id is None or (comparison_target == "safe_anchor" and best_speedup <= 1.0):
         logger.debug(
@@ -1192,8 +1517,17 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         "has_significant_shape_regression": best_has_shape_regression,
         "required_output_dialect": required_output_dialect,
         "actual_output_dialect": best_actual_output_dialect,
+        "legacy_output_dialect_classification": best_legacy_output_dialect,
         "dialect_contract_satisfied": dialect_ok,
         "gluon_execution_contract_satisfied": gluon_execution_ok,
+        "gluon_api_contract_status": best_api_contract["gluon_api_contract_status"],
+        "gluon_tl_policy": best_api_contract["gluon_tl_policy"],
+        "tl_symbols_seen": best_api_contract["tl_symbols_seen"],
+        "forbidden_tl_symbols_seen": best_api_contract["forbidden_tl_symbols_seen"],
+        "layout_contract_status": best_layout_contract["layout_contract_status"],
+        "layout_construction_policy": best_layout_contract["layout_construction_policy"],
+        "layout_symbols_seen": best_layout_contract["layout_symbols_seen"],
+        "contract_schema_version": _CONTRACT_SCHEMA_VERSION,
         "gluon_l1_anchor_viability": anchor_viability,
         "not_viable_for_l1": anchor_viability == "not_viable_for_l1",
         "overhead_source": overhead_source,
@@ -1332,6 +1666,40 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
 
             if pf and Path(pf).exists():
                 patch_text = Path(pf).read_text(errors="replace")
+                existing["legacy_output_dialect_classification"] = _legacy_classify_patch_output_dialect(patch_text)
+                api_contract = classify_gluon_api_contract(patch_text, task_meta)
+                layout_contract = classify_layout_contract(patch_text, task_meta)
+                existing.update(api_contract)
+                existing.update(layout_contract)
+                if api_contract["gluon_api_contract_status"] in {"leftover_tl_device_api", "invalid_plain_fallback"}:
+                    logger.warning(
+                        "rewrite_best_results(%s): selected patch violates Gluon API contract: %s.",
+                        patch_dir.name,
+                        api_contract["forbidden_tl_symbols_seen"],
+                    )
+                    existing["best_patch_id"] = None
+                    existing["best_patch_file"] = None
+                    existing["best_patch_speedup"] = 0.0
+                    existing["scope_compliant"] = False
+                    existing["llm_selection_analysis"] = (
+                        existing.get("llm_selection_analysis") or ""
+                    ) + " [Invalidated: selected patch violated Gluon API contract]"
+                    existing_path.write_text(json.dumps(existing, indent=2))
+                    return existing
+                if layout_contract["layout_contract_status"] == "runtime_layout_object":
+                    logger.warning(
+                        "rewrite_best_results(%s): selected patch violates layout contract.",
+                        patch_dir.name,
+                    )
+                    existing["best_patch_id"] = None
+                    existing["best_patch_file"] = None
+                    existing["best_patch_speedup"] = 0.0
+                    existing["scope_compliant"] = False
+                    existing["llm_selection_analysis"] = (
+                        existing.get("llm_selection_analysis") or ""
+                    ) + " [Invalidated: selected patch created a runtime layout object]"
+                    existing_path.write_text(json.dumps(existing, indent=2))
+                    return existing
                 actual_output_dialect = classify_patch_output_dialect(patch_text)
                 if not _dialect_contract_satisfied(required_output_dialect, actual_output_dialect):
                     logger.warning(

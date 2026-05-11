@@ -148,6 +148,10 @@ primary axis is the named optimization direction.
 ```yaml
 required_output_dialect: plain_triton | amd_gluon | mixed | any
 search_set: base | shared | extension  # optional legacy compatibility bucket
+source_origin: generated_overlay | existing_amd_gluon_operator | nv_gluon_translation | unknown
+gluon_tl_policy: strict_generated | preserve_existing_allowed | production_source_allowed
+layout_construction_policy: host_preferred | constexpr_in_kernel_allowed | source_preserve
+execution_mode: jit | aot | mixed_jit_aot | prebuilt
 gluon_doc_profile: extension_l0_minimal | nv_to_amd_translation | memory_lowering | matrix_lowering | shape_bucketed_dispatch | jit_aot_sensitive | shared_transplant | gluon_variant_from_anchor | hybrid_dispatch | hybrid_dispatch_from_evidence | base_or_shared_gluon
 required_gluon_docs:
   - gluon_skill_path
@@ -165,6 +169,11 @@ Use `required_output_dialect=amd_gluon` for required AMD Gluon L0/L1 tasks and
 `required_output_dialect=mixed` only for explicit host-side dispatch between
 verified plain Triton and AMD Gluon paths. `search_set` is optional compatibility
 metadata, not a planning axis.
+Do not classify an executed AMD Gluon path as `mixed` merely because legal
+`tl.range`, `tl.constexpr`, or source-preserved `tl.*` appears inside
+`@gluon.jit`; `gluon_tl_policy` governs internal API validity separately.
+Missing `source_origin` is fail-closed and should be treated as
+`generated_overlay` / `strict_generated`.
 Round 1 L0 overlays must name a same-batch `plain_competitor`; that task's
 `Base family` must match the overlay's `source_base_family`.
 
@@ -193,10 +202,11 @@ Round 1 L0 overlays must name a same-batch `plain_competitor`; that task's
   broadcasts, tensor creations, and the single allowed subpath/component?
 - Does a required `amd_gluon` result contain real Gluon markers or a valid
   `mixed` path?
-- Does every `@gluon.jit` tensor creation use `gl.*` with explicit layouts, not
-  leftover `tl.arange`, `tl.zeros`, `tl.full`, `tl.load`, `tl.dot`, or `tl.where`?
-- Does every `@gluon.jit` body avoid leftover `tl.*` math/reductions such as
-  `tl.sigmoid`, `tl.max`, `tl.sum`, and direct `tl.dot`?
+- Does every generated `@gluon.jit` tensor/dataflow path use `gl.*` with
+  explicit layouts, not leftover `tl.arange`, `tl.zeros`, `tl.full`, `tl.load`,
+  or `tl.dot`?
+- Are any `tl.where` / `tl.cdiv` occurrences source-preserved under an explicit
+  non-strict policy rather than newly introduced as plain Triton device dataflow?
 - Does the patch avoid backup/temp files such as `.bak`, `.backup`, `.orig`,
   `.tmp`, or editor-swap copies?
 - Does a required `mixed` result contain both Base/dispatch and Gluon paths?

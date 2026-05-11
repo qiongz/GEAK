@@ -375,6 +375,10 @@ Triton-family task frontmatter may include:
 required_output_dialect: plain_triton | amd_gluon | mixed | any
 gluon_doc_profile: extension_l0_minimal | nv_to_amd_translation | memory_lowering | matrix_lowering | shape_bucketed_dispatch | jit_aot_sensitive | shared_transplant | gluon_variant_from_anchor | hybrid_dispatch | hybrid_dispatch_from_evidence | base_or_shared_gluon
 search_set: base | shared | extension  # optional compatibility bucket
+source_origin: generated_overlay | existing_amd_gluon_operator | nv_gluon_translation | unknown
+gluon_tl_policy: strict_generated | preserve_existing_allowed | production_source_allowed
+layout_construction_policy: host_preferred | constexpr_in_kernel_allowed | source_preserve
+execution_mode: jit | aot | mixed_jit_aot | prebuilt
 ```
 
 Rules:
@@ -404,6 +408,22 @@ Rules:
 - Shared tasks may output plain Triton; those results are
   `Gluon-informed` / shared transplant evidence, not Gluon-positive evidence.
 - Required AMD Gluon tasks are checked by patch dialect classification.
+- Output dialect is an execution-path contract. Do not mark an executed AMD Gluon
+  path as `mixed` merely because legal or source-preserved `tl.*` occurs inside
+  `@gluon.jit`.
+- `gluon_tl_policy` is the internal API contract:
+  - `strict_generated`: generated overlays may keep only compile-time-safe
+    `tl.*` such as `tl.constexpr` and `tl.range`; new tensor/dataflow `tl.*`
+    is rejected.
+  - `preserve_existing_allowed`: translation tasks may preserve source-proven
+    compatible `tl.*`, but new plain Triton tensor/dataflow remains suspect.
+  - `production_source_allowed`: existing production AMD Gluon operators may
+    preserve audited mixed `tl.*` idioms; new `tl.where` / `tl.cdiv` still needs
+    explicit task evidence.
+- `layout_construction_policy` is separate from output dialect. Generated L0
+  defaults to host-created layouts; existing production source may preserve
+  in-kernel `gl.constexpr` layout declarations. Runtime layout objects remain
+  invalid.
 
 ## measurement_boundary_contract
 

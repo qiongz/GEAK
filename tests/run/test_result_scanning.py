@@ -20,6 +20,12 @@ def test_scan_results_surfaces_gluon_contract_and_anchor_viability(tmp_path: Pat
                 "actual_output_dialect": "amd_gluon",
                 "dialect_contract_satisfied": True,
                 "gluon_execution_contract_satisfied": True,
+                "legacy_output_dialect_classification": "mixed",
+                "gluon_api_contract_status": "allowed_tl_only",
+                "layout_contract_status": "ok",
+                "source_origin": "existing_amd_gluon_operator",
+                "gluon_tl_policy": "production_source_allowed",
+                "layout_construction_policy": "source_preserve",
                 "required_patch_target_symbols": ["target_stage"],
                 "has_significant_shape_regression": True,
                 "per_shape_speedups": {
@@ -38,6 +44,11 @@ def test_scan_results_surfaces_gluon_contract_and_anchor_viability(tmp_path: Pat
 
     assert "actual_output_dialect=amd_gluon" in text
     assert "gluon_execution_contract_satisfied=True" in text
+    assert "gluon_api_contract_status=allowed_tl_only" in text
+    assert "layout_contract_status=ok" in text
+    assert "legacy_output_dialect_classification=mixed" in text
+    assert "source_origin=existing_amd_gluon_operator" in text
+    assert "gluon_tl_policy=production_source_allowed" in text
     assert "required_patch_target_symbols=['target_stage']" in text
     assert "case_small=0.0250x" in text
     assert "Gluon L1 anchor viability: not_viable_for_l1" in text

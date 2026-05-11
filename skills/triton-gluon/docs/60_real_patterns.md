@@ -159,6 +159,12 @@ For `plain_triton -> amd_gluon`, use this order:
 5. Choose matrix path if needed.
 6. Add shared-memory or pipeline features only after the first candidate works.
 
+For existing production AMD Gluon operators, do not force the plain overlay
+model. Use `source_origin=existing_amd_gluon_operator` only when the measured
+baseline already executes that operator path, then preserve source contracts
+first: JIT/AOT fallback, target guards, layout declarations, artifact selection,
+and stage dependencies.
+
 The first Gluon candidate should usually be a mechanical,
 semantics-preserving rewrite unless the source is already AMD Gluon. The goal is
 not to use the most advanced Gluon feature immediately; it is to create a
@@ -201,6 +207,10 @@ Stay in plain Triton when:
 - the target-specific path would only be compile-valid, not benchmark-valid.
 - the Gluon task cannot name the optimization direction, plain Triton
   competitor, and measured hot path it improves.
+
+Stay on the production Gluon in-dialect path when the source is already a
+measured AMD Gluon operator. In that case, plain Triton is comparison or
+fallback evidence, not a mandatory same-batch competitor for every direction.
 
 `gl.load` / `gl.store` are not a failure to use AMD. They are often the right
 first Gluon rewrite for scalar or simple vector paths. Move to
