@@ -11,6 +11,7 @@ Implementation details live in worker-routed docs (`20_component_traits.md`,
 - `### Search policy: optimization_direction_metadata_sets`
 - `### Search policy: optimization_direction_dialect_overlay`
 - `### Search policy: overlay_direction_vs_mechanism`
+- `### Search policy: atomic_component_lattice`
 - `### Search policy: overlay_priority_routing`
 - `### Search policy: l0_scope_classification`
 - `### Search policy: evidence_anchored_composition`
@@ -133,6 +134,51 @@ For high-coupling L0 work, the same rule still applies: if the Gluon path needs
 execution boundary. If the only available Base task is a narrow local cleanup,
 prefer shrinking the Gluon target to that local component or generating a
 matching Base task before emitting the overlay.
+
+### Search policy: atomic_component_lattice
+
+Kernel family names are routing hints, not a complete coverage mechanism. Plan
+Gluon work by decomposing the target into atomic components, then choose one
+primary component for `patch_0`. Other components should be listed as
+secondary components or blockers in the task body / notes, not turned into new
+hard metadata fields.
+
+Atomic components:
+
+| Component | Covers | Typical first Gluon scope |
+| --- | --- | --- |
+| `index_map` | program ids, `tl.arange`, offsets, strides, pointer arithmetic | one index expression or address-family smoke path |
+| `mask_boundary` | tail masks, causal/window masks, page/block boundaries | one mask parent layout and its guarded load/store |
+| `load_store` | global loads/stores, coalescing, cache path, store dtype | one load/store value layout with generic `gl.load` / `gl.store` first |
+| `layout_broadcast` | `SliceLayout`, parent-layout map, `[:, None]`, `[None, :]` | one parent layout and its slice/broadcast expression |
+| `matrix_operand` | `tl.dot`, MFMA/WMMA, operand/result layout | matrix skeleton with result layout and operand layouts |
+| `scale_dtype` | fp8/fp4 scales, quant/dequant, packed dtype, casts | one scale-layout or dtype conversion boundary |
+| `reduction_accumulator` | sum/max/softmax/rms/topk accumulators, loop-carried state | accumulator layout anchor for one reduction axis |
+| `selection_update` | topk/sampler compare-select-index update | compare/select state update without also changing storage ABI |
+| `state_update` | scan, SSM, recurrent state, prefix update | one state transition or scan step smoke path |
+| `epilogue_fusion` | activation, bias, norm, quant, store epilogue | one epilogue expression after anchor correctness |
+| `shape_dispatch` | multi-shape buckets, constexpr layout, host dispatch | explicit host-side bucket with no-regression fallback |
+| `wrapper_integration` | JIT/AOT/prebuilt modules, import wiring, fallback | launch/wiring evidence, not kernel-body tuning |
+| `scheduler_launch` | persistent, work queue, swizzle, num_warps/stages | later-stage refinement after a safe anchor |
+
+Use this lattice as a composition model:
+
+```text
+kernel family -> component signals -> primary_component -> L0 scope
+secondary_components -> expected_failure_layers / blocked_by
+```
+
+Guidance:
+
+- `patch_0` should have one primary component unless `bundle_allowed=true`.
+- If the primary component cannot execute without converting unrelated
+  components, shrink the task or emit a skeleton task that names those blockers.
+- Unknown kernels should not default to `whole_jit_kernel`. Prefer Base/plain
+  work, or the smallest `index_map`, `load_store`, or `layout_broadcast` smoke
+  path with a note that classification is incomplete.
+- Use family labels such as GEMM, attention, softmax, topk, or elementwise only
+  to choose likely component groups. The component lattice decides the actual
+  Gluon scope.
 
 ### Search policy: overlay_priority_routing
 
