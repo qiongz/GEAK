@@ -28,6 +28,7 @@ policy and task allocation live in `10_search_policies.md`.
 - `### Trait: layout_slice_broadcast`
 - `### Trait: layout_source_first_required`
 - `layout_derivation_and_cost_model`
+- `whole_kernel_layout_map_recipe`
 - `### Trait: memory_generic`
 - `### Trait: memory_amd_buffer`
 - `### Trait: memory_shared_async_descriptor`
@@ -187,6 +188,35 @@ Cost checks before editing:
 When in doubt, keep the first patch smaller: explicit base layout plus generic
 memory access, then move one layout, memory, or matrix component at a time under
 the existing patch evolution rules.
+
+## whole_kernel_layout_map_recipe
+
+Use this recipe before editing a compile-risk whole-kernel Gluon task or any
+task with several parent layouts. It is generic across kernel families.
+
+Write a layout map table before the first edit:
+
+```text
+expression | parent layout | slice axis | expand direction | expected rank | owner tensor
+```
+
+Rules:
+
+1. Enumerate every logical 2D/3D expression before writing code. Examples of
+   expression families include input tile offsets, mask broadcasts, matrix
+   operands, reduction states, accumulator updates, and output stores.
+2. Give each expression its own parent layout. Reuse a parent only when the
+   logical axes and broadcast directions are the same.
+3. Generate every 1D index from `SliceLayout(axis, parent)` of the exact parent
+   layout used by the later broadcast expression.
+4. Do not reuse a convenient 1D tensor across parents. Use names that encode the
+   parent context, such as `idx_x_xy`, `idx_x_xz`, or `idx_k_kn`.
+5. Build `SliceLayout`, `DotOperandLayout`, and shape-, target-, or
+   launch-dependent `BlockedLayout` in host/layout-factory code and pass them as
+   `gl.constexpr`. Do not construct those layouts dynamically inside
+   `@gluon.jit`.
+6. If a row combines layout, matrix, reduction, and wrapper changes, split it
+   into failure layers or mark the task as a compile-risk whole-kernel anchor.
 
 ### Trait: memory_generic
 

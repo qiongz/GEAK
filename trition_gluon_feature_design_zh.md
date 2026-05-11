@@ -1,7 +1,7 @@
 # Triton-Gluon Feature Design
 
 本文档说明 `feature/triton-gluon-mi3xx-baseline` 从 `main` 分支点
-`bb7f1a0a` 之后、直到当前 HEAD `1116122b` 引入并保留下来的
+`bb7f1a0a` 之后、直到当前 HEAD `81d27cc6` 引入并保留下来的
 Triton-Gluon 改进，并把
 `/apps/qiongzhu/GEAK_triton_gluon_baseline_planner_widen` 中的 planner、
 tasks、subagents、rounds、postprocess 流水线串起来。
@@ -137,8 +137,10 @@ tasks、subagents、rounds、postprocess 流水线串起来。
 - 新增 `source_origin`、`gluon_tl_policy`、`layout_construction_policy` 三类合同，把输出 dialect、Gluon 内部 API 合法性、layout 构造策略拆开：合法 `tl.range` / `tl.constexpr` 或 source-preserved `tl.where` 不会让 executed AMD Gluon path 误判为 `mixed`。
 - Round 1 L0 overlay 必须绑定同批次的 `Plain competitor`，且该 plain 任务的 `Base family` 必须匹配 overlay 的 `Source Base family`；只写 family 名称但没有具体同批任务不再通过审计。
 - Round 1 L0 overlay 进一步要求和 `Plain competitor` 绑定到同一 target component / optimization direction，而不只是同一个 Source Base family；`Plain competitor` 必须是同批 `required_output_dialect=plain_triton` 的 Base task，不能是 Shared、Gluon、mixed 或 hybrid task。
-- 新增 `Gluon L0 scope classification`：planner 在发 L0 前要判断最小可执行单元、layout-heavy 风险、是否能不翻译整个算法就执行并反馈到 measured output、预期是 `execution_anchor` 还是 `performance_candidate`。
+- 新增结构化 `Gluon L0 scope classification`：planner 在发 L0 前必须写 `l0_scope_classification: low_coupling | high_coupling | infeasible` 和 `l0_coupling_reasons`，判断最小可执行单元、layout-heavy 风险、是否能不翻译整个算法就执行并反馈到 measured output、预期是 `execution_anchor` 还是 `performance_candidate`。
+- L0 审计会拦截不自洽的高耦合 target：`inline_scoped_helper` 不能用于 online softmax accumulator、`tl.dot`/matrix path、loop-carried reduction、cross-stage ABI、wrapper reroute 或 whole-kernel/helper rewrite；此类任务必须 shrink、report infeasible、改用有理由的 `whole_jit_kernel`，或不发 Gluon task。
 - L0 execution-boundary metadata 成为 Round 1 AMD Gluon overlay 的硬合同：`minimum_executable_unit`、`allowed_execution_path`、`scope_infeasible_policy` 必须清楚；如果 scoped path 不可行，不能发一个 required AMD Gluon task 去强迫 worker 扩大到整 kernel。
+- Round 2/3 仍要继承或引用 L0 scope classification：prior Gluon compile failed、未执行或 scope escalation 时不能升级 L1 / `gluon_variant` / Hybrid；正确但慢只能做 narrow overhead refinement；只有 shape/sub-operation win 才能进入 variant/hybrid。
 - L1 和 Hybrid 不凭兴趣升级，只由 prior verified evidence、anchor viability、per-shape/sub-operation 证据触发。
 
 ### 3.4 GPU budget、队列和多轮搜索
@@ -186,6 +188,8 @@ tasks、subagents、rounds、postprocess 流水线串起来。
   - `target_kernel_role`
   - `measured_output_dependency`
   - `integration_boundary`
+  - `l0_scope_classification`
+  - `l0_coupling_reasons`
   - `extension_intent`
   - `expected_outcome`
   - `not_viable_for_l1_if_slower_than_base`
@@ -216,7 +220,9 @@ tasks、subagents、rounds、postprocess 流水线串起来。
 ### 3.8 Patch selection、evaluation 和 result attribution
 
 - `result_scanning.py` 扫描 `best_results.json` 时带出 `required_output_dialect`、`actual_output_dialect`、`dialect_contract_satisfied`、`gluon_execution_contract_satisfied`、`per_shape_speedups`、`has_significant_shape_regression`。
-- `result_scanning.py` 还会带出 `scope_compliant`、`forbidden_scope_violation`、`minimum_executable_unit`、`allowed_execution_path`、`scope_infeasible_policy`、`scope_infeasible_reported`、`extension_intent`、`expected_outcome`、`overhead_source` 和 `gluon_l1_anchor_viability`，用于下一轮判断 L0 是否只是执行锚点、是否可升级到 L1。
+- `result_scanning.py` 还会带出 `scope_compliant`、`forbidden_scope_violation`、`scope_escalation_violation`、`l0_scope_classification`、`l0_coupling_reasons`、`minimum_executable_unit`、`allowed_execution_path`、`scope_infeasible_policy`、`scope_infeasible_reported`、`extension_intent`、`expected_outcome`、`overhead_source` 和 `gluon_l1_anchor_viability`，用于下一轮判断 L0 是否只是执行锚点、是否可升级到 L1。
+- postprocess 会继承 task metadata 并检测 L0 scope escalation：当 task 声明 `inline_scoped_helper`，但 patch 新增 whole-kernel `@gluon.jit`、新建同名 full Gluon kernel、或把 wrapper 主路径 reroute 到 whole Gluon kernel 时，标记 `scope_compliant=false` / `scope_escalation_violation`，并作为不可选 Gluon evidence。
+- result metadata 还会归纳 `gluon_evidence_summary`：`compile_failed_or_not_executed`、`scope_escalation`、`executed_slower`、`executed_win`、`executed_win_by_shape`，供下一轮 planner 决定 shrink/retry L0、做 overhead refinement、还是允许 variant/hybrid。
 - selector 现在把 `actual_output_dialect` 与 `gluon_api_contract_status` 分开：前者按执行路径和 host dispatch 判断，后者检查 `@gluon.jit` 内部 `tl.*` 是否符合 `gluon_tl_policy`；过渡期保留 `legacy_output_dialect_classification` 便于审计差异。
 - postprocess 使用 deterministic best patch selection，强制以真实 baseline 和 task contract 选 patch。
 - 最终结果以 FULL_BENCHMARK verified speedup 为权威。
@@ -237,11 +243,11 @@ tasks、subagents、rounds、postprocess 流水线串起来。
 | 流程层 | 设计目标 | 保留 feature | 主要模块 |
 | --- | --- | --- | --- |
 | Preprocess / feature metadata | 让 Triton-family 输入在进入 planner 前带上同一套 dialect、target、shape 信息 | dialect 自动推断、Gluon mode、target backend 解析、shape coverage profile、benchmark case stream | `preprocess/discovery_types.py`、`preprocess/preprocessor.py` |
-| Orchestrator / Planner | 先规划 Triton 优化方向，再决定 plain / Gluon / mixed 实现层 | Base mandatory families、overlay priority routing、same-batch plain competitor、doc profile metadata、scoped target component、L0 execution-boundary、audit failure dump | `agents/heterogeneous/task_generator.py`、`agents/heterogeneous/prompts.py` |
+| Orchestrator / Planner | 先规划 Triton 优化方向，再决定 plain / Gluon / mixed 实现层 | Base mandatory families、overlay priority routing、same-batch/same-component plain competitor、结构化 L0 scope classification、L0 execution-boundary、audit failure dump | `agents/heterogeneous/task_generator.py`、`agents/heterogeneous/prompts.py` |
 | Dispatch / Worker context | 把 task 合同变成 subagent 可执行、可 gate 的上下文 | `required_output_dialect` 推断、doc profile -> gate path、显式/推断 doc gate 合并、worker doc gate 与 planner guidance 分离、required/forbidden target scope | `run/dispatch.py`、`run/gluon_doc_profiles.py`、`run/target_contracts.py`、`run/pipeline_helpers.py` |
 | Subagent implementation guardrails | 限制 worker 只做有证据的 scoped Gluon patch | targeted split-doc reading、lookup/implementation plan、one component per patch、source-first guardrails、same ABI comparison | `skills/triton-gluon/docs/*`、`pipeline_helpers.py` |
 | Patch contract / deterministic selection | 防止 marker-only、helper-only、fallback、无关 target 或越界 scope patch 被选中 | dialect contract、target-symbol/target-component touch、forbidden-scope rejection、target-related Gluon execution、static preflight rejection、safe anchor selection | `tools/save_and_test.py`、`run/target_contracts.py`、`postprocess/benchmark_parsing.py` |
-| Round evaluation / final selection | 只让 verified improvement 推动下一轮和最终 best | FULL_BENCHMARK verified speedup、shape regression gate、L0 anchor viability、slowdown diagnostic、final verified selection | `postprocess/evaluation.py`、`postprocess/results.py`、`result_scanning.py` |
+| Round evaluation / final selection | 只让 verified improvement 推动下一轮和最终 best | FULL_BENCHMARK verified speedup、shape regression gate、scope escalation evidence、L0 anchor viability、slowdown diagnostic、final verified selection | `postprocess/evaluation.py`、`postprocess/results.py`、`result_scanning.py` |
 
 #### 3.9.2 Preprocess / feature metadata
 
@@ -261,9 +267,10 @@ tasks、subagents、rounds、postprocess 流水线串起来。
 | Base mandatory families | `task_generator.py` | 保住 main-like Triton no-regression 搜索空间，避免 Gluon 拓宽后丢掉最可能赢的 plain Triton 改写。 |
 | Overlay priority routing | `10_search_policies.md`、`task_generator.py` | 只在同方向 plain competitor 存在且有 layout/memory/matrix/shape 机制时生成 L0 overlay。 |
 | Same-batch plain competitor binding | `task_generator.py` | Round 1 L0 必须绑定具体同批 Base 任务和 Source Base family，防止泛泛“rewrite to Gluon”。 |
-| Same-component overlay binding | `task_generator.py`、`target_contracts.py` | L0 overlay 还必须和 plain competitor 绑定到同一 target component / optimization direction；不接受只共享 broad Base family 的 overlay。 |
-| L0 scope classification | `10_search_policies.md`、`task_generator.py` | 发 L0 前判断最小可执行单元、layout-heavy 风险、是否需要 whole helper、预期是 execution anchor 还是 performance candidate。 |
+| Same-component overlay binding | `task_generator.py`、`target_contracts.py` | L0 overlay 还必须和 plain competitor 绑定到完全相同的 `Optimization direction` 和同一 target component；没有 scoped `Target component` / `Allowed change` 的 broad Base task 不能当 L0 plain competitor。 |
+| Structured L0 scope classification | `10_search_policies.md`、`task_generator.py` | 发 L0 或后续基于 L0 evidence 的任务前，必须写 `l0_scope_classification` / `l0_coupling_reasons`，判断 low/high coupling、infeasible、最小可执行单元和升级门禁。 |
 | L0 execution-boundary metadata | `task_generator.py`、`prompts.py` | Round 1 L0 必须写 `minimum_executable_unit`、`allowed_execution_path`、`scope_infeasible_policy`，不可行时不发 required AMD Gluon task。 |
+| High-coupling L0 audit | `task_generator.py` | `inline_scoped_helper` 不得用于 online softmax accumulator、dot/matrix path、loop-carried reduction、cross-stage ABI、wrapper reroute 或 whole-kernel rewrite；审计失败会给 shrink/repair hint。 |
 | Planner/worker doc 分层 | `prompts.py`、`task_generator.py`、`skills/triton-gluon/docs/*` | planner 读取搜索策略和必要 traits；API cookbook、examples、backup 由 worker doc profile 路由，减少 planning prompt 噪声。 |
 | `gluon_doc_profile` / `required_gluon_docs` | `task_generator.py`、`gluon_doc_profiles.py` | 让任务把“为什么需要哪些 Gluon 文档”结构化传给 dispatch 和 `save_and_test`。 |
 | `source_origin` 路由 | `task_generator.py`、`dispatch.py` | 区分 generated overlay、existing AMD Gluon production operator、NV Gluon translation；缺失时 fail-closed 到 generated overlay 严格合同。 |
@@ -283,6 +290,7 @@ tasks、subagents、rounds、postprocess 流水线串起来。
 | Doc gate additive merge | `dispatch.py` | mandatory docs + profile docs + 显式 docs + heuristic docs 加法合并；显式 docs 不覆盖 mandatory/profile docs。 |
 | Worker doc gate 与 planner guidance 分离 | `gluon_doc_profiles.py`、`pipeline_helpers.py` | run-level Gluon metadata 或 `search_set` 不再单独让 Base/plain task 进入 worker Gluon doc gate。 |
 | L0 execution-boundary context | `dispatch.py`、`pipeline_helpers.py` | 把 `extension_intent`、`minimum_executable_unit`、`allowed_execution_path`、`scope_infeasible_policy`、`whole_kernel_required_reason` 注入 worker prompt。 |
+| Inline scoped helper boundary | `pipeline_helpers.py` | 当 `allowed_execution_path=inline_scoped_helper` 时，worker 明确不能新增 whole-kernel `@gluon.jit`、不能 reroute wrapper 主路径到 full Gluon kernel、不能通过扩大 scope 报成功。 |
 | Gluon API / layout policy context | `dispatch.py`、`pipeline_helpers.py` | 把 `gluon_tl_policy`、`allowed/forbidden_tl_symbols`、`layout_construction_policy` 注入 worker，避免误把合法 production `tl.*` 视为 mixed，也避免新生成 path 混入 leftover `tl.*`。 |
 | REQUIRED BEFORE EDITING block | `pipeline_helpers.py` | subagent prompt 明确列出必须 `view` 的绝对 split-doc path；`save_and_test` 可据此强制 gate。 |
 | Compact Gluon Working Set | `pipeline_helpers.py` | 把 worker 必须遵守的 lookup plan、implementation plan、same ABI、single-component scope、failure modes 注入任务上下文。 |
@@ -313,6 +321,7 @@ tasks、subagents、rounds、postprocess 流水线串起来。
 | Marker-only / definition-only rejection | `save_and_test.py`、`benchmark_parsing.py` | 只加 import、`@gluon.jit`、`gl.*` marker 或未执行 helper 的 patch 会被拒绝。 |
 | Task-aware static preflight | `benchmark_parsing.py`、`save_and_test.py` | required AMD Gluon task 拒绝 broad exception fallback、matrix lowering 中机械 generic `gl.dot`、备份/临时文件。 |
 | Scope compliance reporting | `benchmark_parsing.py`、`result_scanning.py` | `best_results.json` / prior round scan 中记录 `scope_compliant`、`forbidden_scope_violation`、execution-boundary 和 infeasible 状态。 |
+| Scope escalation detection | `benchmark_parsing.py` | 对 inline-scoped L0，检测新增 whole-kernel Gluon helper、同名 full `_gluon` kernel、wrapper 主路径 reroute 等 scope escalation，并把该 patch 作为 invalid/diagnostic evidence。 |
 | `safe_anchor` comparison | `benchmark_parsing.py`、`evaluation.py` | later-round composition 与 verified safe anchor 对齐，不把慢 patch 或 shape regression 当作下一轮起点。 |
 | Deterministic best patch selection | `benchmark_parsing.py` | 统一处理 empty patch、shape regression、dialect/target/execution contract、verified speedup，减少 subagent 自报偏差。 |
 
@@ -323,6 +332,7 @@ tasks、subagents、rounds、postprocess 流水线串起来。
 | Post-round independent evaluation | `postprocess/evaluation.py`、`results.py` | 在独立 worktree 应用候选 patch，重新跑 correctness、FULL_BENCHMARK、profile。 |
 | Verified carry-forward gate | `results.py` | 只有 `verified_speedup > 1.0` 且无显著 shape regression 才更新 `ctx["starting_patch"]` 和全局 best。 |
 | L0 anchor viability | `result_scanning.py`、`task_generator.py` | 结合 dialect/execution、speedup、shape regression、`extension_intent` 和 `not_viable_for_l1_if_slower_than_base` 标注 `viable_for_l1`、`neutral_or_slow_anchor` 或 `not_viable_for_l1`。 |
+| Gluon evidence summary | `benchmark_parsing.py`、`result_scanning.py`、`task_generator.py` | 把 prior Gluon 归纳为 compile failed/not executed、scope escalation、executed slower、executed win、executed win by shape，作为 Round 2/3 是否能升 L1/variant/hybrid 的门禁。 |
 | Missing/slowdown diagnostic | `results.py` | `verified_speedup is None` 或 `<= 1.0` 不崩溃、不污染下一轮；只写诊断原因和 diagnostic patch。 |
 | Final verified selection | `results.py` | final report 跳过 slowdown/unverified candidate；没有 verified improvement 时清空 canonical `best_patch`，保留 `diagnostic_best_patch`。 |
 | Per-shape regression feedback | `result_scanning.py`、`results.py`、`task_generator.py` | 记录 per-shape speedups 和 regression，下一轮 planner 可生成 shape-specific repair 或 hybrid dispatch。 |
@@ -374,10 +384,10 @@ flowchart TB
         TG3A --> TG4[Base mandatory family checklist<br/>plain competitor audit]
         TG4 --> TG4A{Gluon overlay eligible?}
         TG4A -- 否 --> TG5[生成 Base/Shared plain Triton task JSON<br/>Base family / optimization direction]
-        TG4A -- 是 --> TG5O[生成 same-direction overlay task JSON<br/>Plain competitor / source_base_family<br/>required_output_dialect / layer metadata]
+        TG4A -- 是 --> TG5O[生成 same-direction overlay task JSON<br/>Plain competitor / source_base_family<br/>L0 scope classification / layer metadata]
         TG5 --> TG6[_audit_base_family_coverage<br/>Base no-regression]
         TG5O --> TG6
-        TG6 --> TG6A[_audit overlay contract<br/>same-batch + same-component binding<br/>L0 execution boundary / L1 anchor contract]
+        TG6 --> TG6A[_audit overlay contract<br/>same-batch + same-component binding<br/>high-coupling L0 gate<br/>L0 execution boundary / L1 anchor contract]
         TG6A --> TG7[write_task_files<br/>tasks/round_N/*.md]
     end
 
@@ -412,7 +422,7 @@ flowchart TB
     subgraph EVAL[Round Evaluation / Postprocess]
         E0[collect_results / result_scanning] --> E1[deterministic best patch selection]
         E1 --> E2[dialect + API/layout classification<br/>actual_output_dialect / legacy dialect<br/>gluon_api_contract / layout_contract]
-        E2 --> E3[contract checks<br/>required_output_dialect / target symbol-component<br/>forbidden scope / target-related Gluon execution]
+        E2 --> E3[contract checks<br/>required_output_dialect / target symbol-component<br/>forbidden scope / scope escalation<br/>target-related Gluon execution]
         E3 --> E4[per-shape speedups<br/>shape regression detection]
         E4 --> E5[独立 worktree apply patch]
         E5 --> E6[CORRECTNESS + FULL_BENCHMARK + PROFILE]
@@ -473,6 +483,11 @@ Round 1 L0 还必须说明最小可执行单元和允许执行边界：
 `inline_scoped_helper`、`separate_gluon_kernel`、`whole_jit_kernel`
 或 `infeasible`。若局部路径无法在允许边界内执行，应 shrink/report 或拆新任务，
 不能为了让 L0“跑起来”而私自扩大成整 kernel rewrite。
+最新 L0 合同还要求 planner 先写结构化 `l0_scope_classification`：
+`low_coupling` 才能使用 `inline_scoped_helper`；包含 loop-carried state、
+online softmax/reduction、dot/matrix path、cross-stage ABI、wrapper reroute
+等 high-coupling 信号时，必须缩小目标、声明 infeasible、或用有理由的
+`whole_jit_kernel`，不能让 subagent 从 scoped L0 偏移成整 kernel rewrite。
 
 ### 5.3 和旧 Triton-only 搜索的差别
 
@@ -579,8 +594,8 @@ Reject if: correctness fails, shape regression, or benchmark does not improve
 | Round | 搜索重点 | Gluon 组合方式 | 允许升级 | 禁止/降级情况 |
 | --- | --- | --- | --- | --- |
 | Round 1 | 覆盖 plain Triton mandatory Base families，建立 no-regression anchor。 | 对 plain Triton 输入最多一个 L0 overlay，且必须同方向、同组件、priority 足够。 | 只允许最小可执行 L0：scalar/1D stage、单 load/store、index/mask layout、最小 matrix skeleton。 | L0 scope 不可执行就 shrink/report；正确但慢只记录 anchor/overhead，不升级 L1。 |
-| Round 2 | 基于 verified safe anchor 组合证据。 | Base refine、Shared transplant、Gluon L1 单组件 lowering、必要时准备 shape bucket evidence。 | L0 执行成功、可归因、无重大 shape regression 时，可做 memory/layout/matrix L1。 | L0 failed 或慢且无局部胜出时，只做 repair/diagnosis 或回到 Base/Shared。 |
-| Round 3 | 收敛到 verified improvement 和最终选择。 | 只保留有证据的 Gluon variant、Shared transplant 或 Hybrid/mixed dispatch。 | 不同 shape/sub-operation 胜者不同，才生成或选择 mixed/hybrid。 | slowdown、unverified、`not_viable_for_l1` 或 forbidden-scope patch 只保留诊断，不进 canonical best。 |
+| Round 2 | 基于 verified safe anchor 和 prior Gluon evidence 组合。 | Base refine、Shared transplant、Gluon L1 单组件 lowering、必要时准备 shape bucket evidence。 | L0 执行成功、可归因、无重大 shape regression，且未发生 scope escalation 时，可做 memory/layout/matrix L1。 | L0 failed、未执行、scope escalation 或慢且无局部胜出时，只做 shrink/retry L0、overhead repair/diagnosis 或回到 Base/Shared。 |
+| Round 3 | 收敛到 verified improvement 和最终选择。 | 只保留有证据的 Gluon variant、Shared transplant 或 Hybrid/mixed dispatch。 | 不同 shape/sub-operation 胜者不同，才生成或选择 mixed/hybrid。 | slowdown、unverified、scope escalation、`not_viable_for_l1` 或 forbidden-scope patch 只保留诊断，不进 canonical best。 |
 
 Plain Triton 原始搜索方向及意义：
 
@@ -687,9 +702,9 @@ Gluon 可搜索方向及意义：
 - Round 2：基于证据组合
   - 使用 round 1 的 verified safe anchor 作为比较基准。
   - 如果 Base 有 verified speedup：优先 Base refine，或把可移植 component 做 Shared transplant。
-  - 如果 L0 Gluon 执行成功且无重大 shape regression：可生成一个 L1 单组件 lowering，例如 memory path、layout conversion 或 matrix subpath。
+  - 如果 L0 Gluon 执行成功、无重大 shape regression、无 scope escalation：可生成一个 L1 单组件 lowering，例如 memory path、layout conversion 或 matrix subpath。
   - 如果 L0 只是正确但慢：只能做 anchor diagnosis、scope repair、overhead removal；不生成 Gluon variant / Hybrid，除非有明确局部胜出证据。
-  - 如果 Gluon failed：下一轮只允许更小的 layout-only / memory-only smoke path，或回到 Base/Shared。
+  - 如果 Gluon failed、未执行或发生 scope escalation：下一轮只能更小的 layout-only / memory-only smoke path、标记 infeasible，或回到 Base/Shared。
   - 如果某些 shape 上 Gluon 胜、另一些 shape 上 Base 胜：开始准备 `shape_bucketed_dispatch` 或 hybrid evidence，但仍需显式 no-regression。
 
 - Round 3：收敛和选择
@@ -697,7 +712,7 @@ Gluon 可搜索方向及意义：
   - 只保留 verified improvement、无显著 shape regression 的候选进入 carry-forward / final best。
   - 如果 Gluon 某个 component 稳定胜出：可以形成 `amd_gluon` best 或 Gluon-informed plain Triton transplant。
   - 如果不同 shape/sub-operation 有不同胜者：生成或选择 `mixed` / Hybrid host-side dispatch。
-  - 如果 Gluon 仍慢或 unverified：只保留为 `diagnostic_best_patch`、`Gluon-slower` 或 `not_viable_for_l1`，不污染最终 canonical `best_patch`。
+  - 如果 Gluon 仍慢、unverified 或曾 scope escalation：只保留为 `diagnostic_best_patch`、`Gluon-slower`、`scope_escalation` 或 `not_viable_for_l1`，不污染最终 canonical `best_patch`。
   - 最终结果可以是 `plain_triton`、`amd_gluon` 或 `mixed`；判断依据是 verified FULL_BENCHMARK，而不是是否“用了 Gluon”。
 
 ### 6.4 Base plain Triton subagent 如何执行
@@ -793,6 +808,8 @@ Comparison target: true_baseline | safe_anchor | anchor_patch
 Allowed change: <one component or one dispatch decision>
 Target symbol: <required when scoped to a specific stage/helper>
 Target component: <required when scoped to local expressions, tensors, loads/stores, or data paths>
+L0 scope classification: low_coupling | high_coupling | infeasible
+L0 coupling reasons: <why this subpath is or is not self-contained>
 Minimum executable unit: inline_scoped_helper | separate_gluon_kernel | whole_jit_kernel | infeasible
 Allowed execution path: inline_scoped_helper | separate_gluon_kernel | whole_jit_kernel
 Scope infeasible policy: do_not_emit | shrink_or_report | separate_kernel_if_allowed
@@ -805,8 +822,10 @@ Reject if: <conditions that invalidate the patch>
 Extension layer: L0 | L1 | Hybrid
 ```
 
-这些 execution-boundary 字段对 Round 1 L0 AMD Gluon overlay 是强合同；普通
-Base/plain task 不应带这些 worker-only 字段，避免把普通 Triton 搜索噪声化。
+这些 scope / execution-boundary 字段对 Round 1 L0 AMD Gluon overlay 是强合同；
+Round 2/3 中继续发 L0 或从 L0 evidence 升级 L1/variant/hybrid 时，也必须继承或引用
+verified anchor 的 scope classification。普通 Base/plain task 不应带这些 worker-only 字段，
+避免把普通 Triton 搜索噪声化。
 
 ### 7.3 Worker pre-edit contract
 
@@ -838,6 +857,7 @@ Base/plain task 不应带这些 worker-only 字段，避免把普通 Triton 搜�
 - forbidden scope 可以来自 `Forbidden change`、`Reject if`、`Do NOT ...` 或显式 metadata，并归一化为 `forbidden_patch_target_symbols`；patch 如果触达被禁止的 whole-kernel/helper-only/dot/MFMA/buffer/bias scope，会被拒绝。
 - Gluon helper 必须和 target 关联：名称关联、target/helper alias、target-related dispatch，或 target 函数体内新增 Gluon launch。
 - 没有新增 helper 的 Gluon launch 也要和 target symbol 关联；不能靠无关 `*_gluon[grid]` launch 满足 target-specific task。
+- 当 `allowed_execution_path=inline_scoped_helper` 或 `minimum_executable_unit=inline_scoped_helper` 时，patch 不能新增 replacement whole-kernel `@gluon.jit`、不能新建同名 full `_gluon` kernel、不能把 wrapper 主路径 reroute 到 full Gluon kernel；否则记录为 `scope_escalation_violation` 并拒绝作为可选 Gluon evidence。
 - 只出现 `@gluon.jit`、Gluon import、`gl.*` marker、或未执行 helper 的 patch，会被 `save_and_test` 和 deterministic selector 拒绝。
 - required AMD Gluon patch 不能新增 broad `try/except Exception` 后静默走 plain Triton launcher；matrix lowering task 不能用 generic `gl.dot` 作为机械 rewrite 来冒充 operand-layout/MFMA lowering；备份和临时文件也会被拒绝。
 - 对 `gluon_tl_policy=strict_generated` 的 generated overlay，新生成 device tensor/dataflow `tl.arange`、`tl.load`、`tl.store`、`tl.zeros`、`tl.full`、`tl.dot` 是 hard reject；`tl.range`、`tl.constexpr` 等 compile-time/control-flow 用法可允许。
@@ -907,6 +927,10 @@ Base/plain task 不应带这些 worker-only 字段，避免把普通 Triton 搜�
 - auditability 阶段：plain/Base task 不再携带不必要的 Gluon worker metadata；task generation audit 失败会 dump raw tasks 和 parsed summaries，方便定位 planner 丢字段、错绑定或越界。
 - overlay audit tightening 阶段：L0 overlay 审计继续收紧，要求 exact same optimization direction / same target component / auditable plain competitor，`input_dialect=amd_gluon` 不能单独绕开 Base/no-regression audit。
 - dialect/API contract split 阶段：`actual_output_dialect` 改为执行路径判定，新增 `gluon_api_contract_status`、`layout_contract_status`、`source_origin`、`gluon_tl_policy`、`layout_construction_policy` 和 `legacy_output_dialect_classification`，把合法 production `tl.*` / `gl.constexpr` layout 与 generated overlay leftover device API 分开审计。
+- L0 planner guidance 阶段：把 L0 scope classification 从自然语言建议提升为结构化 planner 字段，要求 L0 target 先判断 low/high coupling、最小可执行单元、执行边界和升级条件。
+- L0 metadata parsing 阶段：planner 解析 `l0_scope_classification`、`l0_coupling_reasons` 等 prompt tag 并写入 task config，使 dispatch、worker context 和 selector 能共享同一份 L0 scope 合同。
+- L0 audit repair 阶段：task generation 审计失败时提供更具体的 repair hint，例如要求先生成同方向同组件 Base competitor、缩小 high-coupling L0 target、或说明 whole-kernel required reason。
+- L0 scope enforcement 阶段：隔离 Base task 和 Gluon worker metadata，plain/Base task 不因 Gluon run-level metadata 被污染；`inline_scoped_helper` 高耦合目标和 whole-kernel reroute 会在 planner / postprocess 两侧被拒绝或标记为 scope escalation。
 
 ## 11. 设计结论
 
@@ -919,7 +943,7 @@ Base/plain task 不应带这些 worker-only 字段，避免把普通 Triton 搜�
 - 普通 Triton 当前主要由 planner prompt、profiling/discovery/COMMANDMENT/codebase context 和 Base family 审计生成具体 task；可选 KB 只有存在时才被 planner 读取，worker 不因 Base 身份而强制读取 Gluon docs。
 - planner 只承担搜索策略和合同生成；worker 的 API/trait/example 阅读由 `gluon_doc_profile`、`required_gluon_docs` 和 doc gate 精确路由。
 - `actual_output_dialect`、Gluon 内部 API 合同、layout 构造合同现在分离：用不用 `mixed` 由 host dispatch 决定，`@gluon.jit` 内合法 `tl.*` 或 source-preserved layout 由独立 contract 判断。
-- L0 不再等价于“先写一个大 Gluon 版本”：它必须声明最小可执行边界、允许执行路径和不可行策略；慢的 execution anchor 是诊断证据，不是 L1 升级许可。
+- L0 不再等价于“先写一个大 Gluon 版本”：它必须声明 `l0_scope_classification`、耦合原因、最小可执行边界、允许执行路径和不可行策略；慢的 execution anchor 或 scope escalation 是诊断证据，不是 L1/variant/hybrid 升级许可。
 - 每轮 verified evaluation、target-related execution evidence 和 per-shape evidence 决定下一轮方向。
 - slowdown、missing verified speedup、helper-only、marker-only 或 forbidden-scope patch 都能进入诊断/归因，但不能成为下一轮起点或最终 canonical best。
 

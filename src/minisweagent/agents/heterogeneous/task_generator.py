@@ -212,6 +212,12 @@ _OPTIONAL_GLUON_TASK_METADATA_FIELDS: tuple[tuple[str, str], ...] = (
     ("overhead_source_to_record", "Overhead source to record"),
     ("l0_scope_classification", "L0 scope classification"),
     ("l0_coupling_reasons", "L0 coupling reasons"),
+    ("expected_failure_layers", "Expected failure layers"),
+    ("first_patch_compile_goal", "First patch compile goal"),
+    ("do_not_optimize_before_compile", "Do not optimize before compile"),
+    ("matrix_lowering_required", "Matrix lowering required"),
+    ("declared_failure_layer", "Declared failure layer"),
+    ("changed_failure_layer", "Changed failure layer"),
     ("minimum_executable_unit", "Minimum executable unit"),
     ("target_symbol", "Target symbol"),
     ("target_component", "Target component"),
@@ -2035,11 +2041,14 @@ def _build_search_space_allocation_guidance(
         "- Round 1 plain Triton input may have at most one L0 overlay. Generate it only when `overlay_priority_routing` is Prefer/high-confidence Consider; otherwise spend the slot on another plain Triton direction.",
         "- Before emitting any L0 overlay or later task derived from L0 evidence, perform `Gluon L0 scope classification`: is the candidate layout-heavy, does it include loop-carried state, online reductions, dot/matrix paths, multiple 2D parents, nested layouts, wrapper reroute, cross-stage ABI changes, boundary-specific branches, or other high-coupling logic; can one exact subpath execute without translating the whole algorithm; and is the expected outcome `execution_anchor` or `performance_candidate`?",
         "- L0 scope ladder is generic across kernels: prefer the smallest executable, attributable, low-coupling subpath (scalar/1D stage, one load/store, one index/mask layout smoke path). Consider matrix/MFMA subpaths only after an executed anchor or when the task explicitly proves the matrix subpath is the smallest viable component.",
+        "- Round 1 L0 should prefer generic micro-anchor archetypes, not fixed task labels: layout/broadcast micro-anchor, index/mask layout anchor, load/store layout anchor, matrix operand layout probe, reduction/accumulator layout probe, or wrapper/integration anchor. Name the actual task from the optimization direction and target component.",
+        "- Classify candidate signals by failure layer rather than operator name: attention-like composite path, matrix-like composite path, broadcast-heavy layout path, reduction/accumulator path, conditional/source-first path, or wrapper/integration boundary.",
         "- Required Gluon docs for priority: `00_always_read.md`, `10_search_policies.md` (`optimization_direction_dialect_overlay`, `overlay_priority_routing`), plus `20_component_traits.md` / `60_real_patterns.md` / `50_api_reference.md` only when their routed details apply.",
         "- AMD Gluon overlay prompts must include `Extension layer: L0|L1|Hybrid`, `Optimization direction:`, `Source Base family:`, `Plain competitor:`, `Gluon overlay reason:`, `Overlay priority: Prefer` or `Overlay priority: high-confidence Consider`, `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`. Do not write plain `Overlay priority: Consider` for Round-1 L0.",
         "- Round-1 L0 metadata is mandatory for AMD Gluon overlays, and later L0/L1/variant/hybrid tasks must preserve or reference it from the verified anchor: `l0_scope_classification: low_coupling|high_coupling|infeasible`, `l0_coupling_reasons: ...`, `minimum_executable_unit: inline_scoped_helper|separate_gluon_kernel|whole_jit_kernel|infeasible`, `allowed_execution_path: inline_scoped_helper|separate_gluon_kernel|whole_jit_kernel`, and `scope_infeasible_policy: do_not_emit|shrink_or_report|separate_kernel_if_allowed`. Optional tags include `extension_intent: execution_anchor|performance_candidate`, `expected_outcome: correctness_anchor_not_speedup|possible_speedup`, `not_viable_for_l1_if_slower_than_base: true`, `overhead_source_to_record: ...`, `whole_kernel_required_reason: ...`, `Target symbol:`, and `Target component:`.",
         "- L0 execution path must be exactly one of: `inline_scoped_helper` when the language boundary permits the scoped change; `separate_gluon_kernel` when the task explicitly allows a second launch/temp buffer and marks the task as an execution anchor; `whole_jit_kernel` only when the whole helper/kernel is the minimum executable unit and the task does not forbid whole-kernel rewrite; or `infeasible` as `minimum_executable_unit` only when no required Gluon task should be emitted.",
         "- `inline_scoped_helper` is invalid for high-coupling L0 targets such as online softmax accumulator loops, `tl.dot`/matrix paths, loop-carried reductions, cross-stage ABI changes, or wrapper reroutes. Shrink to a lower-coupling index/mask/load/store smoke path, use a justified `whole_jit_kernel`, or do not emit the Gluon task.",
+        "- `whole_jit_kernel` is a compile-risk anchor, not the default L0 shape. If used, the task must include `expected_failure_layers`, `first_patch_compile_goal`, `do_not_optimize_before_compile: true`, and `matrix_lowering_required: true|false`. `patch_0` should aim for a compile anchor before performance tuning.",
         "- Required Gluon worker contract: ask for `Gluon knowledge lookup plan`, `Gluon implementation plan`, `Performance hypothesis:`, `Same ABI comparison:`, and `Patch evolution:` before editing; stage/helper/local-expression scoped tasks must include `Target symbol:` or `Target component:` and wrap local target names in backticks inside `Allowed change`; reject non-executed Gluon, target-symbol mismatch, leftover plain Triton device APIs inside edited `@gluon.jit`, backup/temp files, and bundled unrelated changes without `bundle_allowed=true`. Keep API-level Gluon rewrite details in the routed skills/docs.",
         "- For an L0 `extension_intent=execution_anchor`, keep `Performance hypothesis:` to execution and attribution: verify the explicit layout/scoped helper can execute and record layout construction or conversion overhead. Do not claim MFMA utilization or broad throughput improvement unless the task is matrix-lowering/L1 or prior evidence supports that mechanism.",
         "- L0 overlay prompts must not ask the worker to convert an entire stage/helper/kernel just to prove Gluon. Scope L0 to one named subpath/component, such as a load/store, layout, mask, or matrix subpath; only use a whole helper as the target when the task explicitly explains why the helper is the smallest viable component.",
@@ -3085,6 +3094,12 @@ _VALID_MINIMUM_EXECUTABLE_UNITS = {"inline_scoped_helper", "separate_gluon_kerne
 _VALID_L0_ALLOWED_EXECUTION_PATHS = {"inline_scoped_helper", "separate_gluon_kernel", "whole_jit_kernel"}
 _VALID_SCOPE_INFEASIBLE_POLICIES = {"do_not_emit", "shrink_or_report", "separate_kernel_if_allowed"}
 _VALID_L0_SCOPE_CLASSIFICATIONS = {"low_coupling", "high_coupling", "infeasible"}
+_WHOLE_JIT_COMPILE_RISK_FIELDS = (
+    "expected_failure_layers",
+    "first_patch_compile_goal",
+    "do_not_optimize_before_compile",
+    "matrix_lowering_required",
+)
 _HIGH_COUPLING_L0_MARKERS = (
     "tl.dot",
     "gl.dot",
@@ -3122,7 +3137,7 @@ def _task_contract_raw_value(task: AgentTask, key: str, field: str) -> str:
     value = task.config.get(key)
     if value in (None, ""):
         value = _parse_prompt_field_value(task.task, field)
-    return str(value or "").strip().strip("`")
+    return str(value).strip().strip("`") if value not in (None, "") else ""
 
 
 def _l0_high_coupling_hits(task: AgentTask) -> list[str]:
@@ -3142,6 +3157,11 @@ def _l0_high_coupling_hits(task: AgentTask) -> list[str]:
         if marker in text and marker not in hits:
             hits.append(marker)
     return hits
+
+
+def _task_truthy_contract_value(task: AgentTask, key: str, field: str) -> bool:
+    value = _task_contract_raw_value(task, key, field).strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 def _task_forbidden_symbols(task: AgentTask) -> list[str]:
@@ -3228,6 +3248,18 @@ def _gluon_l0_execution_boundary_errors(task: AgentTask) -> list[str]:
     ).strip()
     if minimum_unit == "whole_jit_kernel" and target_component and not whole_reason:
         errors.append(f"{task.label} uses whole_jit_kernel for a scoped Target component but lacks Whole kernel required reason")
+    if minimum_unit == "whole_jit_kernel" or allowed_path == "whole_jit_kernel":
+        missing_compile_risk = [
+            key
+            for key in _WHOLE_JIT_COMPILE_RISK_FIELDS
+            if not _task_contract_raw_value(task, key, key.replace("_", " ").title())
+        ]
+        if missing_compile_risk:
+            errors.append(
+                f"{task.label} whole_jit_kernel compile-risk anchor missing fields: {', '.join(missing_compile_risk)}"
+            )
+        if not _task_truthy_contract_value(task, "do_not_optimize_before_compile", "Do not optimize before compile"):
+            errors.append(f"{task.label} whole_jit_kernel must set do_not_optimize_before_compile: true")
 
     return errors
 
@@ -3379,6 +3411,12 @@ def _task_audit_summary(task: AgentTask) -> dict[str, Any]:
         or "",
         "l0_coupling_reasons": task.config.get("l0_coupling_reasons")
         or _parse_prompt_field_value(text, "L0 coupling reasons")
+        or "",
+        "expected_failure_layers": task.config.get("expected_failure_layers")
+        or _parse_prompt_field_value(text, "Expected failure layers")
+        or "",
+        "first_patch_compile_goal": task.config.get("first_patch_compile_goal")
+        or _parse_prompt_field_value(text, "First patch compile goal")
         or "",
         "minimum_executable_unit": task.config.get("minimum_executable_unit")
         or _parse_prompt_field_value(text, "Minimum executable unit")

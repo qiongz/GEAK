@@ -28,7 +28,8 @@ class AmdOpenAIModel(AmdLlmModelBase):
             base_url=base_url,
             default_headers={
                 "Ocp-Apim-Subscription-Key": api_key,
-            },
+            }
+            | self._gateway_user_headers(),
         )
 
     # ------------------------------------------------------------------

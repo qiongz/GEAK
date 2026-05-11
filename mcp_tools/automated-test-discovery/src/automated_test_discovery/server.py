@@ -354,6 +354,13 @@ def _init_llm_client():
     api_key = os.environ.get("AMD_LLM_API_KEY") or os.environ.get("LLM_GATEWAY_KEY")
     if not api_key:
         return None
+    user = (
+        os.environ.get("AMD_LLM_USER_NTID")
+        or os.environ.get("LLM_GATEWAY_USER_NTID")
+        or os.environ.get("USER_NTID")
+        or os.environ.get("USER")
+        or "unknown"
+    )
     try:
         import anthropic
 
@@ -362,6 +369,8 @@ def _init_llm_client():
             base_url="https://llm-api.amd.com/Anthropic",
             default_headers={
                 "Ocp-Apim-Subscription-Key": api_key,
+                "user": user,
+                "USER-NTID": user,
                 "anthropic-version": "2023-10-16",
             },
         )

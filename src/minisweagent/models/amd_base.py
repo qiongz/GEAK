@@ -137,10 +137,21 @@ class AmdLlmModelBase:
         return api_key
 
     def _get_user(self) -> str:
+        for env_name in ("AMD_LLM_USER_NTID", "LLM_GATEWAY_USER_NTID", "USER_NTID"):
+            user = os.getenv(env_name)
+            if user:
+                return user
         try:
             return os.getlogin()
         except OSError:
             return os.getenv("USER", "unknown")
+
+    def _gateway_user_headers(self) -> dict[str, str]:
+        user = self._get_user()
+        return {
+            "user": user,
+            "USER-NTID": user,
+        }
 
     # ------------------------------------------------------------------
     # Abstract interface

@@ -263,6 +263,10 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
             "overhead_source_to_record": "launch_layout_overhead",
             "l0_scope_classification": "low_coupling",
             "l0_coupling_reasons": "single memory subpath",
+            "expected_failure_layers": "memory/load-store layer",
+            "first_patch_compile_goal": "compile a minimal memory anchor",
+            "do_not_optimize_before_compile": True,
+            "matrix_lowering_required": False,
             "minimum_executable_unit": "separate_gluon_kernel",
             "target_symbol": "target_stage",
             "target_component": "one memory subpath",
@@ -293,6 +297,10 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
     assert "Task overhead_source_to_record: launch_layout_overhead" in task.task
     assert "Task l0_scope_classification: low_coupling" in task.task
     assert "Task l0_coupling_reasons: single memory subpath" in task.task
+    assert "Task expected_failure_layers: memory/load-store layer" in task.task
+    assert "Task first_patch_compile_goal: compile a minimal memory anchor" in task.task
+    assert "Task do_not_optimize_before_compile: True" in task.task
+    assert "Task matrix_lowering_required: False" in task.task
     assert "Task minimum_executable_unit: separate_gluon_kernel" in task.task
     assert "Task target_symbol: target_stage" in task.task
     assert "Task target_component: one memory subpath" in task.task
@@ -310,6 +318,11 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
     assert "Extension intent: `execution_anchor`" in task.task
     assert "L0 scope classification: `low_coupling`" in task.task
     assert "L0 coupling reasons: single memory subpath" in task.task
+    assert "Failure-driven routing" in task.task
+    assert "declared_failure_layer" in task.task
+    assert "generic failure-layer decomposition" in task.task
+    assert "layout map table" in task.task
+    assert "do not construct them dynamically inside `@gluon.jit`" in task.task
     assert "Minimum executable unit: `separate_gluon_kernel`" in task.task
     assert "Allowed execution path: `separate_gluon_kernel`" in task.task
     assert "Scope infeasible policy: `separate_kernel_if_allowed`" in task.task

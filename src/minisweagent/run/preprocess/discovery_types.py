@@ -741,6 +741,10 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
     overhead_source = feature_meta.get("overhead_source_to_record")
     l0_scope_classification = feature_meta.get("l0_scope_classification")
     l0_coupling_reasons = feature_meta.get("l0_coupling_reasons")
+    expected_failure_layers = feature_meta.get("expected_failure_layers")
+    first_patch_compile_goal = feature_meta.get("first_patch_compile_goal")
+    do_not_optimize_before_compile = feature_meta.get("do_not_optimize_before_compile")
+    matrix_lowering_required = feature_meta.get("matrix_lowering_required")
     minimum_executable_unit = feature_meta.get("minimum_executable_unit")
     target_symbol = feature_meta.get("target_symbol")
     target_component = feature_meta.get("target_component")
@@ -805,6 +809,14 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
         lines.append(f"- Task l0_scope_classification: {l0_scope_classification}")
     if l0_coupling_reasons:
         lines.append(f"- Task l0_coupling_reasons: {l0_coupling_reasons}")
+    if expected_failure_layers:
+        lines.append(f"- Task expected_failure_layers: {expected_failure_layers}")
+    if first_patch_compile_goal:
+        lines.append(f"- Task first_patch_compile_goal: {first_patch_compile_goal}")
+    if do_not_optimize_before_compile not in (None, ""):
+        lines.append(f"- Task do_not_optimize_before_compile: {do_not_optimize_before_compile}")
+    if matrix_lowering_required not in (None, ""):
+        lines.append(f"- Task matrix_lowering_required: {matrix_lowering_required}")
     if minimum_executable_unit:
         lines.append(f"- Task minimum_executable_unit: {minimum_executable_unit}")
     if target_symbol:

@@ -47,7 +47,6 @@ class AmdGeminiModel(AmdLlmModelBase):
 
     def _init_client(self):
         api_key = self._get_api_key()
-        user = self._get_user()
         base_url = self.config.base_url or "https://llm-api.amd.com/VertexGen"
         self.client = genai.Client(
             vertexai=True,
@@ -57,8 +56,8 @@ class AmdGeminiModel(AmdLlmModelBase):
                 api_version="v1",
                 headers={
                     "Ocp-Apim-Subscription-Key": api_key,
-                    "user": user,
-                },
+                }
+                | self._gateway_user_headers(),
             ),
         )
 

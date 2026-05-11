@@ -671,6 +671,31 @@ Elementwise or vector-style kernels:
 
 This is the safest family for early `plain_triton -> amd_gluon` candidates.
 
+Composite high-coupling kernels:
+
+Use this category when a single candidate combines several failure layers, for
+example broadcast-heavy layout, matrix/dot lowering, reduction or accumulator
+state, conditional/source-first logic, and wrapper/integration boundaries.
+
+Generic failure layers:
+
+1. broadcast/layout layer;
+2. memory/load-store layer;
+3. matrix/dot lowering layer;
+4. reduction/accumulator layer;
+5. conditional/source-first layer;
+6. wrapper/integration layer.
+
+Round-1 strategy:
+
+- Prefer a micro-anchor from one failure layer before a compile-risk whole-kernel
+  task.
+- If a whole-kernel task is truly the minimum executable unit, mark it as a
+  compile-risk anchor and make `patch_0` a compile goal, not a performance goal.
+- `patch_1+` should declare and change one failure layer at a time. Record the
+  declared layer and observed failure so later rounds can shrink or escalate
+  without guessing.
+
 Attention or decode kernels:
 
 1. preserve stride-rich host arguments and partition logic;

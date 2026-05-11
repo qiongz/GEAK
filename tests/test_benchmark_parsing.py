@@ -461,6 +461,24 @@ def test_rewrite_best_results_inherits_task_metadata_and_invalidates_scope_escal
     assert "scope escalation" in result["scope_escalation_violation"]
 
 
+def test_triton_gluon_docs_expose_generic_failure_layer_recipes() -> None:
+    root = Path(__file__).resolve().parents[1]
+    always = (root / "skills/triton-gluon/docs/00_always_read.md").read_text()
+    traits = (root / "skills/triton-gluon/docs/20_component_traits.md").read_text()
+    api = (root / "skills/triton-gluon/docs/50_api_reference.md").read_text()
+    real = (root / "skills/triton-gluon/docs/60_real_patterns.md").read_text()
+
+    assert "whole_kernel_layout_map_recipe" in always
+    assert "broadcast_failure_debug_recipe" in always
+    assert "dot_lowering_minimal_recipe" in always
+    assert "## whole_kernel_layout_map_recipe" in traits
+    assert "## broadcast_failure_debug_recipe" in api
+    assert "## dot_lowering_minimal_recipe" in api
+    assert "## reduction_accumulator_layout_recipe" in api
+    assert "Composite high-coupling kernels" in real
+    assert "attention-style decode kernels" not in always
+
+
 def test_compute_best_patch_reports_regression_against_true_baseline(tmp_path: Path) -> None:
     kernel_dir = tmp_path / "generic_kernel"
     patch_dir = kernel_dir / "results" / "round_1" / "extension-l0-gluon-minimal-viability"
