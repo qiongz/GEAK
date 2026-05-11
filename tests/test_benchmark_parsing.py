@@ -9,6 +9,7 @@ from minisweagent.run.postprocess.benchmark_parsing import (
     _has_added_plain_exception_fallback,
     _infer_forbidden_patch_target_symbols,
     _infer_required_patch_target_symbols,
+    _OPTIONAL_GLUON_RESULT_METADATA,
     _patch_touches_any_target_symbol,
     _patch_touches_backup_file,
     _patch_touches_forbidden_target_symbol,
@@ -23,6 +24,20 @@ from minisweagent.run.postprocess.benchmark_parsing import (
     parse_shape_latencies_ms,
     rewrite_best_results,
 )
+
+
+def test_postprocess_does_not_add_patch_evolution_metadata_fields() -> None:
+    post_fields = {key for key, _field in _OPTIONAL_GLUON_RESULT_METADATA}
+    pre_fields = {key for key, _field in preprocess_benchmark_parsing._OPTIONAL_GLUON_RESULT_METADATA}
+
+    for fields in (post_fields, pre_fields):
+        assert "declared_failure_layer" in fields
+        assert "changed_failure_layer" in fields
+        assert "failure_layers" in fields
+        assert "expected_failure_layers" in fields
+        assert "patch_evolution_strategy" not in fields
+        assert "patch_0_goal" not in fields
+        assert "patch_1_plus_rule" not in fields
 
 
 def test_parse_shape_latencies_ms_extracts_each_shape() -> None:

@@ -308,6 +308,10 @@ Patch evolution model:
   correctness.
 - `patch_1+`: one change at a time, such as one layout repair, one memory op,
   one matrix subpath, one launch constant, or one dispatch condition.
+- The next patch is chosen by the previous patch result. If `patch_N` compiles,
+  executes, and passes correctness, `patch_N+1` may make one normal improvement
+  to the same task scope. If `patch_N` fails, `patch_N+1` fixes only the current
+  failure layer and must not add a new optimization.
 - Before the next patch, record `Changed component`, `Expected effect`,
   `Observed effect`, and `Keep / revert / compose later`.
 - After helper-not-executed, fix only wiring/launch/output feeding. After a
@@ -318,6 +322,70 @@ Patch evolution model:
 - Quick directions and checked-in examples are starting points for `patch_0` or
   a single L1 component, not final answers. After correctness, follow this same
   patch evolution model instead of adding a new tuning workflow.
+
+`patch_evolution_by_task_type`:
+
+- Base/plain Triton tasks are not forced into this Gluon state machine. Keep
+  them narrow, use normal strategy notes for attempts, and let tested/profiled
+  patches compete through the existing postprocess path.
+- Any task that enters Gluon worker docs must use the pass/fail dual track
+  above. This includes L0, L1, Gluon variants, Hybrid/mixed dispatch, and
+  existing production AMD Gluon tasks that receive Gluon worker context.
+- Generated L0 overlays use `patch_0` only as a compile/execute/correctness
+  anchor. If that anchor passes, later patches change one allowed variable. If
+  it fails, later patches fix the classified failure layer first.
+- Whole-kernel Gluon anchors are compile-risk tasks. `patch_0` proves launcher,
+  layout factory, ABI, and minimum execution wiring before any performance
+  tuning. `patch_1+` works through one failure layer at a time.
+- L1 trait-specific tasks start from a verified anchor and change only the
+  named trait, such as one memory path, one layout conversion, or one matrix
+  subpath. A failed L1 patch repairs that trait's failure layer before trying
+  another trait.
+- Gluon variant and Hybrid/mixed tasks preserve the safe anchor semantics.
+  Passing patches may change one portable component or one dispatch decision;
+  failing patches first restore anchor semantics or repair wrapper/dispatch
+  wiring.
+- Existing production AMD Gluon tasks preserve source contracts first. Passing
+  patches may refine one in-dialect component; failing patches first repair the
+  observed source, layout, API, artifact, or integration layer.
+
+`failure_to_next_patch_map`:
+
+- broadcast/layout failure -> fix parent layout, slice axis, expand direction,
+  tensor rank, or host layout factory only.
+- matrix/dot failure -> fix result layout, `DotOperandLayout`, `convert_layout`,
+  target matrix op, accumulator dtype, or epilogue/store layout only.
+- layout verifier / target arch failure -> fix host layout construction, target
+  family, wave-size assumptions, `num_warps`, or launch attributes only.
+- dtype/load/store failure -> fix `gl.full` dtype, casts, masks, generic
+  `gl.load` / `gl.store`, buffer op preconditions, or store dtype only.
+- reduction/accumulator failure -> fix accumulator layout, reduction order,
+  loop-carried state, or identity values only.
+- helper not executed / fallback success / wrong target -> fix wrapper,
+  launch wiring, output feeding, or target-symbol association only.
+- scope or forbidden-path failure -> revert the forbidden change before any
+  further optimization.
+
+If task failure-layer metadata is missing or incomplete, record a `Task
+correction` in strategy notes and summary, choose the smallest matching layer
+from this map, and continue within the existing task boundary. Do not introduce
+new patch-evolution metadata fields for this correction.
+
+Task consistency check:
+
+- Before editing, compare the task body, task metadata, source code, and routed
+  docs. Confirm that `Target component`, `Allowed change`,
+  `minimum_executable_unit`, and `allowed_execution_path` describe the same
+  scoped work.
+- If the source shows an unavoidable matrix, reduction, layout, or wrapper layer
+  that is absent from `failure_layers` / `expected_failure_layers`, record a
+  `Task correction` in strategy notes and summary, then use
+  `failure_to_next_patch_map` to choose the next failure-fix patch.
+- If the task would require widening beyond allowed scope, follow
+  `scope_infeasible_policy` and report/shrink instead of silently expanding the
+  patch.
+- If `Plain competitor` names a different direction or target component, stop
+  and report the mismatch. Do not use a different competitor to justify success.
 
 Defer full attention/decode/GEMM rewrites until after L0 proves the relevant
 layout family compiles. L1 tasks can then add memory lowering, matrix lowering,

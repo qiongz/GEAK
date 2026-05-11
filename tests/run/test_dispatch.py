@@ -319,6 +319,14 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
     assert "Task gluon_tl_policy: production_source_allowed" in task.task
     assert "Task layout_construction_policy: source_preserve" in task.task
     assert "Task execution_mode: mixed_jit_aot" in task.task
+    assert "## Patch Evolution Working Set" in task.task
+    assert "This working set applies to every task that received Gluon worker docs/context" in task.task
+    assert "If `patch_N` compiles, executes, and passes correctness" in task.task
+    assert "If `patch_N` fails" in task.task
+    assert "failure_to_next_patch_map" in task.task
+    assert "## Task consistency check" in task.task
+    assert "Task correction" in task.task
+    assert "rather than adding new metadata fields" in task.task
     assert task.config["source_origin"] == "existing_amd_gluon_operator"
     assert task.config["gluon_tl_policy"] == "production_source_allowed"
     assert task.config["layout_construction_policy"] == "source_preserve"
