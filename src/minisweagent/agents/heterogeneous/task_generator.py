@@ -2061,13 +2061,13 @@ def _build_search_space_allocation_guidance(
         "- Classify candidate signals by failure layer rather than operator name: attention-like composite path, matrix-like composite path, broadcast-heavy layout path, reduction/accumulator path, conditional/source-first path, or wrapper/integration boundary.",
         "- Every Gluon task must expose planner doc routing metadata: `task_signals: ...`, `routed_doc_reasons: ...`, `kernel_family_signal: ...`, and `failure_layers: ...`. These fields should explain which split docs/headings the worker must use and why.",
         "- Map docs to planner fields before emitting the task: layout/broadcast signals require component traits and failure recipes; dot/matrix signals require matrix lowering docs and `matrix_lowering_required`; target backend/runtime signals require architecture notes; source-first/integration signals require real-pattern docs and explicit measurement boundary.",
-        "- Required Gluon docs for priority: `00_always_read.md`, `10_search_policies.md` (`optimization_direction_dialect_overlay`, `overlay_direction_vs_mechanism`, `overlay_priority_routing`), plus `20_component_traits.md` / `60_real_patterns.md` / `50_api_reference.md` only when their routed details apply.",
+        "- Required Gluon docs for priority: `00_always_read.md`, `10_search_policies.md` (`optimization_direction_dialect_overlay`, `overlay_direction_vs_mechanism`, `atomic_component_lattice`, `overlay_priority_routing`), plus `20_component_traits.md` / `60_real_patterns.md` (`l0_scope_by_kernel_family`, `broadcast_heavy_whole_kernel_l0`) / `50_api_reference.md` only when their routed details apply.",
         "- AMD Gluon overlay prompts must include `Extension layer: L0|L1|Hybrid`, `Optimization direction:`, `Source Base family:`, `Plain competitor:`, `Gluon overlay reason:`, `Overlay priority: Prefer` or `Overlay priority: high-confidence Consider`, `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`. Do not write plain `Overlay priority: Consider` for Round-1 L0.",
         "- Round-1 L0 metadata is mandatory for AMD Gluon overlays, and later L0/L1/variant/hybrid tasks must preserve or reference it from the verified anchor: `l0_scope_classification: low_coupling|high_coupling|infeasible`, `l0_coupling_reasons: ...`, `minimum_executable_unit: inline_scoped_helper|separate_gluon_kernel|whole_jit_kernel|infeasible`, `allowed_execution_path: inline_scoped_helper|separate_gluon_kernel|whole_jit_kernel`, and `scope_infeasible_policy: do_not_emit|shrink_or_report|separate_kernel_if_allowed`. Optional tags include `extension_intent: execution_anchor|performance_candidate`, `expected_outcome: correctness_anchor_not_speedup|possible_speedup`, `not_viable_for_l1_if_slower_than_base: true`, `overhead_source_to_record: ...`, `whole_kernel_required_reason: ...`, `Target symbol:`, and `Target component:`.",
         "- L0 execution path must be exactly one of: `inline_scoped_helper` when the language boundary permits the scoped change; `separate_gluon_kernel` when the task explicitly allows a second launch/temp buffer and marks the task as an execution anchor; `whole_jit_kernel` only when the whole helper/kernel is the minimum executable unit and the task does not forbid whole-kernel rewrite; or `infeasible` as `minimum_executable_unit` only when no required Gluon task should be emitted.",
         "- `inline_scoped_helper` is invalid for high-coupling L0 targets such as online softmax accumulator loops, `tl.dot`/matrix paths, loop-carried reductions, cross-stage ABI changes, or wrapper reroutes. Shrink to a lower-coupling index/mask/load/store smoke path, use a justified `whole_jit_kernel`, or do not emit the Gluon task.",
         "- `whole_jit_kernel` is a compile-risk anchor, not the default L0 shape. If used, the task must include `expected_failure_layers`, `first_patch_compile_goal`, `do_not_optimize_before_compile: true`, and `matrix_lowering_required: true|false`. `patch_0` should aim for a compile anchor before performance tuning.",
-        "- Before submitting a Gluon task, do a concise consistency pass using `10_search_policies.md::overlay_direction_vs_mechanism` and `60_real_patterns.md::Task consistency check`: keep `Optimization direction` as the shared performance goal and put Gluon-specific mechanisms in overlay fields.",
+        "- Before submitting a Gluon task, do a concise consistency pass using `10_search_policies.md::overlay_direction_vs_mechanism`, `atomic_component_lattice`, and `60_real_patterns.md::l0_scope_by_kernel_family`: keep `Optimization direction` as the shared performance goal, pick one primary component for `patch_0`, and put Gluon-specific mechanisms in overlay fields.",
         "- Required Gluon worker contract: ask for `Gluon knowledge lookup plan`, `Gluon implementation plan`, `Performance hypothesis:`, `Same ABI comparison:`, and `Patch evolution:` before editing. Keep API-level rewrite and pass/fail patch details in the routed skills/docs, not in the prompt body.",
         "- For an L0 `extension_intent=execution_anchor`, keep `Performance hypothesis:` to execution and attribution: verify the explicit layout/scoped helper can execute and record layout construction or conversion overhead. Do not claim MFMA utilization or broad throughput improvement unless the task is matrix-lowering/L1 or prior evidence supports that mechanism.",
         "- L0 overlay prompts must not ask the worker to convert an entire stage/helper/kernel just to prove Gluon. Scope L0 to one named subpath/component, such as a load/store, layout, mask, or matrix subpath; only use a whole helper as the target when the task explicitly explains why the helper is the smallest viable component.",
@@ -3231,6 +3231,97 @@ def _task_forbidden_symbols(task: AgentTask) -> list[str]:
     return unique
 
 
+def _gluon_l0_soft_diagnostics(task: AgentTask) -> list[str]:
+    """Return non-blocking diagnostics for L0 task plans.
+
+    These hints are intentionally advisory. Hard gating remains limited to the
+    existing output dialect, scope, and binding contracts.
+    """
+    if not _is_l0_gluon_overlay_task(task):
+        return []
+    text = "\n".join(
+        str(part or "")
+        for part in (
+            task.label,
+            task.task,
+            task.config.get("task_signals"),
+            task.config.get("failure_layers"),
+            task.config.get("expected_failure_layers"),
+            task.config.get("target_component"),
+            task.config.get("l0_coupling_reasons"),
+            task.config.get("kernel_family_signal"),
+        )
+    ).lower()
+    minimum_unit = _task_contract_value(task, "minimum_executable_unit", "Minimum executable unit")
+    target_component = _task_contract_raw_value(task, "target_component", "Target component").lower()
+    failure_text = " ".join(
+        str(part or "")
+        for part in (
+            task.config.get("failure_layers"),
+            _parse_prompt_field_value(task.task, "Failure layers"),
+            task.config.get("expected_failure_layers"),
+            _parse_prompt_field_value(task.task, "Expected failure layers"),
+        )
+    ).lower()
+    matrix_required_raw = _task_contract_raw_value(task, "matrix_lowering_required", "Matrix lowering required")
+    matrix_required = matrix_required_raw.strip().lower() in {"1", "true", "yes", "on"}
+
+    diagnostics: list[str] = []
+    local_markers = ("load", "store", "index", "mask", "path", "offset", "pointer")
+    broad_markers = ("whole", "helper", "kernel", "stage")
+    if minimum_unit == "whole_jit_kernel" and any(marker in target_component for marker in local_markers):
+        if not any(marker in target_component for marker in broad_markers):
+            diagnostics.append("local_target_promoted_to_whole_kernel")
+        elif not all(layer in failure_text for layer in ("layout", "matrix")):
+            diagnostics.append("local_target_promoted_to_whole_kernel")
+
+    if any(marker in text for marker in ("matrix", "dot", "mfma", "wmma")) and not matrix_required:
+        diagnostics.append("matrix_metadata_inconsistent")
+    if minimum_unit == "whole_jit_kernel" and any(
+        marker in text for marker in ("broadcast", "slice", "[:,", "[none", "mask", "rope")
+    ):
+        if not any(layer in failure_text for layer in ("broadcast", "layout", "slice")):
+            diagnostics.append("broadcast_heavy_missing_layout_map")
+    if any(marker in text for marker in ("softmax", "reduction", "reduce", "rms", "sum", "max", "topk")):
+        if not any(layer in failure_text for layer in ("reduction", "accumulator")):
+            diagnostics.append("reduction_metadata_inconsistent")
+    if any(marker in text for marker in ("scaled", "scale", "fp8", "fp4", "quant")):
+        if not any(layer in failure_text for layer in ("scale", "dtype", "matrix")):
+            diagnostics.append("scale_layout_missing")
+    if "bundle_allowed=true" not in text:
+        component_hits = sum(
+            1
+            for marker in (
+                "index_map",
+                "mask_boundary",
+                "load_store",
+                "layout_broadcast",
+                "matrix_operand",
+                "scale_dtype",
+                "reduction_accumulator",
+                "selection_update",
+                "state_update",
+                "epilogue_fusion",
+                "shape_dispatch",
+                "wrapper_integration",
+                "scheduler_launch",
+            )
+            if marker in text
+        )
+        if component_hits > 1:
+            diagnostics.append("component_bundle_too_broad")
+    if minimum_unit == "whole_jit_kernel":
+        family = str(task.config.get("kernel_family_signal") or _parse_prompt_field_value(task.task, "Kernel family signal") or "")
+        if not family.strip() or family.strip().lower() in {"unknown", "generic", "none"}:
+            diagnostics.append("unknown_family_whole_kernel")
+
+    unique: list[str] = []
+    for diagnostic in diagnostics:
+        if diagnostic not in unique:
+            unique.append(diagnostic)
+    return unique
+
+
 def _gluon_l0_execution_boundary_errors(task: AgentTask) -> list[str]:
     if not _is_l0_gluon_overlay_task(task):
         return []
@@ -3528,6 +3619,7 @@ def _task_audit_summary(task: AgentTask) -> dict[str, Any]:
         or "",
         "required_patch_target_symbols": task.config.get("required_patch_target_symbols") or [],
         "forbidden_patch_target_symbols": _task_forbidden_symbols(task),
+        "soft_audit_diagnostics": _gluon_l0_soft_diagnostics(task),
         "first_lines": "\n".join(task.task.splitlines()[:18]),
     }
 
@@ -3540,6 +3632,37 @@ def _audit_repair_hints(errors: list[str], tasks: list[AgentTask]) -> list[str]:
     """Return planner-facing repair hints for common task-generation audit errors."""
     summaries = _task_label_map(tasks)
     hints: list[str] = []
+    for summary in summaries.values():
+        label = summary.get("label") or "<task>"
+        diagnostics = summary.get("soft_audit_diagnostics") or []
+        if "local_target_promoted_to_whole_kernel" in diagnostics:
+            hints.append(
+                f"{label}: local target appears promoted to `whole_jit_kernel`; either shrink to the local primary component or list unavoidable broadcast/layout, matrix/dot, reduction, and wrapper blockers."
+            )
+        if "matrix_metadata_inconsistent" in diagnostics:
+            hints.append(
+                f"{label}: matrix/dot signals are present but matrix metadata is inconsistent; set `matrix_lowering_required: true` for whole-kernel/matrix scope or shrink to a non-matrix smoke path."
+            )
+        if "broadcast_heavy_missing_layout_map" in diagnostics:
+            hints.append(
+                f"{label}: broadcast-heavy whole-kernel L0 should include parent-layout map / broadcast failure layers, or shrink to an index/mask/load smoke path."
+            )
+        if "reduction_metadata_inconsistent" in diagnostics:
+            hints.append(
+                f"{label}: reduction or accumulator signals are present; include reduction/accumulator failure layers or shrink away from the reduction path."
+            )
+        if "scale_layout_missing" in diagnostics:
+            hints.append(
+                f"{label}: scale/dtype signals are present; include scale layout, dtype, operand/result layout failure layers or keep the first patch as a scale-layout smoke path."
+            )
+        if "component_bundle_too_broad" in diagnostics:
+            hints.append(
+                f"{label}: multiple atomic components appear bundled; choose one primary component for `patch_0` and list the rest as blockers unless `bundle_allowed=true`."
+            )
+        if "unknown_family_whole_kernel" in diagnostics:
+            hints.append(
+                f"{label}: unknown or weak kernel-family classification should not default to whole-kernel Gluon; prefer Base or a minimal index/load/layout smoke task."
+            )
     for error in errors:
         direction_match = re.search(
             r"(?:Task-generation coverage audit failed:\s*)?(?P<label>\S+) Optimization direction `(?P<gluon>.*?)` does not match Plain competitor `(?P<plain>.*?)` direction `(?P<plain_dir>.*?)`$",

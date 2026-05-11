@@ -26,6 +26,7 @@ from minisweagent.agents.heterogeneous.task_generator import (
     _parse_llm_response,
     _previous_gluon_signal,
     _run_task_agent,
+    _task_audit_summary,
     generate_tasks,
     write_task_files,
 )
@@ -139,10 +140,19 @@ def test_overlay_direction_policy_lives_in_split_docs() -> None:
     patterns_doc = (repo / "skills/triton-gluon/docs/60_real_patterns.md").read_text()
 
     assert "### Search policy: overlay_direction_vs_mechanism" in search_doc
+    assert "### Search policy: atomic_component_lattice" in search_doc
+    assert "index_map" in search_doc
+    assert "selection_update" in search_doc
+    assert "scheduler_launch" in search_doc
     assert "Use `Optimization direction` for the shared performance or algorithmic goal" in search_doc
     assert "Gluon-specific mechanisms" in patterns_doc
     assert "Whole-kernel L0 comparison anchor" in patterns_doc
+    assert "## broadcast_heavy_whole_kernel_l0" in patterns_doc
+    assert "## l0_scope_by_kernel_family" in patterns_doc
+    assert "softmax/reduction/norm" in patterns_doc
+    assert "topk/sampler/routing" in patterns_doc
     assert "overlay_direction_vs_mechanism" in routing_doc
+    assert "atomic_component_lattice" in routing_doc
 
 
 def test_infer_gluon_planning_traits_for_plain_triton_dot() -> None:
@@ -262,6 +272,8 @@ def test_search_space_allocation_for_two_gpus_preserves_base_without_weak_gluon(
     assert "attention-like composite path" in guidance
     assert "do_not_optimize_before_compile: true" in guidance
     assert "overlay_direction_vs_mechanism" in guidance
+    assert "atomic_component_lattice" in guidance
+    assert "l0_scope_by_kernel_family" in guidance
     assert "Keep API-level rewrite and pass/fail patch details in the routed skills/docs" in guidance
     assert "patch_evolution_strategy" not in guidance
 
@@ -926,6 +938,50 @@ def test_audit_failure_hint_suggests_same_direction_plain_competitor(tmp_path: P
     assert "Gluon overlay reason" in hint
     assert "_fwd_kernel_stage2" in hint
     assert "precompute-rope-outside-loop" in hint
+
+
+def test_l0_soft_audit_diagnostics_cover_atomic_component_scope() -> None:
+    task = AgentTask(
+        agent_class=FakeAgentClass,
+        task="\n".join(
+            [
+                "Extension layer: L0",
+                "Optimization direction: reduce paged load traffic",
+                "Source Base family: base_hot_path_streamline",
+                "Plain competitor: base-paged-load",
+                "Target component: K/V load path",
+                "Allowed change: optimize K/V load path only",
+                "L0 scope classification: high_coupling",
+                "L0 coupling reasons: paged attention load path touches tl.dot, online softmax, mask broadcast, and wrapper integration",
+                "Minimum executable unit: whole_jit_kernel",
+                "Allowed execution path: whole_jit_kernel",
+                "Scope infeasible policy: shrink_or_report",
+                "Task signals: index_map, load_store, layout_broadcast, matrix_operand, reduction_accumulator",
+                "Failure layers: layout_construction",
+                "Expected failure layers: layout_construction",
+                "Kernel family signal: attention_decode",
+                "Matrix lowering required: false",
+            ]
+        ),
+        config={
+            "kernel_type": "triton",
+            "required_output_dialect": "amd_gluon",
+            "extension_layer": "L0",
+            "implementation_layer": "amd_gluon overlay",
+            "source_base_family": "base_hot_path_streamline",
+            "plain_competitor": "base-paged-load",
+            "minimum_executable_unit": "whole_jit_kernel",
+            "allowed_execution_path": "whole_jit_kernel",
+            "scope_infeasible_policy": "shrink_or_report",
+        },
+    )
+
+    summary = _task_audit_summary(task)
+
+    assert "local_target_promoted_to_whole_kernel" in summary["soft_audit_diagnostics"]
+    assert "matrix_metadata_inconsistent" in summary["soft_audit_diagnostics"]
+    assert "reduction_metadata_inconsistent" in summary["soft_audit_diagnostics"]
+    assert "component_bundle_too_broad" in summary["soft_audit_diagnostics"]
 
 
 def test_audit_rejects_l0_overlay_without_same_batch_plain_competitor() -> None:

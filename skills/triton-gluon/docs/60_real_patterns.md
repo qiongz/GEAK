@@ -403,6 +403,57 @@ Whole-kernel L0 comparison anchor:
   `Allowed change`. They should explain how the Gluon implementation tests the
   same goal, not create a separate optimization direction.
 
+## broadcast_heavy_whole_kernel_l0
+
+Broadcast-heavy whole-kernel L0 is a compile-risk anchor, not a performance
+candidate. Use it only when a smaller `index_map`, `mask_boundary`,
+`load_store`, or `layout_broadcast` smoke path cannot execute and feed measured
+output.
+
+Before editing, write a layout-map skeleton:
+
+```text
+parent expression | parent layout | slice tensor | slice axis | expanded form | consumer
+```
+
+Rules:
+
+- `patch_0` should establish host-created parent layouts, slice tensors, and
+  launch wiring. It should not also introduce MFMA, buffer ops, scheduler
+  changes, epilogue fusion, or wrapper rewrites unless the task explicitly
+  marks a bundle.
+- If the skeleton shows that one symbolic dimension is consumed by multiple
+  parents, create separate tensors per parent. Do not reuse a single 1D index
+  across `[H, R]`, `[R, N]`, `[H, N]`, `[H, C]`, or `[C, N]` contexts.
+- A failure in RoPE, mask, or reduction layout before the target load/store path
+  means the task was broader than the local component. The next patch should fix
+  that parent-layout layer or report shrink/infeasible.
+- If matrix/dot operands are unavoidable in `patch_0`, the task should include
+  matrix/dot in expected failure layers and set `matrix_lowering_required`
+  consistently with the scope.
+
+## l0_scope_by_kernel_family
+
+Use kernel families as routing hints, then use `atomic_component_lattice` to
+pick the primary component.
+
+| Family | Typical signals | Preferred L0 scope | Required failure layers to consider |
+| --- | --- | --- | --- |
+| matrix/GEMM/scaled_mm | `tl.dot`, scales, fp8/fp4, epilogue | matrix skeleton or scale-layout skeleton | matrix_operand, scale_dtype, epilogue_fusion, shape_dispatch |
+| attention/decode | Q/K/V, paged KV, RoPE, masks, online softmax | index/mask/load smoke path or layout-map skeleton | index_map, mask_boundary, layout_broadcast, matrix_operand, reduction_accumulator, wrapper_integration |
+| softmax/reduction/norm | row/block reduction, max/sum/rms, normalization | accumulator/reduction layout anchor | reduction_accumulator, mask_boundary, load_store, epilogue_fusion |
+| topk/sampler/routing | compare/select, index update, partial reduction | compare/select state anchor | selection_update, reduction_accumulator, index_map, mask_boundary |
+| elementwise/memory | activation, RoPE elementwise, cache copy, lora path | scoped index/load/store or dtype smoke path | index_map, mask_boundary, load_store, scale_dtype |
+| scan/stateful | SSM, prefix, recurrent update | one state transition smoke path | state_update, reduction_accumulator, shape_dispatch |
+| integration/dispatch | JIT/AOT/prebuilt, shape bucket, module wiring | launch/wiring or explicit host dispatch evidence | wrapper_integration, shape_dispatch |
+
+Unknown family fallback:
+
+- Do not emit `whole_jit_kernel` as the default Gluon L0.
+- Prefer a Base/plain Triton task, or a smallest `index_map`, `load_store`, or
+  `layout_broadcast` smoke task.
+- Record the missing classification in task notes so later docs can be extended.
+
 Defer full attention/decode/GEMM rewrites until after L0 proves the relevant
 layout family compiles. L1 tasks can then add memory lowering, matrix lowering,
 or shared/descriptor features one at a time.

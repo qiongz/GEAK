@@ -320,10 +320,14 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
     assert "Task layout_construction_policy: source_preserve" in task.task
     assert "Task execution_mode: mixed_jit_aot" in task.task
     assert "## Patch Evolution Working Set" in task.task
+    assert "atomic_component_lattice" in task.task
+    assert "primary_component" in task.task
     assert "patch_evolution_by_task_type" in task.task
     assert "failure_to_next_patch_map" in task.task
     assert "## Task consistency check" in task.task
     assert "overlay_direction_vs_mechanism" in task.task
+    assert "l0_scope_by_kernel_family" in task.task
+    assert "parent-layout map" in task.task
     assert "Task correction" in task.task
     assert task.config["source_origin"] == "existing_amd_gluon_operator"
     assert task.config["gluon_tl_policy"] == "production_source_allowed"

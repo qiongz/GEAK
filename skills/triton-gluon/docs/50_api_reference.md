@@ -362,6 +362,13 @@ Debug order:
 6. Keep the patch to this one failure layer; do not also change matrix lowering
    or memory path in the same patch.
 
+After a rank mismatch or `expected expand_dims input layout` error, the next
+patch should rebuild the parent/slice lineage for the failed expression. Do not
+only add `[None, :]` or `[:, None]` around the same 1D tensor; that often changes
+rank while preserving the wrong parent layout. If the same symbolic dimension is
+used by two parents, regenerate two named tensors such as `r_from_hr` and
+`r_from_rn` from their own `SliceLayout` objects.
+
 ## dot_lowering_minimal_recipe
 
 `tl.dot` is not a mechanical rename target and generic `gl.dot` is not a safe

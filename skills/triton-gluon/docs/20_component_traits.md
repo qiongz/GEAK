@@ -109,6 +109,14 @@ policy and task allocation live in `10_search_policies.md`.
 - For kernels with several logical 2D contexts, create separate named index
   tensors such as `idx_x_xy`, `idx_x_xz`, or `idx_x_xw` instead of one shared
   `idx_x` tensor.
+- When the same symbolic dimension appears in several parent layouts, generate
+  separate slice tensors per parent. For example, `r_from_hr` for `[H, R]` is
+  not interchangeable with `r_from_rn` for `[R, N]`, and `c_from_hc` for
+  `[H, C]` is not interchangeable with `c_from_cn` for `[C, N]`.
+- A parent-layout map should name the parent expression first, then the slices
+  derived from it. A useful pre-edit table has columns: parent expression,
+  parent layout, slice tensor, slice axis, expanded form, and consumer
+  expression.
 - If a broadcast expression cannot name one parent layout shared by both sliced
   axes, the patch scope is too large. Split the task before editing.
 - A local broadcast expression inside an otherwise plain Triton kernel is not by
