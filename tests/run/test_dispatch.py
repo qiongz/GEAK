@@ -267,6 +267,10 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
             "first_patch_compile_goal": "compile a minimal memory anchor",
             "do_not_optimize_before_compile": True,
             "matrix_lowering_required": False,
+            "task_signals": "layout, memory, l0",
+            "routed_doc_reasons": "layout signal -> component traits; api signal -> api reference",
+            "kernel_family_signal": "generic_memory_layout",
+            "failure_layers": "broadcast/layout layer, memory/load-store layer",
             "minimum_executable_unit": "separate_gluon_kernel",
             "target_symbol": "target_stage",
             "target_component": "one memory subpath",
@@ -301,6 +305,10 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
     assert "Task first_patch_compile_goal: compile a minimal memory anchor" in task.task
     assert "Task do_not_optimize_before_compile: True" in task.task
     assert "Task matrix_lowering_required: False" in task.task
+    assert "Task task_signals: layout, memory, l0" in task.task
+    assert "Task routed_doc_reasons: layout signal -> component traits; api signal -> api reference" in task.task
+    assert "Task kernel_family_signal: generic_memory_layout" in task.task
+    assert "Task failure_layers: broadcast/layout layer, memory/load-store layer" in task.task
     assert "Task minimum_executable_unit: separate_gluon_kernel" in task.task
     assert "Task target_symbol: target_stage" in task.task
     assert "Task target_component: one memory subpath" in task.task
@@ -323,6 +331,10 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
     assert "generic failure-layer decomposition" in task.task
     assert "layout map table" in task.task
     assert "do not construct them dynamically inside `@gluon.jit`" in task.task
+    assert "Task signals: layout, memory, l0" in task.task
+    assert "Routed doc reasons: layout signal -> component traits; api signal -> api reference" in task.task
+    assert "Kernel family signal: `generic_memory_layout`" in task.task
+    assert "Failure layers: broadcast/layout layer, memory/load-store layer" in task.task
     assert "Minimum executable unit: `separate_gluon_kernel`" in task.task
     assert "Allowed execution path: `separate_gluon_kernel`" in task.task
     assert "Scope infeasible policy: `separate_kernel_if_allowed`" in task.task

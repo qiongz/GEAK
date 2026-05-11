@@ -218,6 +218,10 @@ _OPTIONAL_GLUON_TASK_METADATA_FIELDS: tuple[tuple[str, str], ...] = (
     ("matrix_lowering_required", "Matrix lowering required"),
     ("declared_failure_layer", "Declared failure layer"),
     ("changed_failure_layer", "Changed failure layer"),
+    ("task_signals", "Task signals"),
+    ("routed_doc_reasons", "Routed doc reasons"),
+    ("kernel_family_signal", "Kernel family signal"),
+    ("failure_layers", "Failure layers"),
     ("minimum_executable_unit", "Minimum executable unit"),
     ("target_symbol", "Target symbol"),
     ("target_component", "Target component"),
@@ -2043,6 +2047,8 @@ def _build_search_space_allocation_guidance(
         "- L0 scope ladder is generic across kernels: prefer the smallest executable, attributable, low-coupling subpath (scalar/1D stage, one load/store, one index/mask layout smoke path). Consider matrix/MFMA subpaths only after an executed anchor or when the task explicitly proves the matrix subpath is the smallest viable component.",
         "- Round 1 L0 should prefer generic micro-anchor archetypes, not fixed task labels: layout/broadcast micro-anchor, index/mask layout anchor, load/store layout anchor, matrix operand layout probe, reduction/accumulator layout probe, or wrapper/integration anchor. Name the actual task from the optimization direction and target component.",
         "- Classify candidate signals by failure layer rather than operator name: attention-like composite path, matrix-like composite path, broadcast-heavy layout path, reduction/accumulator path, conditional/source-first path, or wrapper/integration boundary.",
+        "- Every Gluon task must expose planner doc routing metadata: `task_signals: ...`, `routed_doc_reasons: ...`, `kernel_family_signal: ...`, and `failure_layers: ...`. These fields should explain which split docs/headings the worker must use and why.",
+        "- Map docs to planner fields before emitting the task: layout/broadcast signals require component traits and failure recipes; dot/matrix signals require matrix lowering docs and `matrix_lowering_required`; target backend/runtime signals require architecture notes; source-first/integration signals require real-pattern docs and explicit measurement boundary.",
         "- Required Gluon docs for priority: `00_always_read.md`, `10_search_policies.md` (`optimization_direction_dialect_overlay`, `overlay_priority_routing`), plus `20_component_traits.md` / `60_real_patterns.md` / `50_api_reference.md` only when their routed details apply.",
         "- AMD Gluon overlay prompts must include `Extension layer: L0|L1|Hybrid`, `Optimization direction:`, `Source Base family:`, `Plain competitor:`, `Gluon overlay reason:`, `Overlay priority: Prefer` or `Overlay priority: high-confidence Consider`, `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`. Do not write plain `Overlay priority: Consider` for Round-1 L0.",
         "- Round-1 L0 metadata is mandatory for AMD Gluon overlays, and later L0/L1/variant/hybrid tasks must preserve or reference it from the verified anchor: `l0_scope_classification: low_coupling|high_coupling|infeasible`, `l0_coupling_reasons: ...`, `minimum_executable_unit: inline_scoped_helper|separate_gluon_kernel|whole_jit_kernel|infeasible`, `allowed_execution_path: inline_scoped_helper|separate_gluon_kernel|whole_jit_kernel`, and `scope_infeasible_policy: do_not_emit|shrink_or_report|separate_kernel_if_allowed`. Optional tags include `extension_intent: execution_anchor|performance_candidate`, `expected_outcome: correctness_anchor_not_speedup|possible_speedup`, `not_viable_for_l1_if_slower_than_base: true`, `overhead_source_to_record: ...`, `whole_kernel_required_reason: ...`, `Target symbol:`, and `Target component:`.",
@@ -2053,6 +2059,7 @@ def _build_search_space_allocation_guidance(
         "- For an L0 `extension_intent=execution_anchor`, keep `Performance hypothesis:` to execution and attribution: verify the explicit layout/scoped helper can execute and record layout construction or conversion overhead. Do not claim MFMA utilization or broad throughput improvement unless the task is matrix-lowering/L1 or prior evidence supports that mechanism.",
         "- L0 overlay prompts must not ask the worker to convert an entire stage/helper/kernel just to prove Gluon. Scope L0 to one named subpath/component, such as a load/store, layout, mask, or matrix subpath; only use a whole helper as the target when the task explicitly explains why the helper is the smallest viable component.",
         "- Round-1 L0 overlays must bind to the same component and same optimization direction as `Plain competitor`, not merely to the same broad `Source Base family`. The referenced plain Triton task and the L0 overlay must use the exact same `Optimization direction:` text and must both include an auditable `Target component:` or `Allowed change:` with the same scoped symbol/stage.",
+        "- Same-family Base tasks are not enough for L0 binding: the `Plain competitor` must target the same stage/helper/component named by the Gluon `Target symbol:` or `Target component:`. If the desired Gluon target lacks a same-batch Base task, emit that Base task first.",
         "- If the desired Gluon L0 target component does not already have a same-direction plain Base task in this batch, first emit that plain Base competitor, then point `Plain competitor:` at it. Example: if the overlay targets component B's memory/layout path, emit a plain component-B memory/layout Base task; do not bind it to a component-A cleanup, control-flow, or generic same-family task.",
         "- If you cannot produce a same-direction same-component plain Base competitor for an L0 overlay, do not emit that Gluon overlay in this round; spend the slot on the missing Base competitor instead.",
         "- L1 tasks additionally require an executed Gluon/mixed anchor (`Anchor patch`, `Anchor speedup`, `Anchor execution: true`, `Comparison target: anchor_patch`) and stage-specific tasks require target metadata such as `Target symbol` / `Target component` plus top-level `required_patch_target_symbols` when available.",
@@ -3204,6 +3211,14 @@ def _gluon_l0_execution_boundary_errors(task: AgentTask) -> list[str]:
         errors.append(f"{task.label} has invalid L0 scope classification `{scope_classification}`")
     if scope_classification in {"high_coupling", "infeasible"} and not coupling_reasons:
         errors.append(f"{task.label} must explain L0 coupling reasons for `{scope_classification}` scope")
+    for key, field in (
+        ("task_signals", "Task signals"),
+        ("routed_doc_reasons", "Routed doc reasons"),
+        ("kernel_family_signal", "Kernel family signal"),
+        ("failure_layers", "Failure layers"),
+    ):
+        if not _task_contract_raw_value(task, key, field):
+            errors.append(f"{task.label} missing L0 planner routing field: {field}")
 
     if not minimum_unit:
         errors.append(f"{task.label} missing L0 execution-boundary field: Minimum executable unit")
@@ -3328,8 +3343,37 @@ def _gluon_overlay_binding_errors(task: AgentTask, tasks: list[AgentTask]) -> li
             tokens.add(stripped)
         return tokens
 
+    def scope_tokens(task_obj: AgentTask) -> set[str]:
+        values: list[str] = []
+        for key in ("target_symbol", "target_component"):
+            value = task_obj.config.get(key)
+            if value:
+                values.append(str(value))
+        for value in task_obj.config.get("required_patch_target_symbols") or []:
+            values.append(str(value))
+        for field in ("Target symbol", "Target component", "Allowed change"):
+            parsed = _parse_prompt_field_value(task_obj.task, field)
+            if parsed:
+                values.append(parsed)
+        tokens: set[str] = set()
+        for value in values:
+            tokens.update(component_tokens(value))
+        return tokens
+
     plain_tokens = component_tokens(plain_component)
     gluon_tokens = component_tokens(gluon_component)
+    plain_scope_tokens = scope_tokens(plain_task)
+    gluon_scope_tokens = scope_tokens(task)
+    plain_target_symbol = (
+        str(plain_task.config.get("target_symbol") or "")
+        or _parse_prompt_field_value(plain_task.task, "Target symbol")
+        or ""
+    ).strip().strip("`")
+    gluon_target_symbol = (
+        str(task.config.get("target_symbol") or "")
+        or _parse_prompt_field_value(task.task, "Target symbol")
+        or ""
+    ).strip().strip("`")
     if not plain_tokens:
         return [
             f"{task.label} Plain competitor `{plain_ref}` lacks auditable Target component or Allowed change for L0 overlay binding"
@@ -3339,6 +3383,14 @@ def _gluon_overlay_binding_errors(task: AgentTask, tasks: list[AgentTask]) -> li
     if plain_tokens.isdisjoint(gluon_tokens):
         return [
             f"{task.label} Target component `{gluon_component}` does not match Plain competitor `{plain_ref}` component `{plain_component}`"
+        ]
+    if plain_target_symbol and gluon_target_symbol and plain_target_symbol != gluon_target_symbol:
+        return [
+            f"{task.label} Target scope `{gluon_target_symbol}` does not match Plain competitor `{plain_ref}` target scope `{plain_target_symbol}`"
+        ]
+    if gluon_scope_tokens and plain_scope_tokens and plain_scope_tokens.isdisjoint(gluon_scope_tokens):
+        return [
+            f"{task.label} Target scope `{sorted(gluon_scope_tokens)}` does not match Plain competitor `{plain_ref}` target scope `{sorted(plain_scope_tokens)}`"
         ]
     return []
 
@@ -3405,6 +3457,7 @@ def _task_audit_summary(task: AgentTask) -> dict[str, Any]:
         "implementation_layer": task.config.get("implementation_layer") or _parse_prompt_field_value(text, "Implementation layer"),
         "extension_layer": task.config.get("extension_layer") or _parse_prompt_field_value(text, "Extension layer"),
         "optimization_direction": _parse_prompt_field_value(text, "Optimization direction"),
+        "target_symbol": task.config.get("target_symbol") or _parse_prompt_field_value(text, "Target symbol"),
         "target_component": task.config.get("target_component") or _parse_prompt_field_value(text, "Target component"),
         "l0_scope_classification": task.config.get("l0_scope_classification")
         or _parse_prompt_field_value(text, "L0 scope classification")
@@ -3418,6 +3471,14 @@ def _task_audit_summary(task: AgentTask) -> dict[str, Any]:
         "first_patch_compile_goal": task.config.get("first_patch_compile_goal")
         or _parse_prompt_field_value(text, "First patch compile goal")
         or "",
+        "task_signals": task.config.get("task_signals") or _parse_prompt_field_value(text, "Task signals") or "",
+        "routed_doc_reasons": task.config.get("routed_doc_reasons")
+        or _parse_prompt_field_value(text, "Routed doc reasons")
+        or "",
+        "kernel_family_signal": task.config.get("kernel_family_signal")
+        or _parse_prompt_field_value(text, "Kernel family signal")
+        or "",
+        "failure_layers": task.config.get("failure_layers") or _parse_prompt_field_value(text, "Failure layers") or "",
         "minimum_executable_unit": task.config.get("minimum_executable_unit")
         or _parse_prompt_field_value(text, "Minimum executable unit")
         or "",
@@ -3479,6 +3540,24 @@ def _audit_repair_hints(errors: list[str], tasks: list[AgentTask]) -> list[str]:
             )
             continue
 
+        scope_match = re.search(
+            r"(?:Task-generation coverage audit failed:\s*)?(?P<label>\S+) Target scope `(?P<gluon>.*?)` does not match Plain competitor `(?P<plain>.*?)` target scope `(?P<plain_scope>.*?)`$",
+            error,
+        )
+        if scope_match:
+            label = scope_match.group("label")
+            plain = scope_match.group("plain")
+            summary = summaries.get(label, {})
+            direction = summary.get("optimization_direction") or "<same optimization direction as the Gluon L0>"
+            target_component = summary.get("target_component") or summary.get("target_symbol") or "<Gluon target symbol/component>"
+            source_family = summary.get("source_base_family") or "matching Base family"
+            hints.append(
+                f"{label}: create a same-batch plain Triton Base competitor for target `{target_component}` "
+                f"with `Base family: {source_family}`, `required_output_dialect: plain_triton`, "
+                f"and `Optimization direction: {direction}`. Do not bind this overlay to `{plain}` because it targets a different stage/helper/component."
+            )
+            continue
+
         missing_component_match = re.search(
             r"(?:Task-generation coverage audit failed:\s*)?(?P<label>\S+) Plain competitor `(?P<plain>.*?)` lacks auditable Target component or Allowed change",
             error,
@@ -3510,6 +3589,14 @@ def _audit_repair_hints(errors: list[str], tasks: list[AgentTask]) -> list[str]:
         elif "missing L0 execution-boundary field" in error:
             hints.append(
                 "Add parseable L0 execution-boundary fields to the Round-1 L0 overlay, preferably as top-level JSON metadata or exact task lines: `Minimum executable unit: ...`, `Allowed execution path: ...`, and `Scope infeasible policy: ...`. Snake_case prompt lines are accepted for compatibility, but title-case fields are preferred for audit readability. If the scoped path cannot execute, do not emit the overlay."
+            )
+        elif "missing L0 planner routing field" in error:
+            hints.append(
+                "Add planner routing metadata to the Gluon task: `task_signals`, `routed_doc_reasons`, `kernel_family_signal`, and `failure_layers`. Use these to map task signals to required split docs before emitting the task."
+            )
+        elif "whole_jit_kernel compile-risk anchor missing fields" in error:
+            hints.append(
+                "For `whole_jit_kernel`, add compile-risk metadata: `expected_failure_layers`, `first_patch_compile_goal`, `do_not_optimize_before_compile: true`, and `matrix_lowering_required: true|false`; otherwise shrink to a micro-anchor."
             )
 
     unique: list[str] = []
