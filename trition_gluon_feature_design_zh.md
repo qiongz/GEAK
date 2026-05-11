@@ -1,7 +1,7 @@
 # Triton-Gluon Feature Design
 
 本文档说明 `feature/triton-gluon-mi3xx-baseline` 从 `main` 分支点
-`bb7f1a0a` 之后、直到当前 HEAD `1d2d12b7` 引入并保留下来的
+`bb7f1a0a` 之后、直到当前 HEAD `1116122b` 引入并保留下来的
 Triton-Gluon 改进，并把
 `/apps/qiongzhu/GEAK_triton_gluon_baseline_planner_widen` 中的 planner、
 tasks、subagents、rounds、postprocess 流水线串起来。
@@ -58,16 +58,16 @@ tasks、subagents、rounds、postprocess 流水线串起来。
 - `knowledge-base/amd-knowledge-base/layer-3-libraries/compilers/triton-gluon-on-rocm.md`
 - `examples/triton_gluon_inputs/*`
 
-普通 Triton 的历史知识入口仍按 main 分支方式保留：
+普通 Triton / Base task 当前没有像 Gluon split-doc 这样的显式知识注入体系：
 
-- planner 侧常量是 `knowledge_base/optimization_strategies.py`；
-- 该路径若存在，会作为 `knowledge_base_path` 注入 planner prompt；
-- planner 读取后把适用策略消化进每个 task prompt；
-- 普通 Triton/Base subagent 默认执行 planner 写好的具体任务，不走 Gluon split-doc gate。
+- planner 主要依赖 `TASKGEN_SYSTEM_PROMPT`、profiling、discovery、baseline metrics、COMMANDMENT、codebase context 和 Base family / Search Space Allocation 约束来生成普通 Triton task；
+- 普通 Triton/Base subagent 默认按 planner 写好的 `task_prompt`、COMMANDMENT、pipeline context 和源码自行阅读、编辑、测试、profile；
+- 普通 Base task 不走 Gluon split-doc gate，也没有强制额外 view 的 Triton 专属 docs；
+- `knowledge_base/optimization_strategies.py` 仍是历史/可选入口：如果运行环境或外部生成物提供该文件，planner 可以读取；当前仓库实际没有这个下划线路径。
 
 当前仓库实际存在的是 `knowledge-base/` 目录；`knowledge_base/optimization_strategies.py`
 是否存在取决于运行 workspace 或外部生成物。这个路径不一致不是 Gluon feature
-新引入的问题，而是从 fork 点 main 就沿用的普通 Triton 知识库入口约定。
+新引入的问题，而是从 fork 点 main 就沿用的普通 Triton 可选知识入口约定。
 
 ## 3. 从分支点以来的改进清单
 
@@ -84,7 +84,7 @@ tasks、subagents、rounds、postprocess 流水线串起来。
 - `30_architecture_notes.md` 补齐 `gfx942`、`gfx950`、`gfx1250`、Triton 版本、JIT/AOT、operator-local support、target backend 解析规则。
 - `50_api_reference.md` 补齐 Gluon import、`@gluon.jit`、host-created layout、common rewrite table、broadcast recipe、AOT、AMD/NVIDIA quick patterns、debug order。
 - `60_real_patterns.md` 收敛真实 operator 模式、kernel-family 策略、benchmark boundary、source-first triggers 和 repo-local notes。
-- split-docs 进一步把 `BlockedLayout`、`SliceLayout`、`DotOperandLayout` 的 host-side `gl.constexpr` 构造规则写成硬约束：不得在 `@gluon.jit` 内新建 layout 对象，避免 lowering 错误。
+- split-docs 进一步把 `BlockedLayout`、`SliceLayout`、`DotOperandLayout` 的 layout 构造拆成策略化合同：generated overlay 默认 `host_preferred`，已有 production/source-proven Gluon 可用 `source_preserve` 或 `constexpr_in_kernel_allowed`；真正拒绝的是 runtime layout object、非 `constexpr` layout 或依赖不清的动态 layout 构造。
 - docs 和 worker contract 明确“definition-only helper 无效”：只定义 `@gluon.jit` helper、import Gluon、或写少量 `gl.*` 标记但没有真实 launch/target wiring，不能算 AMD Gluon 成功。
 - 最近几次提交把 planner 文档和 worker 文档职责拆开：planner 默认读 `00_always_read.md`、`10_search_policies.md` 和少量 trait/pattern 摘要来决定任务；具体 API、example、backup 只通过 worker 的 `gluon_doc_profile` / `required_gluon_docs` 路由，不再作为 planner 大段上下文。
 - `50_api_reference.md`、`40_examples.md`、`70_backup_details.md` 被收敛为 worker-routed 文档：API 细节、示例、缺页兜底都必须由任务信号或 doc gate 触发，避免 subagent 凭记忆改 Gluon，也避免 planner 被实现 cookbook 淹没。
@@ -297,7 +297,7 @@ tasks、subagents、rounds、postprocess 流水线串起来。
 | L0 patch evolution | `00_always_read.md`、`pipeline_helpers.py`、`60_real_patterns.md` | `patch_0` 先证明最小 correctness anchor，后续 patch 每次只改一个 layout、launch constant、memory path、matrix subpath 或 dispatch condition。 |
 | Execution anchor attribution | `00_always_read.md`、`60_real_patterns.md`、`result_scanning.py` | `extension_intent=execution_anchor` 时，正确但慢的 L0 是 overhead/layout 证据，不自动升级 L1/MFMA/Hybrid。 |
 | Scoped infeasibility handling | `pipeline_helpers.py`、`10_search_policies.md` | 如果 scoped Gluon 不能在允许路径内实现，worker 应 shrink/report infeasible 或拆任务，不能私自改 whole kernel。 |
-| Host-created layout contract | `20_component_traits.md`、`50_api_reference.md` | `BlockedLayout`、`SliceLayout`、`DotOperandLayout` 必须 host 构造并作为 `gl.constexpr` 传入，避免 in-kernel layout 对象 lowering 错误。 |
+| Layout construction policy | `20_component_traits.md`、`50_api_reference.md`、`benchmark_parsing.py` | generated overlay 默认 host-side layout factory；source-proven / production Gluon 可保留 in-kernel `gl.constexpr` layout；runtime layout object 或依赖不清的动态 layout 构造会被拒绝。 |
 | One component per patch | `10_search_policies.md`、`60_real_patterns.md` | 除非 `bundle_allowed=true`，每个 patch 只改变一个 subpath/component，方便 round 2 归因。 |
 | Source-first triggers | `60_real_patterns.md` | 遇到真实 aiter/descriptor/nested layout/JIT-AOT 包装时先读 operator-local source，不做泛化改写。 |
 
@@ -332,9 +332,9 @@ tasks、subagents、rounds、postprocess 流水线串起来。
 
 这张图里的 Gluon 是 **overlay**，不是独立优化路线：planner 先选 Triton
 优化方向，再按 `overlay_priority_routing` 判断是否给同方向 plain Triton
-competitor 加 AMD Gluon 实现层。普通 Triton/Base task 继续走 main-like
-knowledge-base 与 task prompt 路径；只有 Gluon guidance task 才进入 split-doc
-和 doc gate。
+competitor 加 AMD Gluon 实现层。普通 Triton/Base task 主要走 planner prompt
+约束、profiling/discovery/COMMANDMENT/codebase context 和 task prompt 路径；只有
+Gluon guidance task 才进入 split-doc 和 doc gate。
 
 ```mermaid
 flowchart TB
@@ -363,10 +363,10 @@ flowchart TB
 
     subgraph PLAN[Planner / Task Generator]
         TG0[收集 profiling / COMMANDMENT / baseline_metrics<br/>discovery / codebase_context / prior results] --> TG1[只读 planner agent<br/>TASKGEN_SYSTEM_PROMPT]
-        TG1 --> TG1A[普通 Triton knowledge_base_path<br/>若存在则 view optimization strategies]
+        TG1 --> TG1A[普通 Triton prompt constraints<br/>profiling / discovery / COMMANDMENT / context<br/>可选 knowledge_base_path]
         TG1A --> TG2[推断 traits<br/>dialect / layout / memory / matrix / shape]
         TG2 --> TG2A{是否使用 Gluon guidance?}
-        TG2A -- 否 --> TG2B[沿用普通 Triton KB 策略<br/>生成 kernel-body rewrite directions]
+        TG2A -- 否 --> TG2B[按 planner prompt 与上下文<br/>生成 kernel-body rewrite directions]
         TG2A -- 是 --> TG2G[planner priority docs<br/>00_always_read -> 10_search_policies<br/>必要 traits/patterns<br/>API docs worker-routed]
         TG2B --> TG3[Search Space Allocation<br/>Base mandatory families]
         TG2G --> TG3
@@ -411,7 +411,7 @@ flowchart TB
 
     subgraph EVAL[Round Evaluation / Postprocess]
         E0[collect_results / result_scanning] --> E1[deterministic best patch selection]
-        E1 --> E2[dialect classification<br/>plain_triton / amd_gluon / mixed]
+        E1 --> E2[dialect + API/layout classification<br/>actual_output_dialect / legacy dialect<br/>gluon_api_contract / layout_contract]
         E2 --> E3[contract checks<br/>required_output_dialect / target symbol-component<br/>forbidden scope / target-related Gluon execution]
         E3 --> E4[per-shape speedups<br/>shape regression detection]
         E4 --> E5[独立 worktree apply patch]
@@ -485,32 +485,46 @@ Round 1 L0 还必须说明最小可执行单元和允许执行边界：
 - L1 和 Hybrid 不凭兴趣升级，只由 prior verified evidence、anchor viability、per-shape/sub-operation 证据触发。
 - 结果选择不相信 subagent 自报，必须通过 post-round FULL_BENCHMARK verified speedup 和 dialect/shape/target-symbol/target-related execution contract。
 
-## 6. 非 Gluon / Base plain Triton 的知识使用和改写流水线
+## 6. 非 Gluon / Base plain Triton 的 prompt 约束和改写流水线
 
 这一节专门说明普通 Triton task 和 baseline plain Triton competitor 的路径。
 它不是 Gluon split-doc 的降级版，而是保留 main-like Triton 搜索能力的主线。
 
-### 6.1 Planner 如何调用普通 Triton 知识库
+### 6.1 Planner 如何生成普通 Triton task
 
-普通 Triton 的历史入口是：
+当前 GEAK 中，普通 Triton / Base task 的主要“知识来源”不是一个已随仓库提供的
+专门知识库，而是 planner prompt 和运行时上下文：
+
+- `TASKGEN_SYSTEM_PROMPT` 中的 GPU kernel 优化优先级、task priority、kernel-body-first、wrapper-low-priority 等约束；
+- profiling、baseline metrics、discovery、codebase context、COMMANDMENT、prior results；
+- Gluon feature 分支新增的 Search Space Allocation、Base mandatory families、shape coverage、safe anchor 等审计约束；
+- planner 把这些约束消化成每个 Base task 的 `task_prompt`，subagent 再根据 task prompt 和源码自行完成 read-think-edit-test-profile。
+
+历史/可选的普通 Triton 知识入口仍保留为：
 
 ```text
 knowledge_base/optimization_strategies.py
 ```
 
-调用链：
+但在当前仓库树中，实际存在的是 `knowledge-base/` 目录，不是
+`knowledge_base/optimization_strategies.py`。因此在没有外部生成物或运行环境额外提供
+该下划线路径时，普通 Triton `knowledge_base_path` 为空；这时 planner 仍会依赖上述
+prompt/context 生成 Base task。
+
+可选调用链：
 
 1. `_run_task_agent()` 调用 `_resolve_task_knowledge_paths()`。
-2. `_resolve_task_knowledge_paths()` 先查普通 `knowledge_base_path`。
-3. planner instance prompt 在 “Files to read” 中暴露 `Knowledge base (optimization strategies)`。
-4. `TASKGEN_SYSTEM_PROMPT` 要求 planner 在 profiling、codebase context、discovery 后读取 knowledge base。
-5. planner 将适用策略消化成 task prompt：目标 sub-kernel、backend/language、具体改写策略、预期收益和验证方式。
+2. `_resolve_task_knowledge_paths()` 尝试查普通 `knowledge_base_path`。
+3. 如果该路径存在，planner instance prompt 会在 “Files to read” 中暴露 `Knowledge base (optimization strategies)`。
+4. planner 可把其中内容消化成 task prompt：目标 sub-kernel、backend/language、具体改写策略、预期收益和验证方式。
+5. 如果该路径不存在，普通 Triton task 仍正常生成，不触发 Gluon docs，也不要求 subagent 额外 view Triton docs。
 
 重要边界：
 
-- 普通 Triton KB 是 planner 侧知识源，不是 worker 侧强制 doc gate。
-- 如果该路径不存在，planner 仍可依赖 profiling、codebase context、discovery、baseline metrics、COMMANDMENT 和 prompt 内置策略生成任务。
-- Gluon guidance 开启时，如果普通 KB 缺失，`knowledge_base_path` 才可能 fallback 到 structured Gluon KB；这只服务 Gluon planning context，不代表普通 Base task 必须读 Gluon 文档。
+- 普通 Triton/Base 的主约束来自 planner prompt 和任务上下文，不是像 Gluon 一样的显式 split-doc 知识注入。
+- 普通 Triton 可选 KB 即使存在，也只是 planner 侧辅助材料，不是 worker 侧强制 doc gate。
+- 只有 Gluon guidance task 会通过 `gluon_doc_profile`、`required_gluon_docs`、`REQUIRED BEFORE EDITING OR SAVE_AND_TEST` 和 `save_and_test` doc gate 显式注入额外知识。
+- Gluon guidance 开启时，如果普通 KB 缺失，`knowledge_base_path` 可能 fallback 到 structured Gluon KB；这只服务 Gluon planning context，不代表普通 Base task 必须读 Gluon 文档。
 
 ### 6.2 Base plain Triton task 的生成方向
 
@@ -727,12 +741,14 @@ Base 和 Extension 的关系是同方向对照，不是互斥路线：
 
 ### 6.6 当前需要注意的路径差异
 
-对比 fork 点 main 后，普通 Triton 知识库路径逻辑没有被 Gluon feature 改坏：
+对比 fork 点 main 后，普通 Triton 可选知识库路径逻辑没有被 Gluon feature 改坏，
+但当前 GEAK 仓库本身并没有随带可用的普通 Triton 专属知识库：
 
 - main 也是查 `knowledge_base/optimization_strategies.py`；
-- 当前分支仍保留该路径；
+- 当前分支仍保留该可选路径；
 - 当前分支只是把它包进 `_resolve_task_knowledge_paths()`，并额外解析 Gluon skill、Gluon KB 和 split-doc paths；
 - 当前 repo 树里实际存在 `knowledge-base/` 目录，而不是 `knowledge_base/optimization_strategies.py`，因此如果运行环境没有生成或携带下划线目录，普通 `knowledge_base_path` 会为空；
+- 这意味着普通 Base task 实际上主要靠 planner prompt/context 生成，不靠显式知识库注入；
 - 这属于普通 Triton KB 入口与仓库目录命名的历史不一致，不是 Gluon overlay routing 新造成的回归。
 
 因此，若要进一步修复普通 Triton KB，需要单独决定是否：
@@ -742,6 +758,8 @@ Base 和 Extension 的关系是同方向对照，不是互斥路线：
 - 或在 preprocess / workspace 初始化阶段生成 `knowledge_base/optimization_strategies.py`。
 
 这些都应独立于 Gluon split-doc gate 处理，避免让普通 Base task 被迫读取 Gluon 文档。
+在未做这类改造前，文档中提到的普通 Triton KB 都应理解为“历史/可选 planner 资料”，
+不是当前 GEAK 必然存在的知识库。
 
 ## 7. Planner 到 task 的具体合同
 
@@ -803,6 +821,14 @@ Base/plain task 不应带这些 worker-only 字段，避免把普通 Triton 搜�
 
 `required_output_dialect`、`Implementation layer`、`Extension layer` 共同决定任务要求产出 `plain_triton`、`amd_gluon`、`mixed` 还是 `any`。`search_set` 只用于旧路径兼容、审计、调度和报告；如果它和实现层冲突，以输出/层合同为准。
 
+当前 selector 把三个维度分开记录：
+
+- `actual_output_dialect`：只描述执行/dispatch 形态。执行的 `@gluon.jit` 路径是 `amd_gluon`；只有显式 host-side plain/Gluon dispatch 才是 `mixed`。
+- `gluon_api_contract_status`：描述 `@gluon.jit` 内部 `tl.*` 是否满足 `gluon_tl_policy`。合法 `tl.range` / `tl.constexpr` 或 source-preserved `tl.where` 不会把 AMD Gluon 执行路径误判成 `mixed`。
+- `layout_contract_status`：描述 layout 构造是否满足 `layout_construction_policy`。generated overlay 默认 `host_preferred`，production/source-proven 路径可保留 `gl.constexpr` in-kernel layout；runtime layout object 是 hard reject。
+
+过渡期同时保留 `legacy_output_dialect_classification` 和 `contract_schema_version=2`，用于审计新旧 selector 判断差异。
+
 ### 7.5 Patch target 和 execution contract
 
 当任务提供 `Target symbol:`、`Target component:`、`Allowed change` 中的反引号局部名，或 `required_patch_target_symbols` 时，patch 必须证明自己改到了该 stage/helper/local component 的真实路径：
@@ -814,6 +840,9 @@ Base/plain task 不应带这些 worker-only 字段，避免把普通 Triton 搜�
 - 没有新增 helper 的 Gluon launch 也要和 target symbol 关联；不能靠无关 `*_gluon[grid]` launch 满足 target-specific task。
 - 只出现 `@gluon.jit`、Gluon import、`gl.*` marker、或未执行 helper 的 patch，会被 `save_and_test` 和 deterministic selector 拒绝。
 - required AMD Gluon patch 不能新增 broad `try/except Exception` 后静默走 plain Triton launcher；matrix lowering task 不能用 generic `gl.dot` 作为机械 rewrite 来冒充 operand-layout/MFMA lowering；备份和临时文件也会被拒绝。
+- 对 `gluon_tl_policy=strict_generated` 的 generated overlay，新生成 device tensor/dataflow `tl.arange`、`tl.load`、`tl.store`、`tl.zeros`、`tl.full`、`tl.dot` 是 hard reject；`tl.range`、`tl.constexpr` 等 compile-time/control-flow 用法可允许。
+- 对 `source_origin=existing_amd_gluon_operator` 或 `nv_gluon_translation`，source-preserved `tl.where` / `tl.cdiv` 可在明确 policy 下保留，但 patch 新增这些路径仍需任务证据说明其不是 plain Triton tensor/dataflow fallback。
+- `layout_construction_policy=source_preserve` 允许保留已有 `layout: gl.constexpr = gl.BlockedLayout(...)` 等 source-proven 写法；新增 layout 若依赖 shape、target、`num_warps` 或 launch contract，仍必须说明依赖并保持 `constexpr`。
 
 ## 8. Result attribution
 
@@ -838,7 +867,7 @@ Base/plain task 不应带这些 worker-only 字段，避免把普通 Triton 搜�
 - 架构和 JIT/AOT：`skills/triton-gluon/docs/30_architecture_notes.md`
 - API 和故障排查：`skills/triton-gluon/docs/50_api_reference.md`
 - 真实 operator 模式与 benchmark 边界：`skills/triton-gluon/docs/60_real_patterns.md`
-- 普通 Triton KB 入口：`src/minisweagent/agents/heterogeneous/task_generator.py` 中的 `_KNOWLEDGE_BASE_REL` 和 `_resolve_task_knowledge_paths()`
+- 普通 Triton prompt / 可选 KB 入口：`src/minisweagent/agents/heterogeneous/prompts.py` 中的 `TASKGEN_SYSTEM_PROMPT`，以及 `src/minisweagent/agents/heterogeneous/task_generator.py` 中的 `_KNOWLEDGE_BASE_REL` / `_resolve_task_knowledge_paths()`
 - planner 实现：`src/minisweagent/agents/heterogeneous/task_generator.py`
 - task prompt 合同：`src/minisweagent/agents/heterogeneous/prompts.py`
 - worker doc profile 真源：`src/minisweagent/run/gluon_doc_profiles.py`
@@ -864,7 +893,7 @@ Base/plain task 不应带这些 worker-only 字段，避免把普通 Triton 搜�
 - execution contract hardening 阶段：`save_and_test` 和 deterministic selector 共享 target-symbol/dialect/execution 合同，拒绝 definition-only helper、marker-only Gluon、unrelated helper launch、plain fallback 和 mixed/amd_gluon 偷换。
 - generalized overlay guidance 阶段：planner/worker 使用更细的 `gluon_doc_profile`、required split-docs、source-first guardrails、composition tags 和 shape/hybrid evidence，弱 overlay 不再导致 task generation 丢字段。
 - final verified selection 阶段：`post_round_evaluate` 只 carry forward verified improvement，final selection 跳过 slowdown，slowdown/unverified patch 写为 diagnostic evidence。
-- Base/plain Triton clarification 阶段：明确普通 Triton KB 是 planner 侧知识源，Base task 是 main-like kernel-body search anchor，不应被 Gluon split-doc gate 或 Gluon-only implementation plan 替代。
+- Base/plain Triton clarification 阶段：明确当前普通 Triton 主要由 planner prompt/context 约束生成 task，`knowledge_base/optimization_strategies.py` 只是历史/可选 planner 资料；Base task 是 main-like kernel-body search anchor，不应被 Gluon split-doc gate 或 Gluon-only implementation plan 替代。
 - preflight guidance 阶段：收紧 worker 编辑前 lookup/implementation plan、fallback hygiene、matrix lowering 静态拦截和备份/临时文件拒绝。
 - doc gate 合并阶段：把 mandatory docs、profile docs、显式 `required_gluon_docs` 和旧任务启发式 docs 做加法合并，避免显式 metadata 覆盖基础 gate。
 - task-aware execution 阶段：把 `required_output_dialect`、implementation layer、extension layer、doc profile 和 target symbols 一起传给 `save_and_test` / selector，使 execution contract 能按具体任务判断。
@@ -876,6 +905,8 @@ Base/plain task 不应带这些 worker-only 字段，避免把普通 Triton 搜�
 - scoped execution hardening 阶段：把 forbidden scope 传入 `save_and_test` 和 deterministic selector，拒绝通过 whole-kernel rewrite、helper-only、dot/MFMA/buffer/bias 越界来满足 scoped task。
 - L0 execution-boundary 阶段：Round 1 L0 overlay 必须声明 `minimum_executable_unit`、`allowed_execution_path`、`scope_infeasible_policy`；不可行 scoped path 不能发 required AMD Gluon task。
 - auditability 阶段：plain/Base task 不再携带不必要的 Gluon worker metadata；task generation audit 失败会 dump raw tasks 和 parsed summaries，方便定位 planner 丢字段、错绑定或越界。
+- overlay audit tightening 阶段：L0 overlay 审计继续收紧，要求 exact same optimization direction / same target component / auditable plain competitor，`input_dialect=amd_gluon` 不能单独绕开 Base/no-regression audit。
+- dialect/API contract split 阶段：`actual_output_dialect` 改为执行路径判定，新增 `gluon_api_contract_status`、`layout_contract_status`、`source_origin`、`gluon_tl_policy`、`layout_construction_policy` 和 `legacy_output_dialect_classification`，把合法 production `tl.*` / `gl.constexpr` layout 与 generated overlay leftover device API 分开审计。
 
 ## 11. 设计结论
 
@@ -885,10 +916,11 @@ Base/plain task 不应带这些 worker-only 字段，避免把普通 Triton 搜�
 - Extension 保证 AMD Gluon 尝试是真实执行、同方向、同组件、绑定 plain competitor 的 scoped overlay。
 - Shared 允许把 Gluon 发现的可移植组件移回 plain Triton。
 - Hybrid 只在证据显示不同 shape/sub-operation 有不同胜者时出现。
-- 普通 Triton KB 仍由 planner 读取并转化为具体 task prompt；worker 不因 Base 身份而强制读取 Gluon docs。
+- 普通 Triton 当前主要由 planner prompt、profiling/discovery/COMMANDMENT/codebase context 和 Base family 审计生成具体 task；可选 KB 只有存在时才被 planner 读取，worker 不因 Base 身份而强制读取 Gluon docs。
 - planner 只承担搜索策略和合同生成；worker 的 API/trait/example 阅读由 `gluon_doc_profile`、`required_gluon_docs` 和 doc gate 精确路由。
+- `actual_output_dialect`、Gluon 内部 API 合同、layout 构造合同现在分离：用不用 `mixed` 由 host dispatch 决定，`@gluon.jit` 内合法 `tl.*` 或 source-preserved layout 由独立 contract 判断。
 - L0 不再等价于“先写一个大 Gluon 版本”：它必须声明最小可执行边界、允许执行路径和不可行策略；慢的 execution anchor 是诊断证据，不是 L1 升级许可。
 - 每轮 verified evaluation、target-related execution evidence 和 per-shape evidence 决定下一轮方向。
 - slowdown、missing verified speedup、helper-only、marker-only 或 forbidden-scope patch 都能进入诊断/归因，但不能成为下一轮起点或最终 canonical best。
 
-这样，最终结果可以是 `plain_triton`、`amd_gluon` 或 `mixed`；无论谁赢，都能回答“为什么规划它、它改了哪个方向、它应读哪些文档、它改了哪个 target symbol/component、它被允许或禁止触达哪些 scope、它是否真的执行、它相对哪个 anchor 赢或输、是否伤害了任何 shape”。
+这样，最终结果可以是 `plain_triton`、`amd_gluon` 或 `mixed`；无论谁赢，都能回答“为什么规划它、它改了哪个方向、它应读哪些文档、它改了哪个 target symbol/component、它被允许或禁止触达哪些 scope、它的 Gluon API/layout 合同是否满足、它是否真的执行、它相对哪个 anchor 赢或输、是否伤害了任何 shape”。

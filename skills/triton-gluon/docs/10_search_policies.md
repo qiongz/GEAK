@@ -358,9 +358,9 @@ schematic example. Examples are not common context.
 Before emitting a Round-1 L0 overlay, classify the proposed scope:
 
 - Is this the smallest executable, attributable, low-coupling subpath?
-- Does it contain layout-heavy risk such as RoPE, online softmax, multiple dot
-  paths, multiple 2D layout parents, nested `SliceLayout`, last-token logic, or
-  split-boundary control flow?
+- Does it contain layout-heavy risk such as complex element transforms, online
+  reductions, multiple matrix paths, multiple 2D layout parents, nested
+  `SliceLayout`, boundary-specific logic, or split-boundary control flow?
 - Can the candidate execute and feed measured output without translating the
   whole algorithm?
 - Is the expected outcome `execution_anchor` or `performance_candidate`?
@@ -381,6 +381,11 @@ same `Optimization direction:` text and must both include an auditable
 `Target component:` or `Allowed change:` with the same scoped symbol/stage. Use
 `Target component:` / `Target symbol:` when the component is narrower than a
 whole helper.
+If the intended Gluon component is new to the batch, first create a plain Triton
+Base competitor for that exact component and direction. For example, an overlay
+for component B's memory/layout path needs a component-B memory/layout plain
+competitor; it must not bind to a component-A cleanup/control-flow task just
+because both share a broad Base family.
 
 Optional metadata:
 
