@@ -35,6 +35,18 @@ def target_symbols_from_scoped_text(value: str | None) -> list[str]:
         if len(group_symbols) > 1:
             symbols.extend(group_symbols)
     symbols.extend(_normalize_stage_symbol(match.group(1)) for match in _STAGE_SCOPE_RE.finditer(text))
+    stripped = text.strip().strip("`")
+    leading_symbol = re.match(
+        r"^(_[A-Za-z0-9_]+|[A-Za-z_][A-Za-z0-9_]*_[A-Za-z0-9_]+|stage[\s_-]*\d+)\b",
+        stripped,
+        re.IGNORECASE,
+    )
+    if leading_symbol:
+        symbol = leading_symbol.group(1)
+        if re.match(r"^stage[\s_-]*\d+$", symbol, re.IGNORECASE):
+            symbols.append(_normalize_stage_symbol(symbol))
+        else:
+            symbols.append(symbol.strip().lower())
     return symbols
 
 
