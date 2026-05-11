@@ -100,6 +100,13 @@ Wiring rules before coding:
   already-executed kernel path calls `helper[grid](...)` and the helper's result
   contributes to the measured output. Definition-only helpers are invalid even
   when compile/correctness succeeds through the plain Triton path.
+- Output dialect is determined by execution path and host dispatch. Legal
+  compile-time/control-flow `tl.*` inside `@gluon.jit` is checked by
+  `gluon_tl_policy`; it is not by itself a `mixed` output.
+- Generated overlays should use `gl.*` for device tensor/dataflow. Preserve
+  `tl.where` / `tl.cdiv` only for source-proven production or translation code,
+  and do not newly add `tl.arange`, `tl.load`, `tl.store`, `tl.zeros`,
+  `tl.full`, or `tl.dot` inside the Gluon subpath.
 
 ```python
 import triton

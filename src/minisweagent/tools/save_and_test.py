@@ -24,6 +24,8 @@ from minisweagent.run.postprocess.benchmark_parsing import (
     _patch_touches_any_target_symbol,
     _patch_touches_forbidden_target_symbol,
     _required_amd_gluon_static_contract_error,
+    classify_gluon_api_contract,
+    classify_layout_contract,
     compute_shape_speedups,
     extract_latency_ms,
     classify_patch_output_dialect,
@@ -140,6 +142,12 @@ class SaveAndTestContext:
     required_patch_target_symbols: list[str] | None = None
     forbidden_patch_target_symbols: list[str] | None = None
     required_amd_gluon_contract_tags: list[str] | None = None
+    source_origin: str | None = None
+    gluon_tl_policy: str | None = None
+    allowed_tl_symbols: list[str] | None = None
+    forbidden_tl_symbols: list[str] | None = None
+    layout_construction_policy: str | None = None
+    execution_mode: str | None = None
 
 
 def _tracked_subprocess_run(
@@ -310,7 +318,15 @@ class SaveAndTestTool:
         if not required_output and not required_symbols and not forbidden_symbols:
             return None
 
-        task_meta = {"required_amd_gluon_contract_tags": ctx.required_amd_gluon_contract_tags or []}
+        task_meta = {
+            "required_amd_gluon_contract_tags": ctx.required_amd_gluon_contract_tags or [],
+            "source_origin": ctx.source_origin,
+            "gluon_tl_policy": ctx.gluon_tl_policy,
+            "allowed_tl_symbols": ctx.allowed_tl_symbols,
+            "forbidden_tl_symbols": ctx.forbidden_tl_symbols,
+            "layout_construction_policy": ctx.layout_construction_policy,
+            "execution_mode": ctx.execution_mode,
+        }
         static_contract_error = _required_amd_gluon_static_contract_error(
             patch_content,
             required_output,
@@ -319,13 +335,29 @@ class SaveAndTestTool:
         if static_contract_error:
             return "PATCH_CONTRACT_FAILED: " + static_contract_error + "."
 
+        api_contract = classify_gluon_api_contract(patch_content, task_meta)
+        if api_contract["gluon_api_contract_status"] in {"leftover_tl_device_api", "invalid_plain_fallback"}:
+            return (
+                "PATCH_CONTRACT_FAILED: Gluon API contract failed with "
+                f"status={api_contract['gluon_api_contract_status']}; "
+                f"forbidden_tl_symbols_seen={api_contract['forbidden_tl_symbols_seen']}."
+            )
+
+        layout_contract = classify_layout_contract(patch_content, task_meta)
+        if layout_contract["layout_contract_status"] == "runtime_layout_object":
+            return (
+                "PATCH_CONTRACT_FAILED: layout_contract_status=runtime_layout_object. "
+                "Create Gluon layouts as constexpr values, preserve existing source layout contracts, "
+                "or move generated layout factories to host code."
+            )
+
         actual_output = classify_patch_output_dialect(patch_content)
         if required_output and not _dialect_contract_satisfied(required_output, actual_output):
             if required_output == "amd_gluon":
                 reason = (
-                    "A required pure AMD Gluon task must not save a plain or mixed patch. "
-                    "If actual_output_dialect=mixed, replace leftover `tl.*` device APIs inside `@gluon.jit` "
-                    "with `gl.*` APIs, or use a task whose required_output_dialect is `mixed` for explicit host dispatch."
+                    "A required pure AMD Gluon task must execute a real AMD Gluon path. "
+                    "`mixed` is reserved for explicit host-side plain/Gluon dispatch; "
+                    "legal tl.* preserved inside @gluon.jit is handled by gluon_api_contract_status."
                 )
             elif required_output == "mixed":
                 reason = (

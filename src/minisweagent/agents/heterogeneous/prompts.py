@@ -347,6 +347,13 @@ tell the worker to attempt `from triton.experimental import gluon`; `from
 triton import gluon` is only a bad availability probe. Plain Triton fallback is
 only evidence after a saved/tested Gluon attempt fails with a recorded error.
 `search_set` is optional compatibility metadata.
+Do not use `tl.*` inside `@gluon.jit` to decide whether a task is `mixed`.
+`mixed` requires explicit host-side dispatch between plain Triton and AMD Gluon.
+Generated overlays should include `source_origin: generated_overlay`,
+`gluon_tl_policy: strict_generated`, and
+`layout_construction_policy: host_preferred` when the prompt needs API/layout
+audit clarity. Use `source_origin: existing_amd_gluon_operator` only when the
+measured baseline already executes an existing production AMD Gluon operator.
 
 **AMD Gluon worker contract**: Required AMD Gluon task_prompts must point to
 `skills/triton-gluon/docs/00_always_read.md` and require pre-edit `Gluon

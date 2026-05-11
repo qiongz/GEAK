@@ -66,6 +66,12 @@ class AgentConfig:
     required_patch_target_symbols: list[str] | None = None
     forbidden_patch_target_symbols: list[str] | None = None
     required_amd_gluon_contract_tags: list[str] | None = None
+    source_origin: str | None = None
+    gluon_tl_policy: str | None = None
+    allowed_tl_symbols: list[str] | None = None
+    forbidden_tl_symbols: list[str] | None = None
+    layout_construction_policy: str | None = None
+    execution_mode: str | None = None
 
 
 # Unified observation truncation for both bash output and tool call results (head + tail).
@@ -257,6 +263,12 @@ class DefaultAgent:
             required_patch_target_symbols=self.config.required_patch_target_symbols,
             forbidden_patch_target_symbols=self.config.forbidden_patch_target_symbols,
             required_amd_gluon_contract_tags=self.config.required_amd_gluon_contract_tags,
+            source_origin=self.config.source_origin,
+            gluon_tl_policy=self.config.gluon_tl_policy,
+            allowed_tl_symbols=self.config.allowed_tl_symbols,
+            forbidden_tl_symbols=self.config.forbidden_tl_symbols,
+            layout_construction_policy=self.config.layout_construction_policy,
+            execution_mode=self.config.execution_mode,
         )
 
         save_and_test_tool = self.toolruntime._tool_table.get("save_and_test")

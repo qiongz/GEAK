@@ -60,6 +60,12 @@ policy and task allocation live in `10_search_policies.md`.
   chain. Do not mix a `gl.arange(..., layout=...)` for one axis with leftover
   `tl.arange`, `tl.zeros`, `tl.full`, `tl.load`, `tl.where`, or `tl.dot` for
   the same Gluon subpath.
+- `tl.constexpr` and `tl.range` can be legal compile-time/control-flow idioms in
+  real Gluon code. They do not by themselves make the output `mixed`.
+- `tl.where` / `tl.cdiv` are not general generated-overlay APIs. Preserve them
+  only when the task is source-preserving an existing production Gluon operator
+  or translation path and the patch does not newly introduce plain Triton
+  tensor/dataflow into the edited Gluon subpath.
 - Device scalar/math in the edited Gluon subpath should also stay in Gluon
   namespace: use `gl.cdiv`, `gl.minimum`, `gl.maximum`, `gl.max`, `gl.sum`,
   `gl.exp`, `gl.where`, etc. If source uses `tl.sigmoid` and local docs do not
@@ -83,6 +89,10 @@ policy and task allocation live in `10_search_policies.md`.
 - Create those `SliceLayout(axis, parent)` objects in the host layout factory
   and pass them to the kernel as `gl.constexpr`; do not construct new
   `SliceLayout` objects inside `@gluon.jit`.
+- Existing production Gluon source may already declare layouts inside
+  `@gluon.jit` as `layout: gl.constexpr = gl.BlockedLayout(...)`. Preserve that
+  source-proven pattern when `layout_construction_policy=source_preserve`; do
+  not convert it into runtime layout construction.
 - `SliceLayout` creates 1D tensors. Do not directly add or combine two 1D slice
   tensors with different lengths to build a 2D offset. First expand them with
   `[:, None]` and `[None, :]` so both operands broadcast into the same parent

@@ -27,6 +27,12 @@ from minisweagent.run.target_contracts import (
     patch_touches_forbidden_target_symbol,
     target_symbols_from_scoped_text,
 )
+from minisweagent.run.postprocess.benchmark_parsing import (
+    _legacy_classify_patch_output_dialect,
+    classify_gluon_api_contract,
+    classify_layout_contract,
+    classify_patch_output_dialect as _postprocess_classify_patch_output_dialect,
+)
 
 logger = logging.getLogger(__name__)
 _PER_SHAPE_REGRESSION_SPEEDUP_FLOOR = 0.95
@@ -698,19 +704,7 @@ def _gluon_execution_contract_satisfied(
 
 def classify_patch_output_dialect(patch_text: str) -> str:
     """Classify whether a patch appears to implement plain Triton, AMD Gluon, or both."""
-    added = _added_lines(patch_text)
-    added_text = "\n".join(added) if added else patch_text
-    has_gluon = any(marker in added_text for marker in _AMD_GLUON_PATCH_MARKERS) or bool(
-        re.search(r"\bgl\.(?:load|store|program_id|arange|zeros|full)\b", added_text)
-    )
-    has_plain_triton = any(marker in added_text for marker in _PLAIN_TRITON_PATCH_MARKERS)
-    if has_gluon and has_plain_triton:
-        return "mixed"
-    if has_gluon:
-        return "amd_gluon"
-    if has_plain_triton:
-        return "plain_triton"
-    return "unknown"
+    return _postprocess_classify_patch_output_dialect(patch_text)
 
 
 def _find_task_metadata_for_patch_dir(patch_dir: Path) -> dict[str, Any]:
@@ -859,6 +853,22 @@ def _infer_forbidden_patch_target_symbols(task_body: str, task_meta: dict[str, A
 
 
 _OPTIONAL_GLUON_RESULT_METADATA: tuple[tuple[str, str], ...] = (
+    ("source_origin", "Source origin"),
+    ("gluon_tl_policy", "Gluon TL policy"),
+    ("layout_construction_policy", "Layout construction policy"),
+    ("execution_mode", "Execution mode"),
+    ("aot_signature_contract", "AOT signature contract"),
+    ("target_triple", "Target triple"),
+    ("divisibility_hints", "Divisibility hints"),
+    ("scratch_requirement_check", "Scratch requirement check"),
+    ("prebuilt_artifact_contract", "Prebuilt artifact contract"),
+    ("jit_aot_fallback_preservation", "JIT AOT fallback preservation"),
+    ("target_stage", "Target stage"),
+    ("target_kernel_role", "Target kernel role"),
+    ("upstream_stage", "Upstream stage"),
+    ("downstream_stage", "Downstream stage"),
+    ("measured_output_dependency", "Measured output dependency"),
+    ("integration_boundary", "Integration boundary"),
     ("extension_intent", "Extension intent"),
     ("expected_outcome", "Expected outcome"),
     ("not_viable_for_l1_if_slower_than_base", "Not viable for L1 if slower than Base"),
@@ -1003,6 +1013,18 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
     best_test_file: str | None = None
     best_patch_size: int = 0
     best_actual_output_dialect = "unknown"
+    best_legacy_output_dialect = "unknown"
+    best_api_contract: dict[str, Any] = {
+        "gluon_api_contract_status": "ok",
+        "gluon_tl_policy": "strict_generated",
+        "tl_symbols_seen": [],
+        "forbidden_tl_symbols_seen": [],
+    }
+    best_layout_contract: dict[str, Any] = {
+        "layout_contract_status": "ok",
+        "layout_construction_policy": "host_preferred",
+        "layout_symbols_seen": [],
+    }
     best_shape_speedups: dict[str, dict[str, float]] = {}
     best_candidate_shape_latencies: dict[str, float] = {}
     best_candidate_shape_geomean: float | None = None
@@ -1049,6 +1071,14 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         if forbidden_target:
             logger.info("Skipping %s because it touches forbidden target scope: %s", name, forbidden_target)
             continue
+        api_contract = classify_gluon_api_contract(patch_text, task_meta)
+        if api_contract["gluon_api_contract_status"] in {"leftover_tl_device_api", "invalid_plain_fallback"}:
+            logger.info("Skipping %s because Gluon API contract failed", name)
+            continue
+        layout_contract = classify_layout_contract(patch_text, task_meta)
+        if layout_contract["layout_contract_status"] == "runtime_layout_object":
+            logger.info("Skipping %s because layout contract failed", name)
+            continue
 
         candidate_text = test_file.read_text()
         candidate_ms = _extract_latency(candidate_text)
@@ -1090,6 +1120,9 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
             best_test_file = str(test_file)
             best_patch_size = psz
             best_actual_output_dialect = actual_output_dialect
+            best_legacy_output_dialect = _legacy_classify_patch_output_dialect(patch_text)
+            best_api_contract = api_contract
+            best_layout_contract = layout_contract
             best_candidate_shape_latencies = candidate_shape_latencies
             best_candidate_shape_geomean = _geomean_ms(candidate_shape_latencies)
             best_shape_speedups = shape_speedups
@@ -1140,8 +1173,17 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         "has_significant_shape_regression": best_has_shape_regression,
         "required_output_dialect": required_output_dialect,
         "actual_output_dialect": best_actual_output_dialect,
+        "legacy_output_dialect_classification": best_legacy_output_dialect,
         "dialect_contract_satisfied": dialect_ok,
         "gluon_execution_contract_satisfied": gluon_execution_ok,
+        "gluon_api_contract_status": best_api_contract["gluon_api_contract_status"],
+        "gluon_tl_policy": best_api_contract["gluon_tl_policy"],
+        "tl_symbols_seen": best_api_contract["tl_symbols_seen"],
+        "forbidden_tl_symbols_seen": best_api_contract["forbidden_tl_symbols_seen"],
+        "layout_contract_status": best_layout_contract["layout_contract_status"],
+        "layout_construction_policy": best_layout_contract["layout_construction_policy"],
+        "layout_symbols_seen": best_layout_contract["layout_symbols_seen"],
+        "contract_schema_version": 2,
         "gluon_l1_anchor_viability": anchor_viability,
         "not_viable_for_l1": anchor_viability == "not_viable_for_l1",
         "overhead_source": task_meta.get("overhead_source_to_record") if anchor_viability != "viable_for_l1" else None,

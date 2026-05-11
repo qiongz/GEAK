@@ -124,6 +124,11 @@ _BASE_FAMILY_PERSISTENT = "base_small_matrix_persistent_or_launch_amortization"
 _BASE_FAMILY_GENERIC_ALGO = "base_algorithmic_rewrite"
 _BASE_FAMILY_GENERIC_FUSION = "base_fusion_or_launch_reduction"
 _BASE_FAMILY_GENERIC_MEMORY = "base_memory_layout_cleanup"
+_BASE_FAMILY_CONFIG_DISPATCH = "base_config_or_shape_dispatch"
+_BASE_FAMILY_PIPELINE_STAGE = "base_pipeline_stage_boundary"
+_BASE_FAMILY_AOT_JIT = "base_aot_jit_integration"
+_BASE_FAMILY_PRESHUFFLE_DESCRIPTOR = "base_preshuffle_or_descriptor_layout"
+_BASE_FAMILY_SPLITK_REDUCE_PIPELINE = "base_splitk_reduce_pipeline"
 
 _BASE_FAMILY_DETAILS: dict[str, str] = {
     _BASE_FAMILY_SWIZZLE_TILE: (
@@ -138,6 +143,11 @@ _BASE_FAMILY_DETAILS: dict[str, str] = {
     _BASE_FAMILY_GENERIC_ALGO: "algorithmic kernel-body rewrite",
     _BASE_FAMILY_GENERIC_FUSION: "operation fusion or launch-count reduction",
     _BASE_FAMILY_GENERIC_MEMORY: "memory/layout cleanup on the hottest path",
+    _BASE_FAMILY_CONFIG_DISPATCH: "shape/config dispatch, checked-in config, or explicit bucket selection",
+    _BASE_FAMILY_PIPELINE_STAGE: "multi-stage operator boundary, helper/reduce stage, or measured-output dependency",
+    _BASE_FAMILY_AOT_JIT: "JIT/AOT/prebuilt artifact, signature, target triple, or fallback integration",
+    _BASE_FAMILY_PRESHUFFLE_DESCRIPTOR: "preshuffle/unshuffle, descriptor, tensor descriptor, or cache-layout contract",
+    _BASE_FAMILY_SPLITK_REDUCE_PIPELINE: "split-K partial output plus reduce pipeline or multi-kernel reduction",
 }
 
 _BASE_FAMILY_GLUON_OVERLAY_REASONS: dict[str, str] = {
@@ -149,6 +159,11 @@ _BASE_FAMILY_GLUON_OVERLAY_REASONS: dict[str, str] = {
     _BASE_FAMILY_GENERIC_ALGO: "local_subpath_win or explicit_layout tied to the same algorithmic rewrite",
     _BASE_FAMILY_GENERIC_FUSION: "same fused operation expressed in AMD Gluon with a same-ABI comparison",
     _BASE_FAMILY_GENERIC_MEMORY: "explicit_layout or buffer_path for the measured memory/layout cleanup",
+    _BASE_FAMILY_CONFIG_DISPATCH: "shape_bucket or config-driven dispatch only with visible host-side selection",
+    _BASE_FAMILY_PIPELINE_STAGE: "local_subpath_win only when the Gluon stage feeds measured output",
+    _BASE_FAMILY_AOT_JIT: "jit_aot_sensitive or operator_artifact_integration; preserve product fallback",
+    _BASE_FAMILY_PRESHUFFLE_DESCRIPTOR: "tdm_descriptor_path or source-first layout extraction after operator-local evidence",
+    _BASE_FAMILY_SPLITK_REDUCE_PIPELINE: "split/reduce Gluon variant only when partial/reduce boundaries remain auditable",
 }
 
 _BASE_FAMILY_LABEL_MARKERS: dict[str, tuple[str, ...]] = {
@@ -160,9 +175,32 @@ _BASE_FAMILY_LABEL_MARKERS: dict[str, tuple[str, ...]] = {
     _BASE_FAMILY_GENERIC_ALGO: ("algorithm", "rewrite"),
     _BASE_FAMILY_GENERIC_FUSION: ("fusion", "fuse"),
     _BASE_FAMILY_GENERIC_MEMORY: ("memory", "coalesc", "layout"),
+    _BASE_FAMILY_CONFIG_DISPATCH: ("config", "shape dispatch", "bucket", "json", "heuristic"),
+    _BASE_FAMILY_PIPELINE_STAGE: ("pipeline", "stage", "helper", "measured output", "reduce stage"),
+    _BASE_FAMILY_AOT_JIT: ("aot", "jit", "prebuilt", "artifact", "signature"),
+    _BASE_FAMILY_PRESHUFFLE_DESCRIPTOR: ("preshuffle", "unshuffle", "descriptor", "tensordescriptor", "tdm"),
+    _BASE_FAMILY_SPLITK_REDUCE_PIPELINE: ("split-k", "splitk", "partial output", "reduce pipeline"),
 }
 
 _OPTIONAL_GLUON_TASK_METADATA_FIELDS: tuple[tuple[str, str], ...] = (
+    ("source_origin", "Source origin"),
+    ("gluon_tl_policy", "Gluon TL policy"),
+    ("allowed_tl_symbols", "Allowed TL symbols"),
+    ("forbidden_tl_symbols", "Forbidden TL symbols"),
+    ("layout_construction_policy", "Layout construction policy"),
+    ("execution_mode", "Execution mode"),
+    ("aot_signature_contract", "AOT signature contract"),
+    ("target_triple", "Target triple"),
+    ("divisibility_hints", "Divisibility hints"),
+    ("scratch_requirement_check", "Scratch requirement check"),
+    ("prebuilt_artifact_contract", "Prebuilt artifact contract"),
+    ("jit_aot_fallback_preservation", "JIT AOT fallback preservation"),
+    ("target_stage", "Target stage"),
+    ("target_kernel_role", "Target kernel role"),
+    ("upstream_stage", "Upstream stage"),
+    ("downstream_stage", "Downstream stage"),
+    ("measured_output_dependency", "Measured output dependency"),
+    ("integration_boundary", "Integration boundary"),
     ("extension_intent", "Extension intent"),
     ("expected_outcome", "Expected outcome"),
     ("not_viable_for_l1_if_slower_than_base", "Not viable for L1 if slower than Base"),
@@ -1093,6 +1131,8 @@ def _base_triton_mandatory_families(
     """Return Base Triton families that must be covered before Gluon can add width."""
     if str(feature_meta.get("kernel_type") or "").strip().lower() != "triton":
         return []
+    if str(feature_meta.get("source_origin") or "").strip().lower() == "existing_amd_gluon_operator":
+        return []
 
     trait_set = set(traits)
     shape_profile = str(
@@ -1112,7 +1152,6 @@ def _base_triton_mandatory_families(
     shape_sensitive = shape_profile in (SHAPE_COVERAGE_MULTI, SHAPE_COVERAGE_BUCKETED)
     latency_like = "latency" in bottleneck or (duration > 0 and duration <= 250.0)
     scaled_like = "matrix_scaled_dot" in trait_set
-
     if matrix_like or scaled_like or (shape_sensitive and latency_like):
         return [
             _BASE_FAMILY_SWIZZLE_TILE,
@@ -1968,6 +2007,9 @@ def _build_search_space_allocation_guidance(
         extension_allocation,
         "Rules:",
         "- `required_output_dialect` and `Implementation layer` are the output contract; `search_set` is optional compatibility metadata and must not drive planning.",
+        "- Keep `required_output_dialect` separate from the Gluon-internal API policy: legal `tl.range` / `tl.constexpr` inside an executed Gluon path does not make the output `mixed`.",
+        "- Set `source_origin` when known: `generated_overlay` for new plain->Gluon overlays, `existing_amd_gluon_operator` only when the measured baseline already executes a production AMD Gluon operator, and `nv_gluon_translation` for NVIDIA-facing Gluon translation.",
+        "- Generated overlays default to `gluon_tl_policy: strict_generated` and `layout_construction_policy: host_preferred`; production Gluon source may use `production_source_allowed` and `source_preserve` only when source evidence supports it.",
         "- Keep a plain Triton competitor for every high-value direction unless AMD Gluon is explicitly required. Layering order: plain Triton -> optional L0/paired mapping -> L1 from viable/local-win evidence -> later Hybrid/Mixed.",
         "- Round 1 plain Triton input may have at most one L0 overlay. Generate it only when `overlay_priority_routing` is Prefer/high-confidence Consider; otherwise spend the slot on another plain Triton direction.",
         "- Before emitting a Round-1 L0 overlay, perform `Gluon L0 scope classification`: is the candidate layout-heavy, does it include RoPE/online softmax/multiple dot paths/multiple 2D parents/nested SliceLayout/last-token or split-boundary logic, can one exact subpath execute without translating the whole algorithm, and is the expected outcome `execution_anchor` or `performance_candidate`?",
@@ -1985,6 +2027,14 @@ def _build_search_space_allocation_guidance(
         "- If an AMD Gluon candidate wins on only some shapes or sub-operations, a later round may create a `mixed/hybrid` candidate that dispatches between plain Triton and AMD Gluon by host-side shape/feature checks; the mixed path must keep per-shape no-regression and must be compared against a plain Triton or paired competitor.",
     ]
     lines.extend(_render_base_family_checklist(required_base_families))
+    if str(feature_meta.get("source_origin") or "").strip().lower() == "existing_amd_gluon_operator":
+        lines.append(
+            "- Existing AMD Gluon production operator anchors (not mandatory Base audit): "
+            f"`{_BASE_FAMILY_CONFIG_DISPATCH}`, `{_BASE_FAMILY_PIPELINE_STAGE}`, "
+            f"`{_BASE_FAMILY_AOT_JIT}`, `{_BASE_FAMILY_PRESHUFFLE_DESCRIPTOR}`, "
+            f"`{_BASE_FAMILY_SPLITK_REDUCE_PIPELINE}`. Use these as comparison/attribution families "
+            "when the measured production operator path exposes config, pipeline, AOT/JIT, descriptor, or split-reduce boundaries."
+        )
     if shape_profile in (SHAPE_COVERAGE_MULTI, SHAPE_COVERAGE_BUCKETED):
         lines.append(
             "- Multi-shape rule: at least one plain Triton competitor candidate MUST be `shape_robust`; "
@@ -2174,6 +2224,8 @@ def _build_gluon_planning_contract(feature_meta: dict[str, Any]) -> str:
         "  - benchmark intent",
         "- Treat Gluon as a Triton-family extension, not as a new top-level kernel type.",
         "- Choose the optimization direction from the standard Triton priority path first, then decide whether AMD Gluon is a useful implementation layer for that direction.",
+        "- Do not use `input_dialect=amd_gluon` alone to bypass Base/no-regression audit; only measured production operators with `source_origin=existing_amd_gluon_operator` use the in-dialect refinement path.",
+        "- For generated overlays, emit strict API/layout policy metadata when useful: `source_origin: generated_overlay`, `gluon_tl_policy: strict_generated`, and `layout_construction_policy: host_preferred`.",
         "- Prefer tasks that establish a correctness-passing AMD Gluon overlay for one named direction before tasks that combine multiple difficult changes at once.",
     ]
     return "\n".join(lines)
@@ -3207,6 +3259,10 @@ def _task_audit_summary(task: AgentTask) -> dict[str, Any]:
         "priority": task.priority,
         "search_set": task.config.get("search_set"),
         "required_output_dialect": task.config.get("required_output_dialect"),
+        "source_origin": task.config.get("source_origin"),
+        "gluon_tl_policy": task.config.get("gluon_tl_policy"),
+        "layout_construction_policy": task.config.get("layout_construction_policy"),
+        "execution_mode": task.config.get("execution_mode"),
         "base_family": _parse_prompt_field_value(task.task, "Base family"),
         "source_base_family": task.config.get("source_base_family") or _parse_prompt_field_value(text, "Source Base family"),
         "plain_competitor": task.config.get("plain_competitor") or _parse_prompt_field_value(text, "Plain competitor"),

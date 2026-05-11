@@ -367,6 +367,24 @@ def _task_feature_metadata(meta: dict[str, Any], task_body: str = "") -> dict[st
     if meta.get("plain_competitor"):
         feature_meta["plain_competitor"] = str(meta.get("plain_competitor"))
     for key in (
+        "source_origin",
+        "gluon_tl_policy",
+        "allowed_tl_symbols",
+        "forbidden_tl_symbols",
+        "layout_construction_policy",
+        "execution_mode",
+        "aot_signature_contract",
+        "target_triple",
+        "divisibility_hints",
+        "scratch_requirement_check",
+        "prebuilt_artifact_contract",
+        "jit_aot_fallback_preservation",
+        "target_stage",
+        "target_kernel_role",
+        "upstream_stage",
+        "downstream_stage",
+        "measured_output_dependency",
+        "integration_boundary",
         "extension_intent",
         "expected_outcome",
         "not_viable_for_l1_if_slower_than_base",
@@ -677,6 +695,16 @@ def task_file_to_agent_task(task_file: Path):
     forbidden_patch_target_symbols = _task_forbidden_patch_target_symbols(meta, body)
     if forbidden_patch_target_symbols:
         cfg["forbidden_patch_target_symbols"] = forbidden_patch_target_symbols
+    for key in (
+        "source_origin",
+        "gluon_tl_policy",
+        "allowed_tl_symbols",
+        "forbidden_tl_symbols",
+        "layout_construction_policy",
+        "execution_mode",
+    ):
+        if meta.get(key) not in (None, ""):
+            cfg[key] = meta.get(key)
 
     # COMMANDMENT is the single source of truth for test commands.
     # Its SETUP + CORRECTNESS + BENCHMARK sections are executed verbatim.

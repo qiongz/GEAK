@@ -292,6 +292,15 @@ def test_base_triton_mandatory_families_for_scaled_mm_latency_bucketed() -> None
     ]
 
 
+def test_existing_amd_gluon_operator_does_not_force_plain_base_families() -> None:
+    meta = {
+        **_gluon_feature_meta("amd_gluon"),
+        "source_origin": "existing_amd_gluon_operator",
+    }
+
+    assert _base_triton_mandatory_families(meta, ["matrix_dot"], {"bottleneck": "latency"}) == []
+
+
 def test_search_space_allocation_lists_base_family_checklist() -> None:
     guidance = _build_search_space_allocation_guidance(
         {**_gluon_feature_meta("plain_triton"), "shape_coverage_profile": "bucketed"},

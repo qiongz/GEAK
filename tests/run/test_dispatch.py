@@ -266,6 +266,10 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
             "allowed_execution_path": "separate_gluon_kernel",
             "scope_infeasible_policy": "separate_kernel_if_allowed",
             "whole_kernel_required_reason": "not needed for separate kernel",
+            "source_origin": "existing_amd_gluon_operator",
+            "gluon_tl_policy": "production_source_allowed",
+            "layout_construction_policy": "source_preserve",
+            "execution_mode": "mixed_jit_aot",
         },
         "Extension task using AMD Gluon.",
     )
@@ -290,6 +294,14 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
     assert "Task allowed_execution_path: separate_gluon_kernel" in task.task
     assert "Task scope_infeasible_policy: separate_kernel_if_allowed" in task.task
     assert "Task whole_kernel_required_reason: not needed for separate kernel" in task.task
+    assert "Task source_origin: existing_amd_gluon_operator" in task.task
+    assert "Task gluon_tl_policy: production_source_allowed" in task.task
+    assert "Task layout_construction_policy: source_preserve" in task.task
+    assert "Task execution_mode: mixed_jit_aot" in task.task
+    assert task.config["source_origin"] == "existing_amd_gluon_operator"
+    assert task.config["gluon_tl_policy"] == "production_source_allowed"
+    assert task.config["layout_construction_policy"] == "source_preserve"
+    assert task.config["execution_mode"] == "mixed_jit_aot"
     assert "Extension intent: `execution_anchor`" in task.task
     assert "Minimum executable unit: `separate_gluon_kernel`" in task.task
     assert "Allowed execution path: `separate_gluon_kernel`" in task.task

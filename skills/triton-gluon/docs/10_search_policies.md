@@ -298,6 +298,9 @@ the source of truth for worker `save_and_test` gating; heuristic inference is
 only for old or hand-written tasks.
 
 ```yaml
+source_origin: generated_overlay | existing_amd_gluon_operator | nv_gluon_translation | unknown
+gluon_tl_policy: strict_generated | preserve_existing_allowed | production_source_allowed
+layout_construction_policy: host_preferred | constexpr_in_kernel_allowed | source_preserve
 gluon_doc_profile: extension_l0_minimal | nv_to_amd_translation | memory_lowering | matrix_lowering | shape_bucketed_dispatch | jit_aot_sensitive | shared_transplant | gluon_variant_from_anchor | hybrid_dispatch | hybrid_dispatch_from_evidence | base_or_shared_gluon
 required_gluon_docs:
   - gluon_skill_path
@@ -332,6 +335,20 @@ Run-level Gluon feature metadata is a planner/search-space switch. Task-level
 worker/selector contract. Legacy `search_set` values are audit metadata and
 must not be the sole reason a plain Triton task receives a Gluon implementation
 doc gate.
+
+`source_origin` is fail-closed: missing or unknown origin follows
+`generated_overlay` rules. Only an input that is already a measured production
+AMD Gluon operator may use `source_origin=existing_amd_gluon_operator` to enter
+the in-dialect refinement path. `input_dialect=amd_gluon` alone is not enough.
+
+Keep output dialect separate from internal API policy:
+
+- `required_output_dialect=amd_gluon` requires a real AMD Gluon execution path.
+- `required_output_dialect=mixed` requires visible host-side dispatch between
+  plain Triton and AMD Gluon paths.
+- legal `tl.range` / `tl.constexpr` or source-preserved `tl.where` inside
+  `@gluon.jit` is governed by `gluon_tl_policy` and does not make the output
+  `mixed`.
 
 Do not include `gluon_examples_doc_path` unless the task explicitly needs a
 schematic example. Examples are not common context.
