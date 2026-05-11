@@ -115,6 +115,10 @@ policy and task allocation live in `10_search_policies.md`.
   `minimum_executable_unit` names an inline scoped helper, a separate Gluon
   kernel whose output feeds correctness, or an explicitly allowed
   `whole_jit_kernel` anchor.
+- If making the local layout expression executable requires converting the
+  surrounding loop, dot path, wrapper dispatch, or stage boundary, the component
+  is high-coupling for L0. Return to the planner-facing
+  `l0_scope_classification` policy instead of widening the patch.
 
 ### Trait: layout_source_first_required
 

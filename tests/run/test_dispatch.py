@@ -18,7 +18,7 @@ def _has_doc(paths: list[str], suffix: str) -> bool:
     return any(path.endswith(suffix) for path in paths)
 
 
-def test_task_file_to_agent_task_enables_skills_for_triton(tmp_path) -> None:
+def test_task_file_to_agent_task_does_not_enable_skills_for_plain_triton_by_default(tmp_path) -> None:
     task_path = tmp_path / "triton_task.md"
     write_task_file(
         task_path,
@@ -32,7 +32,7 @@ def test_task_file_to_agent_task_enables_skills_for_triton(tmp_path) -> None:
 
     task = task_file_to_agent_task(task_path)
 
-    assert task.config["use_skills"] is True
+    assert task.config["use_skills"] is False
     assert task.config["allowed_skill_tiers"] == ["general"]
 
 
@@ -109,6 +109,7 @@ def test_plain_base_task_with_gluon_run_meta_does_not_enable_doc_gate(tmp_path) 
 
     task = task_file_to_agent_task(task_path)
 
+    assert task.config["use_skills"] is False
     assert "gluon_doc_gate_enabled" not in task.config
     assert "## Canonical Gluon References" not in task.task
     assert "## Gluon Working Set" not in task.task
@@ -260,6 +261,8 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
             "extension_intent": "execution_anchor",
             "expected_outcome": "correctness_anchor_not_speedup",
             "overhead_source_to_record": "launch_layout_overhead",
+            "l0_scope_classification": "low_coupling",
+            "l0_coupling_reasons": "single memory subpath",
             "minimum_executable_unit": "separate_gluon_kernel",
             "target_symbol": "target_stage",
             "target_component": "one memory subpath",
@@ -288,6 +291,8 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
     assert "Task extension_intent: execution_anchor" in task.task
     assert "Task expected_outcome: correctness_anchor_not_speedup" in task.task
     assert "Task overhead_source_to_record: launch_layout_overhead" in task.task
+    assert "Task l0_scope_classification: low_coupling" in task.task
+    assert "Task l0_coupling_reasons: single memory subpath" in task.task
     assert "Task minimum_executable_unit: separate_gluon_kernel" in task.task
     assert "Task target_symbol: target_stage" in task.task
     assert "Task target_component: one memory subpath" in task.task
@@ -303,6 +308,8 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
     assert task.config["layout_construction_policy"] == "source_preserve"
     assert task.config["execution_mode"] == "mixed_jit_aot"
     assert "Extension intent: `execution_anchor`" in task.task
+    assert "L0 scope classification: `low_coupling`" in task.task
+    assert "L0 coupling reasons: single memory subpath" in task.task
     assert "Minimum executable unit: `separate_gluon_kernel`" in task.task
     assert "Allowed execution path: `separate_gluon_kernel`" in task.task
     assert "Scope infeasible policy: `separate_kernel_if_allowed`" in task.task
@@ -338,6 +345,38 @@ def test_worker_context_infers_local_target_components_from_allowed_change(tmp_p
     task = task_file_to_agent_task(task_path)
 
     assert "Task required_patch_target_symbols: tile_load_a, tile_load_b, tile_load_c" in task.task
+
+
+def test_worker_context_warns_inline_scoped_helper_not_to_reroute_whole_kernel(tmp_path) -> None:
+    task_path = tmp_path / "inline_scoped_helper.md"
+    write_task_file(
+        task_path,
+        {
+            "label": "gluon-l0-inline-scope",
+            "priority": 6,
+            "kernel_type": "triton",
+            "kernel_path": str(tmp_path / "kernel.py"),
+            "repo_root": str(tmp_path),
+            "input_dialect": "plain_triton",
+            "gluon_feature_mode": "auto",
+            "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+            "required_output_dialect": "amd_gluon",
+            "implementation_layer": "amd_gluon overlay",
+            "extension_layer": "L0",
+            "l0_scope_classification": "low_coupling",
+            "l0_coupling_reasons": "single index helper",
+            "minimum_executable_unit": "inline_scoped_helper",
+            "allowed_execution_path": "inline_scoped_helper",
+            "target_component": "index mask helper",
+        },
+        "Extension layer: L0\nImplementation layer: amd_gluon overlay\n",
+    )
+
+    task = task_file_to_agent_task(task_path)
+
+    assert "Inline scoped helper boundary" in task.task
+    assert "do not add a replacement whole-kernel `@gluon.jit`" in task.task
+    assert "do not reroute the wrapper's main path" in task.task
 
 
 def test_worker_context_infers_stage_scope_from_allowed_change(tmp_path) -> None:
