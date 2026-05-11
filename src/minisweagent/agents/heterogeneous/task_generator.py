@@ -1234,6 +1234,15 @@ def _parse_prompt_field_value(text: str, field: str) -> str | None:
     return value or None
 
 
+def _parse_prompt_key_value(text: str, key: str) -> str | None:
+    """Parse exact snake_case/kebab-case task metadata from task_prompt lines."""
+    match = re.search(rf"^\s*{re.escape(key)}\s*:\s*(.+?)\s*$", text, re.IGNORECASE | re.MULTILINE)
+    if not match:
+        return None
+    value = match.group(1).strip().strip("`")
+    return value or None
+
+
 def _normalize_optional_task_metadata_value(value: Any) -> Any:
     if isinstance(value, bool):
         return value
@@ -1259,6 +1268,8 @@ def _optional_task_metadata_from_item_or_prompt(
     if key in item:
         return _normalize_optional_task_metadata_value(item.get(key))
     tagged = _parse_prompt_field_value(task_prompt, tag)
+    if tagged in (None, ""):
+        tagged = _parse_prompt_key_value(task_prompt, key)
     return _normalize_optional_task_metadata_value(tagged)
 
 
@@ -1344,6 +1355,10 @@ def _infer_search_set_and_required_output(label: str, task_prompt: str, item: di
 
     tagged_search = _parse_tagged_value(task_prompt, "Search set")
     tagged_output = _parse_tagged_value(task_prompt, "Required output dialect")
+    if not tagged_search:
+        tagged_search = _parse_prompt_key_value(task_prompt, "search_set")
+    if not tagged_output:
+        tagged_output = _parse_prompt_key_value(task_prompt, "required_output_dialect")
     if tagged_search:
         search_set = tagged_search
     if tagged_output:
@@ -2011,6 +2026,7 @@ def _build_search_space_allocation_guidance(
         "- Set `source_origin` when known: `generated_overlay` for new plain->Gluon overlays, `existing_amd_gluon_operator` only when the measured baseline already executes a production AMD Gluon operator, and `nv_gluon_translation` for NVIDIA-facing Gluon translation.",
         "- Generated overlays default to `gluon_tl_policy: strict_generated` and `layout_construction_policy: host_preferred`; production Gluon source may use `production_source_allowed` and `source_preserve` only when source evidence supports it.",
         "- Keep a plain Triton competitor for every high-value direction unless AMD Gluon is explicitly required. Layering order: plain Triton -> optional L0/paired mapping -> L1 from viable/local-win evidence -> later Hybrid/Mixed.",
+        "- Any Base task that may be referenced by a Gluon L0 overlay must include auditable scoped fields: `Target component:` naming the exact helper/stage/local subpath and `Allowed change:` naming the same component in plain Triton. Broad Base tasks without those fields are valid Base work but must not be used as `Plain competitor` for L0.",
         "- Round 1 plain Triton input may have at most one L0 overlay. Generate it only when `overlay_priority_routing` is Prefer/high-confidence Consider; otherwise spend the slot on another plain Triton direction.",
         "- Before emitting a Round-1 L0 overlay, perform `Gluon L0 scope classification`: is the candidate layout-heavy, does it include complex control flow, reductions, multiple matrix paths, multiple 2D parents, nested layouts, boundary-specific branches, or other high-coupling logic; can one exact subpath execute without translating the whole algorithm; and is the expected outcome `execution_anchor` or `performance_candidate`?",
         "- L0 scope ladder is generic across kernels: prefer the smallest executable, attributable, low-coupling subpath (scalar/1D stage, one load/store, one index/mask layout smoke path). Consider matrix/MFMA subpaths only after an executed anchor or when the task explicitly proves the matrix subpath is the smallest viable component.",
@@ -3357,7 +3373,7 @@ def _audit_repair_hints(errors: list[str], tasks: list[AgentTask]) -> list[str]:
             )
         elif "missing L0 execution-boundary field" in error:
             hints.append(
-                "Add `Minimum executable unit`, `Allowed execution path`, and `Scope infeasible policy` to the Round-1 L0 overlay, or do not emit the overlay."
+                "Add parseable L0 execution-boundary fields to the Round-1 L0 overlay, preferably as top-level JSON metadata or exact task lines: `Minimum executable unit: ...`, `Allowed execution path: ...`, and `Scope infeasible policy: ...`. If the scoped path cannot execute, do not emit the overlay."
             )
 
     unique: list[str] = []

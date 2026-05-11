@@ -698,6 +698,74 @@ def test_audit_accepts_whole_kernel_anchor_with_do_not_emit_fallback_policy() ->
     assert tasks[-1].config["required_patch_target_symbols"] == ["_fwd_kernel_stage2"]
 
 
+def test_parse_l0_metadata_from_snake_case_prompt_fields() -> None:
+    prompt = "\n".join(
+        [
+            "Shape coverage: shape_robust",
+            "required_output_dialect: amd_gluon",
+            "search_set: Extension",
+            "source_origin: generated_overlay",
+            "gluon_tl_policy: strict_generated",
+            "layout_construction_policy: host_preferred",
+            "minimum_executable_unit: separate_gluon_kernel",
+            "allowed_execution_path: separate_gluon_kernel",
+            "scope_infeasible_policy: shrink_or_report",
+            "",
+            "Extension layer: L0",
+            "Optimization direction: reduce register pressure for selected load path",
+            "Source Base family: base_hot_path_streamline",
+            "Plain competitor: base-selected-load-path",
+            "Gluon overlay reason: explicit_layout",
+            "Overlay priority: high-confidence Consider",
+            "Implementation layer: amd_gluon overlay",
+            "Performance hypothesis: explicit layout may reduce register pressure",
+            "Measurement boundary: kernel_only",
+            "Comparison target: true_baseline",
+            "Target component: selected_load_path",
+            "Allowed change: convert `selected_load_path` only.",
+            "Reject if: non-executed Gluon or shape regression",
+        ]
+    )
+    payload = json.dumps(
+        [
+            {
+                "label": "base-selected-load-path",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "\n".join(
+                    [
+                        "Base Set task",
+                        "Base family: base_hot_path_streamline",
+                        "Optimization direction: reduce register pressure for selected load path",
+                        "Target component: selected_load_path",
+                        "Allowed change: optimize `selected_load_path` in plain Triton.",
+                    ]
+                ),
+            },
+            {
+                "label": "gluon-l0-layout-load-store",
+                "priority": 6,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": prompt,
+            },
+        ]
+    )
+
+    tasks = _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+    cfg = tasks[-1].config
+
+    assert cfg["required_output_dialect"] == "amd_gluon"
+    assert cfg["search_set"] == "extension"
+    assert cfg["source_origin"] == "generated_overlay"
+    assert cfg["gluon_tl_policy"] == "strict_generated"
+    assert cfg["layout_construction_policy"] == "host_preferred"
+    assert cfg["minimum_executable_unit"] == "separate_gluon_kernel"
+    assert cfg["allowed_execution_path"] == "separate_gluon_kernel"
+    assert cfg["scope_infeasible_policy"] == "shrink_or_report"
+
+
 def test_audit_rejects_l0_overlay_when_plain_competitor_lacks_auditable_component() -> None:
     prompt = (
         _gluon_overlay_prompt(

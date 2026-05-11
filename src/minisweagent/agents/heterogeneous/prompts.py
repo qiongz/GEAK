@@ -340,6 +340,11 @@ whole kernel/helper. `Plain competitor:` must name an exact same-batch Base Set
 task whose `required_output_dialect` is `plain_triton`; do not use `Shared`,
 `paired comparison`, `shared_transplant`, Gluon, mixed, or hybrid tasks as the
 plain competitor for an L0 overlay.
+Base tasks that might serve as a Gluon L0 `Plain competitor` MUST include both
+the same `Optimization direction:` and an auditable `Target component:` or
+scoped `Allowed change:`. A broad register-pressure, cleanup, or memory task
+without a scoped component may still be a valid Base task, but it is not a valid
+L0 plain competitor.
 If the Gluon target component does not already have such a plain Base task, emit
 that Base task first and bind the overlay to it. For example, an overlay for
 component B's memory/layout path must bind to a component-B memory/layout plain
