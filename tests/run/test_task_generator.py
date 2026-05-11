@@ -248,6 +248,10 @@ def test_search_space_allocation_for_two_gpus_preserves_base_without_weak_gluon(
     assert "layout/broadcast micro-anchor" in guidance
     assert "attention-like composite path" in guidance
     assert "do_not_optimize_before_compile: true" in guidance
+    assert "if `patch_N` passes" in guidance
+    assert "if `patch_N` fails" in guidance
+    assert "Do not add new metadata fields such as `patch_evolution_strategy`" in guidance
+    assert "perform a task consistency check" in guidance
 
 
 def test_search_space_allocation_for_large_budget_keeps_full_base() -> None:
@@ -1846,6 +1850,9 @@ def test_run_task_agent_plain_triton_auto_prefers_amd_gluon_first(
     assert "Gluon implementation plan" in system_prompt
     assert "Performance hypothesis" in system_prompt
     assert "Patch evolution" in system_prompt
+    assert "after a passing patch, the next patch" in system_prompt
+    assert "after a failing patch, the" in system_prompt
+    assert "Do not create extra patch-evolution metadata fields" in system_prompt
     assert "Optimization direction:" in system_prompt
     assert "Measurement boundary:" in system_prompt
     assert "Comparison target:" in system_prompt
