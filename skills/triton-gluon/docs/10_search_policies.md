@@ -381,6 +381,10 @@ same `Optimization direction:` text and must both include an auditable
 `Target component:` or `Allowed change:` with the same scoped symbol/stage. Use
 `Target component:` / `Target symbol:` when the component is narrower than a
 whole helper.
+Base tasks that might be referenced as `Plain competitor` by an L0 overlay must
+write those scoped fields up front. Broad cleanup, register-pressure, tiling, or
+memory tasks without an auditable component can still run as Base tasks, but
+they are not valid L0 competitors.
 If the intended Gluon component is new to the batch, first create a plain Triton
 Base competitor for that exact component and direction. For example, an overlay
 for component B's memory/layout path needs a component-B memory/layout plain
