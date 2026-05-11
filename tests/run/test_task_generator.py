@@ -95,6 +95,7 @@ def _gluon_overlay_prompt(
     *,
     source_family: str = "base_hot_path_streamline",
     plain_competitor: str = "triton-eliminate-redundant-ops-streamline",
+    target_component: str = "streamline_component",
 ) -> str:
     lines = [
         "Extension Set task",
@@ -109,7 +110,8 @@ def _gluon_overlay_prompt(
         "Measurement boundary: kernel_only",
         "Same ABI comparison: required",
         "Comparison target: true_baseline",
-        "Allowed change: one layout or memory component",
+        f"Target component: {target_component}",
+        f"Allowed change: one layout or memory component in `{target_component}`",
         "Minimum executable unit: inline_scoped_helper",
         "Allowed execution path: inline_scoped_helper",
         "Scope infeasible policy: shrink_or_report",
@@ -385,7 +387,7 @@ def test_audit_repairs_missing_split_k_or_persistent_base_family() -> None:
                 "priority": 0,
                 "agent_type": "strategy_agent",
                 "kernel_language": "python",
-                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nsimplify scale and masks",
+                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nOptimization direction: memory/layout cleanup\nTarget component: streamline_component\nAllowed change: simplify `streamline_component`.\nsimplify scale and masks",
             },
             {
                 "label": "triton-small-tile-rewrite",
@@ -458,7 +460,7 @@ def test_audit_accepts_main_like_five_base_plus_gluon_l0() -> None:
                 "priority": 0,
                 "agent_type": "strategy_agent",
                 "kernel_language": "python",
-                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nremove casts and redundant masks",
+                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nOptimization direction: memory/layout cleanup\nTarget component: streamline_component\nAllowed change: simplify `streamline_component`.\nremove casts and redundant masks",
             },
             {
                 "label": "triton-small-matrix-persistent-kernel",
@@ -505,7 +507,7 @@ def test_audit_rejects_l0_overlay_missing_execution_boundary() -> None:
                 "priority": 0,
                 "agent_type": "strategy_agent",
                 "kernel_language": "python",
-                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nstreamline plain Triton path",
+                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nOptimization direction: memory/layout cleanup\nTarget component: streamline_component\nAllowed change: simplify `streamline_component`.\nstreamline plain Triton path",
             },
             {
                 "label": "amd-gluon-l0-viability",
@@ -579,7 +581,8 @@ def test_audit_rejects_l0_overlay_that_allows_and_forbids_whole_kernel() -> None
             "Target component: scale_epilogue_load_broadcast",
             "Whole kernel required reason: scale epilogue cannot execute independently",
             "Do NOT attempt to convert the entire kernel to Gluon.",
-        ]
+        ],
+        target_component="scale_epilogue_load_broadcast",
     ).replace("Minimum executable unit: inline_scoped_helper", "Minimum executable unit: whole_jit_kernel").replace(
         "Allowed execution path: inline_scoped_helper", "Allowed execution path: whole_jit_kernel"
     )
@@ -590,7 +593,7 @@ def test_audit_rejects_l0_overlay_that_allows_and_forbids_whole_kernel() -> None
                 "priority": 0,
                 "agent_type": "strategy_agent",
                 "kernel_language": "python",
-                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nstreamline plain Triton path",
+                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nOptimization direction: memory/layout cleanup\nTarget component: scale_epilogue_load_broadcast\nAllowed change: simplify `scale_epilogue_load_broadcast`.\nstreamline plain Triton path",
             },
             {
                 "label": "amd-gluon-l0-viability",
@@ -612,7 +615,8 @@ def test_audit_accepts_whole_kernel_anchor_when_declared() -> None:
             "Target component: scale_epilogue_load_broadcast",
             "Whole kernel required reason: scale epilogue cannot feed measured output as an isolated subpath",
             "Reject if: MFMA or buffer_load is introduced.",
-        ]
+        ],
+        target_component="scale_epilogue_load_broadcast",
     ).replace("Minimum executable unit: inline_scoped_helper", "Minimum executable unit: whole_jit_kernel").replace(
         "Allowed execution path: inline_scoped_helper", "Allowed execution path: whole_jit_kernel"
     )
@@ -623,7 +627,7 @@ def test_audit_accepts_whole_kernel_anchor_when_declared() -> None:
                 "priority": 0,
                 "agent_type": "strategy_agent",
                 "kernel_language": "python",
-                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nstreamline plain Triton path",
+                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nOptimization direction: memory/layout cleanup\nTarget component: scale_epilogue_load_broadcast\nAllowed change: simplify `scale_epilogue_load_broadcast`.\nstreamline plain Triton path",
             },
             {
                 "label": "amd-gluon-l0-viability",
@@ -640,6 +644,106 @@ def test_audit_accepts_whole_kernel_anchor_when_declared() -> None:
     assert tasks[-1].config["minimum_executable_unit"] == "whole_jit_kernel"
     assert tasks[-1].config["allowed_execution_path"] == "whole_jit_kernel"
     assert tasks[-1].config["whole_kernel_required_reason"].startswith("scale epilogue")
+
+
+def test_audit_accepts_whole_kernel_anchor_with_do_not_emit_fallback_policy() -> None:
+    prompt = (
+        _gluon_overlay_prompt(
+            extra=[
+                "Target component: _fwd_kernel_stage2 1D load/store and accumulator layout",
+                "Whole kernel required reason: _fwd_kernel_stage2 is a self-contained reduction kernel and the smallest viable Gluon target component",
+                "Reject if: non-executed Gluon, target-symbol mismatch, or leftover plain Triton device APIs.",
+            ],
+            plain_competitor="triton-stage2-load-store-layout",
+            target_component="_fwd_kernel_stage2",
+        )
+        .replace("Minimum executable unit: inline_scoped_helper", "Minimum executable unit: whole_jit_kernel")
+        .replace("Allowed execution path: inline_scoped_helper", "Allowed execution path: whole_jit_kernel")
+        .replace("Scope infeasible policy: shrink_or_report", "Scope infeasible policy: do_not_emit")
+    )
+    payload = json.dumps(
+        [
+            {
+                "label": "triton-stage2-load-store-layout",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nOptimization direction: memory/layout cleanup\nTarget component: _fwd_kernel_stage2\nAllowed change: simplify `_fwd_kernel_stage2` loads in plain Triton.",
+            },
+            {
+                "label": "gluon-l0-load-store-layout",
+                "priority": 8,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": prompt,
+            },
+        ]
+    )
+
+    tasks = _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+
+    assert tasks[-1].config["minimum_executable_unit"] == "whole_jit_kernel"
+    assert tasks[-1].config["allowed_execution_path"] == "whole_jit_kernel"
+    assert tasks[-1].config["scope_infeasible_policy"] == "do_not_emit"
+    assert tasks[-1].config["required_patch_target_symbols"] == ["_fwd_kernel_stage2"]
+
+
+def test_audit_rejects_l0_overlay_when_plain_competitor_lacks_auditable_component() -> None:
+    prompt = (
+        _gluon_overlay_prompt(
+            plain_competitor="precompute-kv-pointers",
+            target_component="_fwd_kernel_stage2",
+        )
+        .replace("Minimum executable unit: inline_scoped_helper", "Minimum executable unit: whole_jit_kernel")
+        .replace("Allowed execution path: inline_scoped_helper", "Allowed execution path: whole_jit_kernel")
+        .replace("Scope infeasible policy: shrink_or_report", "Scope infeasible policy: do_not_emit")
+    )
+    payload = json.dumps(
+        [
+            {
+                "label": "precompute-kv-pointers",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nOptimization direction: memory/layout cleanup\nprecompute KV pointers in stage1.",
+            },
+            {
+                "label": "gluon-l0-load-store-layout",
+                "priority": 8,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": prompt,
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="lacks auditable Target component or Allowed change"):
+        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+
+
+def test_audit_rejects_l0_overlay_when_optimization_direction_differs_from_plain_competitor() -> None:
+    prompt = _gluon_overlay_prompt(plain_competitor="triton-stage2-load-store-layout", target_component="_fwd_kernel_stage2")
+    payload = json.dumps(
+        [
+            {
+                "label": "triton-stage2-load-store-layout",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nOptimization direction: precompute KV pointers\nTarget component: _fwd_kernel_stage2\nAllowed change: simplify `_fwd_kernel_stage2` loads in plain Triton.",
+            },
+            {
+                "label": "gluon-l0-load-store-layout",
+                "priority": 8,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": prompt,
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Optimization direction"):
+        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
 
 
 def test_audit_rejects_l0_overlay_without_same_batch_plain_competitor() -> None:
@@ -825,7 +929,7 @@ def test_audit_treats_body_only_l0_overlay_as_l0_for_priority_and_binding() -> N
     assert [task.label for task in tasks] == ["triton-eliminate-redundant-ops-streamline"]
 
 
-def test_l0_overlay_binding_allows_mismatched_target_component_as_soft_audit() -> None:
+def test_l0_overlay_binding_rejects_mismatched_target_component() -> None:
     payload = json.dumps(
         [
             {
@@ -838,6 +942,7 @@ def test_l0_overlay_binding_allows_mismatched_target_component_as_soft_audit() -
                     [
                         "Base Set task",
                         "Base family: base_hot_path_streamline",
+                        "Optimization direction: memory/layout cleanup",
                         "Target component: stage1_mask",
                         "Allowed change: simplify `stage1_mask` only.",
                     ]
@@ -861,9 +966,8 @@ def test_l0_overlay_binding_allows_mismatched_target_component_as_soft_audit() -
         ]
     )
 
-    tasks = _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
-
-    assert [task.label for task in tasks] == ["triton-stage1-mask", "gluon-l0-stage2-anchor"]
+    with pytest.raises(ValueError, match="does not match Plain competitor"):
+        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
 
 
 def test_audit_rejects_l1_without_anchor_contract() -> None:
@@ -895,7 +999,7 @@ def test_audit_accepts_l1_with_anchor_contract() -> None:
                 "priority": 0,
                 "agent_type": "strategy_agent",
                 "kernel_language": "python",
-                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nremove redundant indexing",
+                "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nOptimization direction: memory/layout cleanup\nTarget component: streamline_component\nAllowed change: simplify `streamline_component`.\nremove redundant indexing",
             },
             {
                 "label": "ext-l0-gluon-anchor",
@@ -1187,7 +1291,7 @@ def test_extension_audit_does_not_count_shared_gluon_variant_as_extension() -> N
                     "priority": 0,
                     "agent_type": "strategy_agent",
                     "kernel_language": "python",
-                    "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nremove redundant indexing",
+                    "task_prompt": "Base Set task\nBase family: base_hot_path_streamline\nOptimization direction: memory/layout cleanup\nTarget component: streamline_component\nAllowed change: simplify `streamline_component`.\nremove redundant indexing",
                 },
                 {
                     "label": "shared-amd-gluon-variant",

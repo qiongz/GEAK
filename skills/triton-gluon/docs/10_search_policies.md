@@ -359,7 +359,10 @@ L0 scope ladder:
 
 Round-1 L0 overlays must bind to the same component and same optimization
 direction as `Plain competitor`, not merely the same broad `Source Base family`.
-Use `Target component:` / `Target symbol:` when the component is narrower than a
+The referenced plain Triton competitor and the L0 overlay must use the exact
+same `Optimization direction:` text and must both include an auditable
+`Target component:` or `Allowed change:` with the same scoped symbol/stage. Use
+`Target component:` / `Target symbol:` when the component is narrower than a
 whole helper.
 
 Optional metadata:
@@ -378,6 +381,9 @@ target_component: <scoped component description>
 ```
 
 The execution-boundary fields are mandatory for Round-1 L0 AMD Gluon overlays.
+`scope_infeasible_policy` describes what to do if the scoped component proves
+infeasible; it is not itself an infeasibility declaration when
+`minimum_executable_unit` names an executable path.
 Do not add them to plain Triton tasks or to Gluon tasks where they would be
 noise.
 

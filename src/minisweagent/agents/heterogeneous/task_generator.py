@@ -1978,7 +1978,7 @@ def _build_search_space_allocation_guidance(
         "- L0 execution path must be exactly one of: `inline_scoped_helper` when the language boundary permits the scoped change; `separate_gluon_kernel` when the task explicitly allows a second launch/temp buffer and marks the task as an execution anchor; `whole_jit_kernel` only when the whole helper/kernel is the minimum executable unit and the task does not forbid whole-kernel rewrite; or `infeasible` as `minimum_executable_unit` only when no required Gluon task should be emitted.",
         "- Required Gluon worker contract: ask for `Gluon knowledge lookup plan`, `Gluon implementation plan`, `Performance hypothesis:`, `Same ABI comparison:`, and `Patch evolution:` before editing; stage/helper/local-expression scoped tasks must include `Target symbol:` or `Target component:` and wrap local target names in backticks inside `Allowed change`; reject non-executed Gluon, target-symbol mismatch, leftover plain Triton device APIs inside edited `@gluon.jit`, backup/temp files, and bundled unrelated changes without `bundle_allowed=true`. Keep API-level Gluon rewrite details in the routed skills/docs.",
         "- L0 overlay prompts must not ask the worker to convert an entire stage/helper/kernel just to prove Gluon. Scope L0 to one named subpath/component, such as a load/store, layout, mask, or matrix subpath; only use a whole helper as the target when the task explicitly explains why the helper is the smallest viable component.",
-        "- Round-1 L0 overlays must bind to the same component and same optimization direction as `Plain competitor`, not merely to the same broad `Source Base family`. Use `Target component:` to make that binding auditable.",
+        "- Round-1 L0 overlays must bind to the same component and same optimization direction as `Plain competitor`, not merely to the same broad `Source Base family`. The referenced plain Triton task and the L0 overlay must use the exact same `Optimization direction:` text and must both include an auditable `Target component:` or `Allowed change:` with the same scoped symbol/stage.",
         "- L1 tasks additionally require an executed Gluon/mixed anchor (`Anchor patch`, `Anchor speedup`, `Anchor execution: true`, `Comparison target: anchor_patch`) and stage-specific tasks require target metadata such as `Target symbol` / `Target component` plus top-level `required_patch_target_symbols` when available.",
         "- If a plain Triton candidate wins, accept it as the best result rather than forcing more Gluon work.",
         "- If a Triton strategy wins and maps cleanly to Gluon traits, a later round may create an AMD Gluon variant of that winning strategy only with a concrete performance hypothesis.",
@@ -2997,6 +2997,10 @@ _VALID_L0_ALLOWED_EXECUTION_PATHS = {"inline_scoped_helper", "separate_gluon_ker
 _VALID_SCOPE_INFEASIBLE_POLICIES = {"do_not_emit", "shrink_or_report", "separate_kernel_if_allowed"}
 
 
+def _normalize_audit_text(value: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+
 def _task_contract_value(task: AgentTask, key: str, field: str) -> str:
     value = task.config.get(key)
     if value in (None, ""):
@@ -3051,8 +3055,6 @@ def _gluon_l0_execution_boundary_errors(task: AgentTask) -> list[str]:
 
     if minimum_unit == "infeasible" and required_output == "amd_gluon":
         errors.append(f"{task.label} cannot require AMD Gluon output when Minimum executable unit is infeasible")
-    if infeasible_policy == "do_not_emit" and required_output == "amd_gluon":
-        errors.append(f"{task.label} cannot be emitted as required AMD Gluon when Scope infeasible policy is do_not_emit")
     if minimum_unit in _VALID_L0_ALLOWED_EXECUTION_PATHS and allowed_path and minimum_unit != allowed_path:
         errors.append(
             f"{task.label} Minimum executable unit `{minimum_unit}` must match Allowed execution path `{allowed_path}`"
@@ -3110,7 +3112,21 @@ def _gluon_overlay_binding_errors(task: AgentTask, tasks: list[AgentTask]) -> li
         return [
             f"{task.label} Source Base family `{source_family}` does not match Plain competitor `{plain_ref}`"
         ]
-    plain_component = _parse_prompt_field_value(plain_task.task, "Target component") or _parse_prompt_field_value(plain_task.task, "Allowed change") or ""
+    plain_direction = _parse_prompt_field_value(plain_task.task, "Optimization direction")
+    gluon_direction = _parse_prompt_field_value(text, "Optimization direction")
+    if not plain_direction:
+        return [f"{task.label} Plain competitor `{plain_ref}` lacks auditable Optimization direction"]
+    if _normalize_audit_text(plain_direction) != _normalize_audit_text(gluon_direction):
+        return [
+            f"{task.label} Optimization direction `{gluon_direction}` does not match Plain competitor `{plain_ref}` direction `{plain_direction}`"
+        ]
+
+    plain_component = (
+        str(plain_task.config.get("target_component") or "")
+        or _parse_prompt_field_value(plain_task.task, "Target component")
+        or _parse_prompt_field_value(plain_task.task, "Allowed change")
+        or ""
+    )
     gluon_component = (
         str(task.config.get("target_component") or "")
         or _parse_prompt_field_value(task.task, "Target component")
@@ -3126,14 +3142,16 @@ def _gluon_overlay_binding_errors(task: AgentTask, tasks: list[AgentTask]) -> li
 
     plain_tokens = component_tokens(plain_component)
     gluon_tokens = component_tokens(gluon_component)
-    if plain_tokens and gluon_tokens and plain_tokens.isdisjoint(gluon_tokens):
-        logger.warning(
-            "Gluon overlay component audit warning: %s Target component `%s` does not obviously match Plain competitor component `%s`.",
-            task.label,
-            gluon_component,
-            plain_component,
-        )
-        return []
+    if not plain_tokens:
+        return [
+            f"{task.label} Plain competitor `{plain_ref}` lacks auditable Target component or Allowed change for L0 overlay binding"
+        ]
+    if not gluon_tokens:
+        return [f"{task.label} lacks auditable Target component or Allowed change for L0 overlay binding"]
+    if plain_tokens.isdisjoint(gluon_tokens):
+        return [
+            f"{task.label} Target component `{gluon_component}` does not match Plain competitor `{plain_ref}` component `{plain_component}`"
+        ]
     return []
 
 

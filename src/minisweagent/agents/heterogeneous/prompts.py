@@ -332,11 +332,14 @@ competitor:`, `Gluon overlay reason:`, `Overlay priority: Prefer` or
 implementation layer.
 Round-1 L0 overlays must also bind to the same component and same optimization
 direction as `Plain competitor`, not merely to the same `Source Base family`.
-Use `Target component:` or `Target symbol:` when the component is narrower than
-the whole kernel/helper. `Plain competitor:` must name an exact same-batch Base
-Set task whose `required_output_dialect` is `plain_triton`; do not use
-`Shared`, `paired comparison`, `shared_transplant`, Gluon, mixed, or hybrid
-tasks as the plain competitor for an L0 overlay.
+The referenced plain Triton competitor and the L0 overlay must use the exact
+same `Optimization direction:` text and must both include an auditable
+`Target component:` or `Allowed change:` with the same scoped symbol/stage. Use
+`Target component:` or `Target symbol:` when the component is narrower than the
+whole kernel/helper. `Plain competitor:` must name an exact same-batch Base Set
+task whose `required_output_dialect` is `plain_triton`; do not use `Shared`,
+`paired comparison`, `shared_transplant`, Gluon, mixed, or hybrid tasks as the
+plain competitor for an L0 overlay.
 
 **Dialect contract metadata**: Use `required_output_dialect=amd_gluon` only
 when plain Triton fallback is not a valid success. Required AMD Gluon tasks must
@@ -389,8 +392,9 @@ from task_prompt tags: `extension_intent`, `expected_outcome`,
 `minimum_executable_unit`, `allowed_execution_path`, `scope_infeasible_policy`,
 `whole_kernel_required_reason`, `target_symbol`, and `target_component`. For
 Round-1 L0 AMD Gluon overlays, the execution-boundary fields are mandatory; do
-not emit a required AMD Gluon task when the scoped path is infeasible. Do not add
-these fields to plain
+not emit a required AMD Gluon task when the scoped path is infeasible.
+`scope_infeasible_policy` is only the fallback policy for that case, not a claim
+that the declared executable path is infeasible. Do not add these fields to plain
 Triton tasks or to Gluon tasks where they would be noise.
 
 **Composition tags**: If Evidence-Anchored Composition is present, every
