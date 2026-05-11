@@ -739,6 +739,8 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
     extension_intent = feature_meta.get("extension_intent")
     expected_outcome = feature_meta.get("expected_outcome")
     overhead_source = feature_meta.get("overhead_source_to_record")
+    l0_scope_classification = feature_meta.get("l0_scope_classification")
+    l0_coupling_reasons = feature_meta.get("l0_coupling_reasons")
     minimum_executable_unit = feature_meta.get("minimum_executable_unit")
     target_symbol = feature_meta.get("target_symbol")
     target_component = feature_meta.get("target_component")
@@ -799,6 +801,10 @@ def build_gluon_feature_prompt_block(feature_meta: dict[str, Any] | None, *, hea
         lines.append(f"- Task expected_outcome: {expected_outcome}")
     if overhead_source:
         lines.append(f"- Task overhead_source_to_record: {overhead_source}")
+    if l0_scope_classification:
+        lines.append(f"- Task l0_scope_classification: {l0_scope_classification}")
+    if l0_coupling_reasons:
+        lines.append(f"- Task l0_coupling_reasons: {l0_coupling_reasons}")
     if minimum_executable_unit:
         lines.append(f"- Task minimum_executable_unit: {minimum_executable_unit}")
     if target_symbol:

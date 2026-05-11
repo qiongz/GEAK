@@ -321,6 +321,15 @@ compare its results against the baseline metrics provided in the task
 metadata. The sub-agent should report the specific metric improvement
 (e.g. duration reduction, bandwidth improvement) relative to baseline.
 
+**Base task scope safety**: Plain Triton hot-path tasks should keep their first
+patch inside the named local component. Do not present producer/consumer
+intermediate-format changes as a local cleanup. Changes such as deferred
+normalization, storing different intermediate buffers, or modifying a
+stage1/stage2 handoff are cross-stage ABI changes: emit them only as explicit
+pipeline-boundary tasks that name all affected producer and consumer stages,
+state the intermediate contract, and reject the patch if either stage is left
+in the old format.
+
 **Direction/layer contract**: If Search Space Allocation lists mandatory
 families, each plain Triton competitor needs `Base family: <family_id>`. AMD
 Gluon overlay tasks must include these audited lines: `Extension layer: L0 | L1
@@ -383,7 +392,11 @@ skill docs, not in the prompt contract.
 For L0 tasks, prefer `extension_intent=execution_anchor` when the expected result
 is a correctness-passing Gluon path rather than an immediate speedup. Do not ask
 for full-stage rewrites in layout-heavy paths; name allowed and forbidden
-subpaths/components instead.
+subpaths/components instead. For an L0 execution anchor, keep the `Performance
+hypothesis:` modest: verify that the explicit layout/scoped helper executes and
+record layout construction or conversion overhead. Stronger claims such as MFMA
+utilization or throughput improvement require matrix-lowering scope, L1 scope,
+or prior measured evidence.
 
 **Gluon documentation gate metadata**: For Triton-family tasks that use Gluon
 guidance, task objects should include optional top-level fields

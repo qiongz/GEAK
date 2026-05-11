@@ -360,16 +360,23 @@ def _find_original_baseline_text(patch_dir: Path) -> str | None:
 
 def _find_task_metadata_for_patch_dir(patch_dir: Path) -> dict[str, Any]:
     label = patch_dir.name
-    round_dir = patch_dir.parent.name
-    output_root = patch_dir.parent.parent.parent if len(patch_dir.parents) >= 3 else None
-    if output_root is None:
+    task_dirs: list[Path] = []
+    for root in (patch_dir, *patch_dir.parents):
+        tasks_root = root / "tasks"
+        if not tasks_root.is_dir():
+            continue
+        task_dirs.extend(sorted(path for path in tasks_root.glob("round_*") if path.is_dir()))
+        if tasks_root.is_dir():
+            task_dirs.append(tasks_root)
+        break
+    if not task_dirs:
         return {}
-    tasks_dir = output_root / "tasks" / round_dir
-    if not tasks_dir.is_dir():
-        return {}
-    candidates = list(tasks_dir.glob(f"*_{label}.md")) + list(tasks_dir.glob(f"{label}.md"))
+    candidates: list[Path] = []
+    for tasks_dir in task_dirs:
+        candidates.extend(list(tasks_dir.glob(f"*_{label}.md")) + list(tasks_dir.glob(f"{label}.md")))
     if not candidates:
-        candidates = [p for p in tasks_dir.glob("*.md") if p.stem.endswith(label)]
+        for tasks_dir in task_dirs:
+            candidates.extend([p for p in tasks_dir.glob("*.md") if p.stem.endswith(label)])
     if not candidates:
         return {}
     try:
@@ -478,6 +485,8 @@ _OPTIONAL_GLUON_RESULT_METADATA: tuple[tuple[str, str], ...] = (
     ("expected_outcome", "Expected outcome"),
     ("not_viable_for_l1_if_slower_than_base", "Not viable for L1 if slower than Base"),
     ("overhead_source_to_record", "Overhead source to record"),
+    ("l0_scope_classification", "L0 scope classification"),
+    ("l0_coupling_reasons", "L0 coupling reasons"),
     ("minimum_executable_unit", "Minimum executable unit"),
     ("target_symbol", "Target symbol"),
     ("target_component", "Target component"),
@@ -973,6 +982,59 @@ def _gluon_execution_contract_satisfied(
     return False
 
 
+def _scope_escalation_violation(patch_text: str, task_meta: dict[str, Any] | None = None) -> str | None:
+    """Detect patches that widen an inline-scoped L0 task to a whole-kernel path."""
+    task_meta = task_meta or {}
+    allowed_path = str(task_meta.get("allowed_execution_path") or "").strip().lower()
+    minimum_unit = str(task_meta.get("minimum_executable_unit") or "").strip().lower()
+    if allowed_path != "inline_scoped_helper" and minimum_unit != "inline_scoped_helper":
+        return None
+
+    target_symbol = str(task_meta.get("target_symbol") or "").strip()
+    gluon_defs = _extract_added_gluon_jit_defs(patch_text)
+    if target_symbol:
+        for helper in gluon_defs:
+            if helper == target_symbol or helper.startswith(f"{target_symbol}_"):
+                return f"scope escalation: inline_scoped_helper -> whole_jit_kernel via `{helper}`"
+        launch_re = re.compile(rf"\b{re.escape(target_symbol)}[A-Za-z0-9_]*_gluon\s*\[")
+        if any(line.startswith("+") and launch_re.search(line) for line in patch_text.splitlines()):
+            return f"scope escalation: inline_scoped_helper rerouted `{target_symbol}` to a whole Gluon kernel"
+
+    added = "\n".join(_added_lines(patch_text)).lower()
+    if "whole-kernel @gluon.jit" in added or "whole kernel @gluon.jit" in added:
+        return "scope escalation: inline_scoped_helper patch declares a whole-kernel Gluon conversion"
+    return None
+
+
+def _gluon_evidence_summary(
+    *,
+    required_output_dialect: str,
+    actual_output_dialect: str = "unknown",
+    gluon_execution_contract_satisfied: bool = False,
+    speedup: float = 0.0,
+    has_shape_regression: bool = False,
+    per_shape_speedups: dict[str, Any] | None = None,
+    scope_escalation: str | None = None,
+) -> str:
+    required = str(required_output_dialect or "any").strip().lower()
+    if required not in {"amd_gluon", "mixed"}:
+        return "not_applicable"
+    if scope_escalation:
+        return "scope_escalation"
+    if actual_output_dialect not in {"amd_gluon", "mixed"} or not gluon_execution_contract_satisfied:
+        return "compile_failed_or_not_executed"
+    shape_values = [
+        float(info.get("speedup") or 0.0)
+        for info in (per_shape_speedups or {}).values()
+        if isinstance(info, dict)
+    ]
+    if speedup >= 1.0 and not has_shape_regression:
+        return "executed_win"
+    if any(value > 1.0 for value in shape_values):
+        return "executed_win_by_shape"
+    return "executed_slower"
+
+
 def _metadata_value(task_meta: dict[str, Any] | None, key: str, default: str = "") -> str:
     if not task_meta:
         return default
@@ -1386,6 +1448,10 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         if static_contract_error:
             logger.info("Skipping %s because %s", name, static_contract_error)
             continue
+        scope_escalation = _scope_escalation_violation(patch_text, task_meta)
+        if scope_escalation:
+            logger.info("Skipping %s because scope contract failed: %s", name, scope_escalation)
+            continue
         if required_patch_target_symbols and not _patch_touches_any_target_symbol(
             patch_text,
             required_patch_target_symbols,
@@ -1531,8 +1597,17 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         "gluon_l1_anchor_viability": anchor_viability,
         "not_viable_for_l1": anchor_viability == "not_viable_for_l1",
         "overhead_source": overhead_source,
+        "gluon_evidence_summary": _gluon_evidence_summary(
+            required_output_dialect=required_output_dialect,
+            actual_output_dialect=best_actual_output_dialect,
+            gluon_execution_contract_satisfied=gluon_execution_ok,
+            speedup=best_speedup,
+            has_shape_regression=best_has_shape_regression,
+            per_shape_speedups=best_shape_speedups,
+        ),
         "scope_compliant": True,
         "forbidden_scope_violation": None,
+        "scope_escalation_violation": None,
         "scope_infeasible_reported": False,
         "required_patch_target_symbols": required_patch_target_symbols,
         "forbidden_patch_target_symbols": forbidden_patch_target_symbols,
@@ -1589,6 +1664,27 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
                 else False
             )
             pf = existing.get("best_patch_file")
+            if not pf:
+                for candidate_patch in sorted(patch_dir.glob("patch_*.patch")):
+                    patch_text = candidate_patch.read_text(errors="replace")
+                    scope_escalation = _scope_escalation_violation(patch_text, task_meta)
+                    if scope_escalation:
+                        existing["best_patch_id"] = None
+                        existing["best_patch_file"] = None
+                        existing["best_patch_speedup"] = 0.0
+                        existing["required_output_dialect"] = required_output_dialect
+                        existing["scope_compliant"] = False
+                        existing["scope_escalation_violation"] = scope_escalation
+                        existing["gluon_execution_contract_satisfied"] = False
+                        existing["gluon_evidence_summary"] = _gluon_evidence_summary(
+                            required_output_dialect=required_output_dialect,
+                            scope_escalation=scope_escalation,
+                        )
+                        existing["llm_selection_analysis"] = (
+                            existing.get("llm_selection_analysis") or ""
+                        ) + f" [Invalidated: {scope_escalation}]"
+                        existing_path.write_text(json.dumps(existing, indent=2))
+                        return existing
 
             if pf and Path(pf).exists():
                 patch_text = Path(pf).read_text(errors="replace")
@@ -1624,6 +1720,29 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
                     existing["llm_selection_analysis"] = (
                         existing.get("llm_selection_analysis") or ""
                     ) + f" [Invalidated: {static_contract_error}]"
+                    existing_path.write_text(json.dumps(existing, indent=2))
+                    return existing
+                scope_escalation = _scope_escalation_violation(patch_text, task_meta)
+                if scope_escalation:
+                    logger.warning(
+                        "rewrite_best_results(%s): selected patch violates scope contract: %s.",
+                        patch_dir.name,
+                        scope_escalation,
+                    )
+                    existing["best_patch_id"] = None
+                    existing["best_patch_file"] = None
+                    existing["best_patch_speedup"] = 0.0
+                    existing["required_output_dialect"] = required_output_dialect
+                    existing["scope_compliant"] = False
+                    existing["scope_escalation_violation"] = scope_escalation
+                    existing["gluon_execution_contract_satisfied"] = False
+                    existing["gluon_evidence_summary"] = _gluon_evidence_summary(
+                        required_output_dialect=required_output_dialect,
+                        scope_escalation=scope_escalation,
+                    )
+                    existing["llm_selection_analysis"] = (
+                        existing.get("llm_selection_analysis") or ""
+                    ) + f" [Invalidated: {scope_escalation}]"
                     existing_path.write_text(json.dumps(existing, indent=2))
                     return existing
 
@@ -1767,6 +1886,14 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
                 existing["comparison_target"] = comparison_target
                 if safe_anchor:
                     existing["safe_anchor"] = safe_anchor
+                existing["gluon_evidence_summary"] = _gluon_evidence_summary(
+                    required_output_dialect=required_output_dialect,
+                    actual_output_dialect=str(existing.get("actual_output_dialect") or "unknown"),
+                    gluon_execution_contract_satisfied=bool(existing.get("gluon_execution_contract_satisfied")),
+                    speedup=float(existing.get("best_patch_speedup") or 0.0),
+                    has_shape_regression=bool(existing.get("has_significant_shape_regression")),
+                    per_shape_speedups=existing.get("per_shape_speedups") if isinstance(existing.get("per_shape_speedups"), dict) else None,
+                )
                 existing["llm_selection_analysis"] = (
                     existing.get("llm_selection_analysis") or ""
                 ) + f" [Invalidated: no eligible patch against {comparison_target}]"

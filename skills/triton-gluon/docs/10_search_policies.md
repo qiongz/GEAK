@@ -11,6 +11,7 @@ Implementation details live in worker-routed docs (`20_component_traits.md`,
 - `### Search policy: optimization_direction_metadata_sets`
 - `### Search policy: optimization_direction_dialect_overlay`
 - `### Search policy: overlay_priority_routing`
+- `### Search policy: l0_scope_classification`
 - `### Search policy: evidence_anchored_composition`
 - `### Search policy: measurement_boundary_policy`
 - `### Search policy: dialect_contract_metadata`
@@ -139,6 +140,44 @@ the Prefer or high-confidence Consider buckets. Otherwise spend the task on the
 plain Triton direction. Later rounds may create L1, `gluon_variant`, or
 `hybrid_dispatch` only from verified Gluon execution evidence and safe-anchor
 comparison.
+
+### Search policy: l0_scope_classification
+
+Before emitting a Round-1 L0 task, or a later task that builds on L0 evidence,
+classify whether the proposed target has a self-contained execution path:
+
+```text
+l0_scope_classification: low_coupling | high_coupling | infeasible
+l0_coupling_reasons: <why this subpath is or is not self-contained>
+minimum_executable_unit: inline_scoped_helper | separate_gluon_kernel | whole_jit_kernel | infeasible
+allowed_execution_path: inline_scoped_helper | separate_gluon_kernel | whole_jit_kernel
+scope_infeasible_policy: do_not_emit | shrink_or_report | separate_kernel_if_allowed
+```
+
+Use `inline_scoped_helper` only for low-coupling subpaths such as a scalar/1D
+helper, one index/mask expression, or one load/store smoke path that can execute
+without changing the surrounding algorithm. Do not use it for loop-carried
+state, online reductions, dot/matrix paths, cross-stage ABI changes, wrapper
+reroutes, multi-parent layout rewrites, or full helper/kernel rewrites.
+
+If the target is high-coupling, shrink it to a lower-coupling subpath, mark it
+`infeasible`, or use `whole_jit_kernel` only when the whole helper/kernel is
+explicitly the minimum executable unit and `whole_kernel_required_reason` is
+provided. A task that declares `inline_scoped_helper` but requires whole-kernel
+conversion is invalid.
+
+Round progression:
+
+- Prior Gluon compile failed, did not execute, or hit scope escalation: do not
+  emit L1, `gluon_variant`, or `hybrid_dispatch`; shrink/retry L0 or spend the
+  slot on Base/plain Triton.
+- Prior Gluon passed correctness but was slower: refine only the recorded
+  overhead source, such as layout conversion, buffer path, or one matrix operand
+  layout.
+- Prior Gluon wins for a shape or sub-operation: `gluon_variant` or
+  `hybrid_dispatch` may be emitted, but must cite the safe anchor, the winning
+  shape/sub-operation evidence, and `Comparison target: safe_anchor` or
+  `Comparison target: anchor_patch`.
 
 ### Search policy: evidence_anchored_composition
 

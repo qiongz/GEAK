@@ -14,12 +14,14 @@ from minisweagent.run.postprocess.benchmark_parsing import (
     _patch_touches_forbidden_target_symbol,
     _required_amd_gluon_static_contract_error,
     _required_output_dialect,
+    _scope_escalation_violation,
     classify_gluon_api_contract,
     classify_layout_contract,
     classify_patch_output_dialect,
     compute_best_patch,
     extract_latency_ms,
     parse_shape_latencies_ms,
+    rewrite_best_results,
 )
 
 
@@ -188,6 +190,29 @@ def test_forbidden_whole_kernel_does_not_reject_scoped_helper() -> None:
 
     assert _patch_touches_forbidden_target_symbol(patch, ["whole_kernel_rewrite"]) is None
     assert _patch_touches_forbidden_target_symbol(patch, ["new_gluon_helper"]) == "new_gluon_helper"
+
+
+def test_scope_escalation_detects_inline_task_replacing_target_kernel() -> None:
+    patch = "\n".join(
+        [
+            "diff --git a/kernel.py b/kernel.py",
+            "+from triton.experimental import gluon",
+            "+@gluon.jit",
+            "+def _fwd_grouped_kernel_stage1_rope_gluon(q, k):",
+            "+    return q",
+            "+_fwd_grouped_kernel_stage1_rope_gluon[grid](q, k)",
+        ]
+    )
+
+    violation = _scope_escalation_violation(
+        patch,
+        {
+            "allowed_execution_path": "inline_scoped_helper",
+            "target_symbol": "_fwd_grouped_kernel_stage1_rope",
+        },
+    )
+
+    assert violation == "scope escalation: inline_scoped_helper -> whole_jit_kernel via `_fwd_grouped_kernel_stage1_rope_gluon`"
 
 
 def test_infer_forbidden_new_helper_only_scope() -> None:
@@ -379,6 +404,61 @@ def test_compute_best_patch_includes_per_shape_speedups(tmp_path: Path) -> None:
             "speedup": 1.0,
         },
     }
+
+
+def test_rewrite_best_results_inherits_task_metadata_and_invalidates_scope_escalation(tmp_path: Path) -> None:
+    from minisweagent.run.task_file import write_task_file
+
+    sidecar = tmp_path / "round_sidecar"
+    task_dir = sidecar / "tasks" / "round_1"
+    result_dir = sidecar / "results" / "round_1_pair" / "gluon-l0-load-store-layout"
+    task_dir.mkdir(parents=True)
+    result_dir.mkdir(parents=True)
+    write_task_file(
+        task_dir / "05_gluon-l0-load-store-layout.md",
+        {
+            "label": "gluon-l0-load-store-layout",
+            "priority": 5,
+            "kernel_type": "triton",
+            "required_output_dialect": "amd_gluon",
+            "implementation_layer": "amd_gluon overlay",
+            "extension_layer": "L0",
+            "source_origin": "generated_overlay",
+            "minimum_executable_unit": "inline_scoped_helper",
+            "allowed_execution_path": "inline_scoped_helper",
+            "target_symbol": "_fwd_grouped_kernel_stage1_rope",
+            "target_component": "_fwd_grouped_kernel_stage1_rope online softmax accumulator path",
+            "l0_scope_classification": "low_coupling",
+        },
+        "Extension layer: L0\nImplementation layer: amd_gluon overlay\n",
+    )
+    (result_dir / "patch_0.patch").write_text(
+        "\n".join(
+            [
+                "diff --git a/kernel.py b/kernel.py",
+                "+from triton.experimental import gluon",
+                "+@gluon.jit",
+                "+def _fwd_grouped_kernel_stage1_rope_gluon(q, k):",
+                "+    return q",
+                "+_fwd_grouped_kernel_stage1_rope_gluon[grid](q, k)",
+            ]
+        )
+    )
+    (result_dir / "patch_0_test.txt").write_text("compile failed\n")
+    (result_dir / "best_results.json").write_text(
+        '{"best_patch_id": null, "best_patch_file": null, "best_patch_speedup": 0.0}'
+    )
+
+    result = rewrite_best_results(result_dir)
+
+    assert result is not None
+    assert result["required_output_dialect"] == "amd_gluon"
+    assert result["source_origin"] == "generated_overlay"
+    assert result["allowed_execution_path"] == "inline_scoped_helper"
+    assert result["scope_compliant"] is False
+    assert result["gluon_execution_contract_satisfied"] is False
+    assert result["gluon_evidence_summary"] == "scope_escalation"
+    assert "scope escalation" in result["scope_escalation_violation"]
 
 
 def test_compute_best_patch_reports_regression_against_true_baseline(tmp_path: Path) -> None:

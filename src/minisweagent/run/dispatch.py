@@ -273,14 +273,20 @@ def _task_required_output_dialect(meta: dict[str, Any], task_body: str = "") -> 
 
 def _task_uses_skills(meta: dict[str, Any], task_body: str = "") -> bool:
     """Return whether a task should enable the skill runtime."""
+    if str(meta.get("kernel_type", "")).strip().lower() != "triton":
+        return False
     if _task_requires_amd_gluon(meta, task_body):
+        return True
+    if _task_required_output_dialect(meta, task_body) == "mixed":
+        return True
+    if _task_requires_gluon_worker_docs(meta, task_body):
         return True
     if "use_skills" in meta:
         raw = meta.get("use_skills")
         if isinstance(raw, str):
             return raw.strip().lower() in {"1", "true", "yes", "on"}
         return bool(raw)
-    return str(meta.get("kernel_type", "")).strip().lower() == "triton"
+    return False
 
 
 def _task_requires_amd_gluon(meta: dict[str, Any], task_body: str = "") -> bool:
@@ -389,6 +395,8 @@ def _task_feature_metadata(meta: dict[str, Any], task_body: str = "") -> dict[st
         "expected_outcome",
         "not_viable_for_l1_if_slower_than_base",
         "overhead_source_to_record",
+        "l0_scope_classification",
+        "l0_coupling_reasons",
         "minimum_executable_unit",
         "target_symbol",
         "target_component",

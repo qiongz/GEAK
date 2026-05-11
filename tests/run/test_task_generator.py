@@ -117,6 +117,13 @@ def _gluon_overlay_prompt(
         "Scope infeasible policy: shrink_or_report",
         "Reject if: non-executed Gluon or shape regression",
     ]
+    if layer == "L0":
+        lines.extend(
+            [
+                "L0 scope classification: low_coupling",
+                "L0 coupling reasons: single local memory/layout component without loop-carried state",
+            ]
+        )
     lines.extend(extra or [])
     return "\n".join(lines)
 
@@ -708,6 +715,8 @@ def test_parse_l0_metadata_from_snake_case_prompt_fields() -> None:
             "source_origin: generated_overlay",
             "gluon_tl_policy: strict_generated",
             "layout_construction_policy: host_preferred",
+            "l0_scope_classification: low_coupling",
+            "l0_coupling_reasons: selected load path only",
             "minimum_executable_unit: separate_gluon_kernel",
             "allowed_execution_path: separate_gluon_kernel",
             "scope_infeasible_policy: shrink_or_report",
@@ -1103,6 +1112,50 @@ def test_l0_overlay_binding_rejects_mismatched_target_component() -> None:
     )
 
     with pytest.raises(ValueError, match="does not match Plain competitor"):
+        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+
+
+def test_l0_audit_rejects_high_coupling_inline_scoped_helper() -> None:
+    payload = json.dumps(
+        [
+            {
+                "label": "softmax-rescale",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "plain_triton",
+                "task_prompt": "\n".join(
+                    [
+                        "Base Set task",
+                        "Base family: base_hot_path_streamline",
+                        "Optimization direction: memory/layout cleanup",
+                        "Target component: online softmax accumulator path",
+                        "Allowed change: online softmax accumulator path only",
+                    ]
+                ),
+            },
+            {
+                "label": "gluon-l0-softmax-accumulator",
+                "priority": 6,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "amd_gluon",
+                "target_component": "online softmax accumulator path",
+                "task_prompt": _gluon_overlay_prompt(
+                    extra=[
+                        "Target component: online softmax accumulator path",
+                        "Allowed change: `acc`, `e_sum`, `e_max` and `tl.dot(p, v)` inside the online softmax accumulator loop",
+                        "L0 scope classification: high_coupling",
+                        "L0 coupling reasons: online reduction plus tl.dot plus loop-carried accumulator state",
+                    ],
+                    plain_competitor="softmax-rescale",
+                    target_component="online softmax accumulator path",
+                ),
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="cannot use inline_scoped_helper for high-coupling L0 target"):
         _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
 
 
@@ -1665,6 +1718,52 @@ def test_run_task_agent_plain_triton_auto_prefers_amd_gluon_first(
 
 @patch("minisweagent.tools.tools_runtime.get_tools_list", return_value=[{"name": "str_replace_editor"}, {"name": "submit"}])
 @patch("minisweagent.agents.default.DefaultAgent")
+def test_run_task_agent_missing_legacy_kb_uses_plain_triton_fallback(
+    mock_default_agent, _mock_tools, tmp_path: Path
+):
+    model = FakePlanningModel()
+    mock_default_agent.return_value.run.return_value = ("Submitted", "[]")
+
+    submitted = _run_task_agent(
+        kernel_path=str(tmp_path / "kernel.py"),
+        kernel_name="test_kernel",
+        kernel_type="triton",
+        kernel_language="python",
+        function_names=["kernel_fwd"],
+        workspace_path=str(tmp_path),
+        input_dialect="plain_triton",
+        gluon_feature_mode="auto",
+        gluon_baseline_profile="mi3xx",
+        allowed_output_dialects=["plain_triton", "amd_gluon"],
+        target_backend="hip/gfx942",
+        base_task_context="ctx",
+        model=model,
+        profiling_path=None,
+        commandment_path=None,
+        baseline_metrics_path=None,
+        deep_search_path=None,
+        previous_results_dir=None,
+        discovery_path=None,
+        codebase_context_path=None,
+        previous_tasks_dir=None,
+        round_evaluations=None,
+        current_round=1,
+        num_gpus=1,
+    )
+
+    assert submitted == "[]"
+    run_kwargs = mock_default_agent.return_value.run.call_args.kwargs
+    assert run_kwargs["knowledge_base_path"].endswith(
+        "knowledge-base/amd-knowledge-base/layer-3-libraries/compilers/triton-on-rocm.md"
+    )
+    assert "triton-gluon-on-rocm.md" not in run_kwargs["knowledge_base_path"]
+    assert run_kwargs["gluon_kb_path"].endswith(
+        "knowledge-base/amd-knowledge-base/layer-3-libraries/compilers/triton-gluon-on-rocm.md"
+    )
+
+
+@patch("minisweagent.tools.tools_runtime.get_tools_list", return_value=[{"name": "str_replace_editor"}, {"name": "submit"}])
+@patch("minisweagent.agents.default.DefaultAgent")
 def test_run_task_agent_nv_gluon_mentions_translation_before_tuning(
     mock_default_agent, _mock_tools, tmp_path: Path
 ):
@@ -1746,7 +1845,7 @@ def test_run_task_agent_keeps_general_skill_tiers_for_mi3xx(mock_default_agent, 
     assert run_kwargs["knowledge_base_path"] == str(general_kb)
 
 
-def test_write_task_files_marks_triton_tasks_with_skill_usage(tmp_path: Path):
+def test_write_task_files_keeps_plain_base_without_skill_usage(tmp_path: Path):
     tasks = _parse_llm_response(
         '[{"label": "opt", "priority": 5, "agent_type": "strategy_agent", "task_prompt": "Do it"}]',
         FakeAgentClass,
@@ -1767,7 +1866,7 @@ def test_write_task_files_marks_triton_tasks_with_skill_usage(tmp_path: Path):
 
     meta, _body = read_task_file(paths[0])
     assert meta["kernel_type"] == "triton"
-    assert meta["use_skills"] is True
+    assert meta["use_skills"] is False
     assert meta["input_dialect"] == "amd_gluon"
     assert meta["gluon_feature_mode"] == "auto"
     assert meta["gluon_baseline_profile"] == "mi3xx"
@@ -1780,6 +1879,77 @@ def test_write_task_files_marks_triton_tasks_with_skill_usage(tmp_path: Path):
     assert "gluon_always_read_path" not in meta
     assert "gluon_api_reference_path" not in meta
     assert "gluon_real_patterns_path" not in meta
+
+
+def test_write_task_files_separates_plain_and_gluon_knowledge_paths(tmp_path: Path):
+    tasks = _parse_llm_response(
+        json.dumps(
+            [
+                {
+                    "label": "softmax-rescale",
+                    "priority": 0,
+                    "agent_type": "strategy_agent",
+                    "task_prompt": "\n".join(
+                        [
+                            "Base family: base_hot_path_streamline",
+                            "Optimization direction: memory/layout cleanup",
+                            "Target component: streamline_component",
+                            "Allowed change: one layout or memory component in `streamline_component`",
+                            "Reject if: output falls back to AMD Gluon.",
+                        ]
+                    ),
+                },
+                {
+                    "label": "gluon-l0-layout",
+                    "priority": 6,
+                    "agent_type": "strategy_agent",
+                    "task_prompt": _gluon_overlay_prompt(
+                        plain_competitor="softmax-rescale",
+                        target_component="streamline_component",
+                    ),
+                },
+            ]
+        ),
+        FakeAgentClass,
+    )
+
+    paths = write_task_files(
+        tasks,
+        tmp_path,
+        kernel_path=str(tmp_path / "kernel.py"),
+        kernel_type="triton",
+        input_dialect="plain_triton",
+        gluon_feature_mode="auto",
+        gluon_baseline_profile="mi3xx",
+        allowed_output_dialects=["plain_triton", "amd_gluon"],
+        target_backend="hip/gfx942",
+    )
+
+    by_label = {}
+    for path in paths:
+        meta, _body = read_task_file(path)
+        by_label[meta["label"]] = meta
+
+    base_meta = by_label["softmax-rescale"]
+    assert base_meta["knowledge_base_path"].endswith(
+        "knowledge-base/amd-knowledge-base/layer-3-libraries/compilers/triton-on-rocm.md"
+    )
+    assert "triton-gluon-on-rocm.md" not in base_meta["knowledge_base_path"]
+    assert base_meta["use_skills"] is False
+    assert "gluon_kb_path" not in base_meta
+    assert "gluon_skill_path" not in base_meta
+
+    ext_meta = by_label["gluon-l0-layout"]
+    assert ext_meta["knowledge_base_path"].endswith(
+        "knowledge-base/amd-knowledge-base/layer-3-libraries/compilers/triton-on-rocm.md"
+    )
+    assert ext_meta["gluon_kb_path"].endswith(
+        "knowledge-base/amd-knowledge-base/layer-3-libraries/compilers/triton-gluon-on-rocm.md"
+    )
+    assert ext_meta["use_skills"] is True
+    assert ext_meta["required_output_dialect"] == "amd_gluon"
+    assert "gluon_always_read_path" in ext_meta
+    assert "required_gluon_docs" in ext_meta
 
 
 def test_parse_llm_response_augments_explicit_required_gluon_docs() -> None:

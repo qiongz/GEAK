@@ -95,6 +95,11 @@ logger = logging.getLogger(__name__)
 _GEAK_REPO_ROOT = get_repo_root()
 
 _KNOWLEDGE_BASE_REL = "knowledge_base/optimization_strategies.py"
+_PLAIN_TRITON_KB_FALLBACK_RELS = (
+    "knowledge-base/amd-knowledge-base/layer-3-libraries/compilers/triton-on-rocm.md",
+    "knowledge-base/amd-knowledge-base/layer-5-llm/05-advanced/custom-kernels/triton-kernels.md",
+    "knowledge-base/INDEX.md",
+)
 _GLUON_SKILL_REL = "skills/triton-gluon/SKILL.md"
 _GLUON_KB_REL = "knowledge-base/amd-knowledge-base/layer-3-libraries/compilers/triton-gluon-on-rocm.md"
 _GLUON_EXAMPLES_REL = "examples/triton_gluon_inputs/README.md"
@@ -205,6 +210,8 @@ _OPTIONAL_GLUON_TASK_METADATA_FIELDS: tuple[tuple[str, str], ...] = (
     ("expected_outcome", "Expected outcome"),
     ("not_viable_for_l1_if_slower_than_base", "Not viable for L1 if slower than Base"),
     ("overhead_source_to_record", "Overhead source to record"),
+    ("l0_scope_classification", "L0 scope classification"),
+    ("l0_coupling_reasons", "L0 coupling reasons"),
     ("minimum_executable_unit", "Minimum executable unit"),
     ("target_symbol", "Target symbol"),
     ("target_component", "Target component"),
@@ -808,6 +815,12 @@ def write_task_files(
     )
 
     for t in tasks:
+        task_needs_gluon_docs = _task_config_requires_gluon_worker_docs(
+            kernel_type=kernel_type,
+            cfg=t.config,
+            task_body=t.task,
+            label=t.label,
+        )
         filename = f"{t.priority:02d}_{t.label}.md"
         task_path = output_dir / filename
         metadata = {
@@ -839,7 +852,13 @@ def write_task_files(
             "num_gpus": t.num_gpus,
             "test_command": test_command,
             "round": round_num,
-            "use_skills": _should_enable_skills(kernel_type),
+            "use_skills": _task_config_uses_skills(
+                kernel_type=kernel_type,
+                cfg=t.config,
+                task_body=t.task,
+                label=t.label,
+                requires_gluon_docs=task_needs_gluon_docs,
+            ),
             "allowed_skill_tiers": list(allowed_skill_tiers),
         }
         if task_knowledge_paths.get("knowledge_base_path"):
@@ -849,12 +868,7 @@ def write_task_files(
                 metadata["search_set"] = t.config["search_set"]
             if t.config.get("required_output_dialect"):
                 metadata["required_output_dialect"] = t.config["required_output_dialect"]
-            if _task_config_requires_gluon_worker_docs(
-                kernel_type=kernel_type,
-                cfg=t.config,
-                task_body=t.task,
-                label=t.label,
-            ):
+            if task_needs_gluon_docs:
                 metadata.update({key: value for key, value in task_knowledge_paths.items() if value})
                 if t.config.get("gluon_doc_profile"):
                     metadata["gluon_doc_profile"] = t.config["gluon_doc_profile"]
@@ -904,7 +918,14 @@ def _find_repo_relative_file(workspace: Path, relative_path: str) -> Path | None
 
 def _find_knowledge_base(workspace: Path) -> Path | None:
     """Locate the optimization strategies knowledge base file."""
-    return _find_repo_relative_file(workspace, _KNOWLEDGE_BASE_REL)
+    knowledge_base = _find_repo_relative_file(workspace, _KNOWLEDGE_BASE_REL)
+    if knowledge_base:
+        return knowledge_base
+    for rel in _PLAIN_TRITON_KB_FALLBACK_RELS:
+        candidate = _GEAK_REPO_ROOT / rel
+        if candidate.exists():
+            return candidate.resolve()
+    return None
 
 
 def _resolve_task_knowledge_paths(
@@ -943,12 +964,8 @@ def _resolve_task_knowledge_paths(
         if path.exists()
     }
 
-    primary_knowledge_path = knowledge_base_path
-    if primary_knowledge_path is None and uses_gluon_guidance:
-        primary_knowledge_path = gluon_kb_path
-
     resolved = {
-        "knowledge_base_path": str(primary_knowledge_path) if primary_knowledge_path else "",
+        "knowledge_base_path": str(knowledge_base_path) if knowledge_base_path else "",
         "gluon_skill_path": str(gluon_skill_path) if gluon_skill_path else "",
         "gluon_kb_path": str(gluon_kb_path) if gluon_kb_path else "",
         "gluon_examples_path": str(gluon_examples_path) if gluon_examples_path else "",
@@ -2028,13 +2045,15 @@ def _build_search_space_allocation_guidance(
         "- Keep a plain Triton competitor for every high-value direction unless AMD Gluon is explicitly required. Layering order: plain Triton -> optional L0/paired mapping -> L1 from viable/local-win evidence -> later Hybrid/Mixed.",
         "- Any Base task that may be referenced by a Gluon L0 overlay must include auditable scoped fields: `Target component:` naming the exact helper/stage/local subpath and `Allowed change:` naming the same component in plain Triton. Broad Base tasks without those fields are valid Base work but must not be used as `Plain competitor` for L0.",
         "- Round 1 plain Triton input may have at most one L0 overlay. Generate it only when `overlay_priority_routing` is Prefer/high-confidence Consider; otherwise spend the slot on another plain Triton direction.",
-        "- Before emitting a Round-1 L0 overlay, perform `Gluon L0 scope classification`: is the candidate layout-heavy, does it include complex control flow, reductions, multiple matrix paths, multiple 2D parents, nested layouts, boundary-specific branches, or other high-coupling logic; can one exact subpath execute without translating the whole algorithm; and is the expected outcome `execution_anchor` or `performance_candidate`?",
+        "- Before emitting any L0 overlay or later task derived from L0 evidence, perform `Gluon L0 scope classification`: is the candidate layout-heavy, does it include loop-carried state, online reductions, dot/matrix paths, multiple 2D parents, nested layouts, wrapper reroute, cross-stage ABI changes, boundary-specific branches, or other high-coupling logic; can one exact subpath execute without translating the whole algorithm; and is the expected outcome `execution_anchor` or `performance_candidate`?",
         "- L0 scope ladder is generic across kernels: prefer the smallest executable, attributable, low-coupling subpath (scalar/1D stage, one load/store, one index/mask layout smoke path). Consider matrix/MFMA subpaths only after an executed anchor or when the task explicitly proves the matrix subpath is the smallest viable component.",
         "- Required Gluon docs for priority: `00_always_read.md`, `10_search_policies.md` (`optimization_direction_dialect_overlay`, `overlay_priority_routing`), plus `20_component_traits.md` / `60_real_patterns.md` / `50_api_reference.md` only when their routed details apply.",
         "- AMD Gluon overlay prompts must include `Extension layer: L0|L1|Hybrid`, `Optimization direction:`, `Source Base family:`, `Plain competitor:`, `Gluon overlay reason:`, `Overlay priority: Prefer` or `Overlay priority: high-confidence Consider`, `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`. Do not write plain `Overlay priority: Consider` for Round-1 L0.",
-        "- Round-1 L0 metadata is mandatory for AMD Gluon overlays: `minimum_executable_unit: inline_scoped_helper|separate_gluon_kernel|whole_jit_kernel|infeasible`, `allowed_execution_path: inline_scoped_helper|separate_gluon_kernel|whole_jit_kernel`, and `scope_infeasible_policy: do_not_emit|shrink_or_report|separate_kernel_if_allowed`. Optional tags include `extension_intent: execution_anchor|performance_candidate`, `expected_outcome: correctness_anchor_not_speedup|possible_speedup`, `not_viable_for_l1_if_slower_than_base: true`, `overhead_source_to_record: ...`, `whole_kernel_required_reason: ...`, `Target symbol:`, and `Target component:`.",
+        "- Round-1 L0 metadata is mandatory for AMD Gluon overlays, and later L0/L1/variant/hybrid tasks must preserve or reference it from the verified anchor: `l0_scope_classification: low_coupling|high_coupling|infeasible`, `l0_coupling_reasons: ...`, `minimum_executable_unit: inline_scoped_helper|separate_gluon_kernel|whole_jit_kernel|infeasible`, `allowed_execution_path: inline_scoped_helper|separate_gluon_kernel|whole_jit_kernel`, and `scope_infeasible_policy: do_not_emit|shrink_or_report|separate_kernel_if_allowed`. Optional tags include `extension_intent: execution_anchor|performance_candidate`, `expected_outcome: correctness_anchor_not_speedup|possible_speedup`, `not_viable_for_l1_if_slower_than_base: true`, `overhead_source_to_record: ...`, `whole_kernel_required_reason: ...`, `Target symbol:`, and `Target component:`.",
         "- L0 execution path must be exactly one of: `inline_scoped_helper` when the language boundary permits the scoped change; `separate_gluon_kernel` when the task explicitly allows a second launch/temp buffer and marks the task as an execution anchor; `whole_jit_kernel` only when the whole helper/kernel is the minimum executable unit and the task does not forbid whole-kernel rewrite; or `infeasible` as `minimum_executable_unit` only when no required Gluon task should be emitted.",
+        "- `inline_scoped_helper` is invalid for high-coupling L0 targets such as online softmax accumulator loops, `tl.dot`/matrix paths, loop-carried reductions, cross-stage ABI changes, or wrapper reroutes. Shrink to a lower-coupling index/mask/load/store smoke path, use a justified `whole_jit_kernel`, or do not emit the Gluon task.",
         "- Required Gluon worker contract: ask for `Gluon knowledge lookup plan`, `Gluon implementation plan`, `Performance hypothesis:`, `Same ABI comparison:`, and `Patch evolution:` before editing; stage/helper/local-expression scoped tasks must include `Target symbol:` or `Target component:` and wrap local target names in backticks inside `Allowed change`; reject non-executed Gluon, target-symbol mismatch, leftover plain Triton device APIs inside edited `@gluon.jit`, backup/temp files, and bundled unrelated changes without `bundle_allowed=true`. Keep API-level Gluon rewrite details in the routed skills/docs.",
+        "- For an L0 `extension_intent=execution_anchor`, keep `Performance hypothesis:` to execution and attribution: verify the explicit layout/scoped helper can execute and record layout construction or conversion overhead. Do not claim MFMA utilization or broad throughput improvement unless the task is matrix-lowering/L1 or prior evidence supports that mechanism.",
         "- L0 overlay prompts must not ask the worker to convert an entire stage/helper/kernel just to prove Gluon. Scope L0 to one named subpath/component, such as a load/store, layout, mask, or matrix subpath; only use a whole helper as the target when the task explicitly explains why the helper is the smallest viable component.",
         "- Round-1 L0 overlays must bind to the same component and same optimization direction as `Plain competitor`, not merely to the same broad `Source Base family`. The referenced plain Triton task and the L0 overlay must use the exact same `Optimization direction:` text and must both include an auditable `Target component:` or `Allowed change:` with the same scoped symbol/stage.",
         "- If the desired Gluon L0 target component does not already have a same-direction plain Base task in this batch, first emit that plain Base competitor, then point `Plain competitor:` at it. Example: if the overlay targets component B's memory/layout path, emit a plain component-B memory/layout Base task; do not bind it to a component-A cleanup, control-flow, or generic same-family task.",
@@ -2043,6 +2062,7 @@ def _build_search_space_allocation_guidance(
         "- If a plain Triton candidate wins, accept it as the best result rather than forcing more Gluon work.",
         "- If a Triton strategy wins and maps cleanly to Gluon traits, a later round may create an AMD Gluon variant of that winning strategy only with a concrete performance hypothesis.",
         "- If an AMD Gluon candidate wins on only some shapes or sub-operations, a later round may create a `mixed/hybrid` candidate that dispatches between plain Triton and AMD Gluon by host-side shape/feature checks; the mixed path must keep per-shape no-regression and must be compared against a plain Triton or paired competitor.",
+        "- Round progression: if prior Gluon compile failed, did not execute, or reported scope escalation, do not emit L1, `gluon_variant`, or `hybrid_dispatch`; shrink/retry L0 or spend the slot on Base/plain Triton. If prior Gluon passed but was slower, emit only a narrow overhead refinement tied to the recorded `overhead_source_to_record`. Only prior per-shape or sub-operation Gluon wins justify `gluon_variant` or `hybrid_dispatch`.",
     ]
     lines.extend(_render_base_family_checklist(required_base_families))
     if str(feature_meta.get("source_origin") or "").strip().lower() == "existing_amd_gluon_operator":
@@ -2408,6 +2428,42 @@ def _build_shape_coverage_guidance(
 def _should_enable_skills(kernel_type: str) -> bool:
     """Enable skills only on the Triton planning/execution path."""
     return kernel_type.strip().lower() == "triton"
+
+
+def _task_config_uses_skills(
+    *,
+    kernel_type: str,
+    cfg: dict[str, Any],
+    task_body: str = "",
+    label: str = "",
+    requires_gluon_docs: bool | None = None,
+) -> bool:
+    """Return whether a generated worker task should expose skills.
+
+    The task generator runs once for the whole Triton-family feature, but worker
+    skill visibility is per task: plain Base tasks should not see the
+    triton-gluon skill unless their own contract requires Gluon docs/output.
+    """
+    if str(kernel_type or "").strip().lower() != "triton":
+        return False
+    required_output = str(cfg.get("required_output_dialect") or "").strip().lower()
+    if required_output in {"amd_gluon", "mixed"}:
+        return True
+    if requires_gluon_docs is None:
+        requires_gluon_docs = _task_config_requires_gluon_worker_docs(
+            kernel_type=kernel_type,
+            cfg=cfg,
+            task_body=task_body,
+            label=label,
+        )
+    if requires_gluon_docs:
+        return True
+    if "use_skills" in cfg:
+        raw = cfg.get("use_skills")
+        if isinstance(raw, str):
+            return raw.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(raw)
+    return False
 
 
 def _build_output_dialect_guidance(feature_meta: dict[str, Any]) -> str:
@@ -3065,6 +3121,27 @@ def _has_valid_l0_overlay_priority(task: AgentTask) -> bool:
 _VALID_MINIMUM_EXECUTABLE_UNITS = {"inline_scoped_helper", "separate_gluon_kernel", "whole_jit_kernel", "infeasible"}
 _VALID_L0_ALLOWED_EXECUTION_PATHS = {"inline_scoped_helper", "separate_gluon_kernel", "whole_jit_kernel"}
 _VALID_SCOPE_INFEASIBLE_POLICIES = {"do_not_emit", "shrink_or_report", "separate_kernel_if_allowed"}
+_VALID_L0_SCOPE_CLASSIFICATIONS = {"low_coupling", "high_coupling", "infeasible"}
+_HIGH_COUPLING_L0_MARKERS = (
+    "tl.dot",
+    "gl.dot",
+    "dot product",
+    "matrix",
+    "mfma",
+    "wmma",
+    "online softmax",
+    "softmax accumulator",
+    "accumulator loop",
+    "stage1/stage2",
+    "stage1 stage2",
+    "cross-stage",
+    "wrapper reroute",
+    "wrapper route",
+    "whole kernel",
+    "whole-kernel",
+    "entire kernel",
+    "full kernel",
+)
 
 
 def _normalize_audit_text(value: str | None) -> str:
@@ -3076,6 +3153,32 @@ def _task_contract_value(task: AgentTask, key: str, field: str) -> str:
     if value in (None, ""):
         value = _parse_prompt_field_value(task.task, field)
     return str(value or "").strip().strip("`").lower()
+
+
+def _task_contract_raw_value(task: AgentTask, key: str, field: str) -> str:
+    value = task.config.get(key)
+    if value in (None, ""):
+        value = _parse_prompt_field_value(task.task, field)
+    return str(value or "").strip().strip("`")
+
+
+def _l0_high_coupling_hits(task: AgentTask) -> list[str]:
+    text = "\n".join(
+        part
+        for part in (
+            task.label,
+            task.task,
+            str(task.config.get("target_component") or ""),
+            str(task.config.get("allowed_change") or ""),
+            str(task.config.get("l0_coupling_reasons") or ""),
+        )
+        if part
+    ).lower()
+    hits: list[str] = []
+    for marker in _HIGH_COUPLING_L0_MARKERS:
+        if marker in text and marker not in hits:
+            hits.append(marker)
+    return hits
 
 
 def _task_forbidden_symbols(task: AgentTask) -> list[str]:
@@ -3107,8 +3210,17 @@ def _gluon_l0_execution_boundary_errors(task: AgentTask) -> list[str]:
     minimum_unit = _task_contract_value(task, "minimum_executable_unit", "Minimum executable unit")
     allowed_path = _task_contract_value(task, "allowed_execution_path", "Allowed execution path")
     infeasible_policy = _task_contract_value(task, "scope_infeasible_policy", "Scope infeasible policy")
+    scope_classification = _task_contract_value(task, "l0_scope_classification", "L0 scope classification")
+    coupling_reasons = _task_contract_raw_value(task, "l0_coupling_reasons", "L0 coupling reasons")
     required_output = str(task.config.get("required_output_dialect") or "").strip().lower()
     errors: list[str] = []
+
+    if not scope_classification:
+        errors.append(f"{task.label} missing L0 execution-boundary field: L0 scope classification")
+    elif scope_classification not in _VALID_L0_SCOPE_CLASSIFICATIONS:
+        errors.append(f"{task.label} has invalid L0 scope classification `{scope_classification}`")
+    if scope_classification in {"high_coupling", "infeasible"} and not coupling_reasons:
+        errors.append(f"{task.label} must explain L0 coupling reasons for `{scope_classification}` scope")
 
     if not minimum_unit:
         errors.append(f"{task.label} missing L0 execution-boundary field: Minimum executable unit")
@@ -3125,9 +3237,20 @@ def _gluon_l0_execution_boundary_errors(task: AgentTask) -> list[str]:
 
     if minimum_unit == "infeasible" and required_output == "amd_gluon":
         errors.append(f"{task.label} cannot require AMD Gluon output when Minimum executable unit is infeasible")
+    if scope_classification == "infeasible" and required_output == "amd_gluon":
+        errors.append(f"{task.label} cannot require AMD Gluon output when L0 scope classification is infeasible")
     if minimum_unit in _VALID_L0_ALLOWED_EXECUTION_PATHS and allowed_path and minimum_unit != allowed_path:
         errors.append(
             f"{task.label} Minimum executable unit `{minimum_unit}` must match Allowed execution path `{allowed_path}`"
+        )
+
+    high_coupling_hits = _l0_high_coupling_hits(task)
+    if allowed_path == "inline_scoped_helper" and (
+        scope_classification == "high_coupling" or high_coupling_hits
+    ):
+        reasons = ", ".join(high_coupling_hits) if high_coupling_hits else coupling_reasons or scope_classification
+        errors.append(
+            f"{task.label} cannot use inline_scoped_helper for high-coupling L0 target ({reasons}); shrink the target, report infeasible, or justify a different executable unit"
         )
 
     forbidden_symbols = _task_forbidden_symbols(task)
@@ -3288,6 +3411,12 @@ def _task_audit_summary(task: AgentTask) -> dict[str, Any]:
         "extension_layer": task.config.get("extension_layer") or _parse_prompt_field_value(text, "Extension layer"),
         "optimization_direction": _parse_prompt_field_value(text, "Optimization direction"),
         "target_component": task.config.get("target_component") or _parse_prompt_field_value(text, "Target component"),
+        "l0_scope_classification": task.config.get("l0_scope_classification")
+        or _parse_prompt_field_value(text, "L0 scope classification")
+        or "",
+        "l0_coupling_reasons": task.config.get("l0_coupling_reasons")
+        or _parse_prompt_field_value(text, "L0 coupling reasons")
+        or "",
         "minimum_executable_unit": task.config.get("minimum_executable_unit")
         or _parse_prompt_field_value(text, "Minimum executable unit")
         or "",

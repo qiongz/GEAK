@@ -1003,6 +1003,8 @@ def _build_gluon_working_set(
     execution_mode = str(feature_metadata.get("execution_mode") or "").strip()
     extension_intent = str(feature_metadata.get("extension_intent") or "").strip().lower()
     expected_outcome = str(feature_metadata.get("expected_outcome") or "").strip()
+    l0_scope_classification = str(feature_metadata.get("l0_scope_classification") or "").strip()
+    l0_coupling_reasons = str(feature_metadata.get("l0_coupling_reasons") or "").strip()
     minimum_executable_unit = str(feature_metadata.get("minimum_executable_unit") or "").strip()
     target_symbol = str(feature_metadata.get("target_symbol") or "").strip()
     target_component = str(feature_metadata.get("target_component") or "").strip()
@@ -1043,6 +1045,10 @@ def _build_gluon_working_set(
         )
     if expected_outcome:
         lines.append(f"- Expected outcome: `{expected_outcome}`.")
+    if l0_scope_classification:
+        lines.append(f"- L0 scope classification: `{l0_scope_classification}`.")
+    if l0_coupling_reasons:
+        lines.append(f"- L0 coupling reasons: {l0_coupling_reasons}")
     if minimum_executable_unit:
         lines.append(f"- Minimum executable unit: `{minimum_executable_unit}`.")
     if target_symbol:
@@ -1055,6 +1061,10 @@ def _build_gluon_working_set(
         lines.append(f"- Forbidden target scopes checked by tools: {forbidden_symbols_text}.")
     if allowed_execution_path:
         lines.append(f"- Allowed execution path: `{allowed_execution_path}`.")
+        if allowed_execution_path == "inline_scoped_helper":
+            lines.append(
+                "- Inline scoped helper boundary: do not add a replacement whole-kernel `@gluon.jit`, do not reroute the wrapper's main path to a new full Gluon kernel, and do not report success by widening beyond the named target component."
+            )
     if scope_infeasible_policy:
         lines.append(f"- Scope infeasible policy: `{scope_infeasible_policy}`.")
     if whole_kernel_required_reason:
