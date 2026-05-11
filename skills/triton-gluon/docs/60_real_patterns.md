@@ -387,6 +387,22 @@ Task consistency check:
 - If `Plain competitor` names a different direction or target component, stop
   and report the mismatch. Do not use a different competitor to justify success.
 
+Whole-kernel L0 comparison anchor:
+
+- Use `whole_jit_kernel` only when the whole helper or kernel is the smallest
+  executable Gluon unit. This is a comparison-boundary decision, not a reason to
+  drop the same-direction plain evidence.
+- When a whole helper is the L0 target, prefer a plain competitor whose
+  `Optimization direction`, `Target component`, and measurement boundary describe
+  the same helper or execution boundary.
+- If the only available plain competitor is a narrow local cleanup, prefer
+  shrinking the Gluon L0 to that local component or asking the planner for a
+  matching whole-helper Base task.
+- Gluon-specific mechanisms such as explicit layouts, `DotOperandLayout`, or
+  buffer ops stay in `Gluon overlay reason`, `Performance hypothesis`, and
+  `Allowed change`. They should explain how the Gluon implementation tests the
+  same goal, not create a separate optimization direction.
+
 Defer full attention/decode/GEMM rewrites until after L0 proves the relevant
 layout family compiles. L1 tasks can then add memory lowering, matrix lowering,
 or shared/descriptor features one at a time.

@@ -10,6 +10,7 @@ Implementation details live in worker-routed docs (`20_component_traits.md`,
 
 - `### Search policy: optimization_direction_metadata_sets`
 - `### Search policy: optimization_direction_dialect_overlay`
+- `### Search policy: overlay_direction_vs_mechanism`
 - `### Search policy: overlay_priority_routing`
 - `### Search policy: l0_scope_classification`
 - `### Search policy: evidence_anchored_composition`
@@ -98,6 +99,40 @@ Examples:
 Do not emit a generic "rewrite to Gluon" task. A Gluon task must name the
 optimization direction it implements and the single allowed component it changes
 in the next patch.
+
+### Search policy: overlay_direction_vs_mechanism
+
+Use `Optimization direction` for the shared performance or algorithmic goal that
+both the plain Triton competitor and the Gluon overlay are trying to test. Use
+Gluon-specific fields for the implementation mechanism.
+
+Preferred split:
+
+```text
+Optimization direction: <shared performance goal>
+Gluon overlay reason: explicit_layout | buffer_path | matrix_lowering | shape_bucket | ...
+Implementation layer: amd_gluon overlay
+Performance hypothesis: <why the Gluon mechanism might help this same goal>
+Allowed change: <same target component or dispatch decision>
+```
+
+Examples:
+
+- Prefer `Optimization direction: reduce K_Buffer memory transactions` with
+  `Gluon overlay reason: explicit_layout for the same K_Buffer load path`.
+- Prefer `Optimization direction: improve the stage1 QK data path` with
+  `Gluon overlay reason: DotOperandLayout / matrix lowering for the same dot
+  component`.
+- Avoid making implementation mechanisms such as "use explicit layout",
+  "convert to @gluon.jit", "use DotOperandLayout", or "try buffer ops" the
+  optimization direction by themselves. Those can be good overlay reasons when
+  attached to a shared direction and a comparable target component.
+
+For high-coupling L0 work, the same rule still applies: if the Gluon path needs
+`whole_jit_kernel`, the comparison anchor should describe a comparable helper or
+execution boundary. If the only available Base task is a narrow local cleanup,
+prefer shrinking the Gluon target to that local component or generating a
+matching Base task before emitting the overlay.
 
 ### Search policy: overlay_priority_routing
 

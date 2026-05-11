@@ -370,16 +370,11 @@ measured baseline already executes an existing production AMD Gluon operator.
 `skills/triton-gluon/docs/00_always_read.md` and require pre-edit `Gluon
 knowledge lookup plan`, `Gluon implementation plan`, `Performance hypothesis`,
 `Same ABI comparison`, and `Patch evolution` blocks. The task must also specify
-the pass/fail patch rule in natural language: `patch_0` is the compile/execute
-anchor or first anchor-preserving change; after a passing patch, the next patch
-may change exactly one allowed variable/component; after a failing patch, the
-next patch fixes only the current failure layer before adding any new
-optimization. Do not create extra patch-evolution metadata fields; use existing
-failure-layer fields and worker notes/summary instead. The task must also specify
 the routed docs that justified overlay priority: `10_search_policies.md` for
-policy, `20_component_traits.md` for component viability, `60_real_patterns.md`
-for end-to-end/source-first/low-latency risk, and `50_api_reference.md` only for
-API-sensitive details. Stage/helper/local-expression scoped tasks must include
+policy, including `overlay_direction_vs_mechanism`; `20_component_traits.md` for
+component viability; `60_real_patterns.md` for end-to-end/source-first,
+whole-kernel anchor, low-latency, and patch-evolution rules; and
+`50_api_reference.md` only for API-sensitive details. Stage/helper/local-expression scoped tasks must include
 `Target symbol:` or `Target component:`; if `Allowed change` names local
 variables, wrap those names in backticks so save/test and selection can enforce
 the target component. `Reject if:` must cover non-executed Gluon, target-symbol

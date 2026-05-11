@@ -147,6 +147,8 @@ Search policies:
   `### Search policy: optimization_direction_metadata_sets`
 - `optimization_direction_dialect_overlay` -> `10_search_policies.md`,
   `### Search policy: optimization_direction_dialect_overlay`
+- `overlay_direction_vs_mechanism` -> `10_search_policies.md`,
+  `### Search policy: overlay_direction_vs_mechanism`
 - `overlay_priority_routing` -> `10_search_policies.md`,
   `### Search policy: overlay_priority_routing`
 - `measurement_boundary_policy` -> `10_search_policies.md`,
@@ -178,7 +180,7 @@ Task routing:
 | Task need or visible signal | Must read |
 | --- | --- |
 | Any Triton-Gluon task | `00_always_read.md`, `product_contract`, `semantic_contract`, `output_and_fallback_contract` |
-| Planning optimization-direction overlays or compatibility metadata | `10_search_policies.md`, `### Search policy: optimization_direction_metadata_sets`, `### Search policy: optimization_direction_dialect_overlay`, `### Search policy: overlay_priority_routing`, `### Search policy: dialect_contract_metadata` |
+| Planning optimization-direction overlays or compatibility metadata | `10_search_policies.md`, `### Search policy: optimization_direction_metadata_sets`, `### Search policy: optimization_direction_dialect_overlay`, `### Search policy: overlay_direction_vs_mechanism`, `### Search policy: overlay_priority_routing`, `### Search policy: dialect_contract_metadata` |
 | L0 scope classification, micro-anchor, or compile-risk whole-kernel task | `10_search_policies.md`, `### Search policy: l0_scope_classification`; `20_component_traits.md`, `whole_kernel_layout_map_recipe` |
 | Later-round composition from prior results | `10_search_policies.md`, `### Search policy: evidence_anchored_composition` |
 | End-to-end, wrapper-heavy, or multi-stage operator pipeline | `10_search_policies.md`, `### Search policy: measurement_boundary_policy`; `60_real_patterns.md`, `benchmark_boundary_and_integration_costs` |

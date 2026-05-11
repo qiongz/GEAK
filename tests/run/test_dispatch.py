@@ -320,13 +320,11 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
     assert "Task layout_construction_policy: source_preserve" in task.task
     assert "Task execution_mode: mixed_jit_aot" in task.task
     assert "## Patch Evolution Working Set" in task.task
-    assert "This working set applies to every task that received Gluon worker docs/context" in task.task
-    assert "If `patch_N` compiles, executes, and passes correctness" in task.task
-    assert "If `patch_N` fails" in task.task
+    assert "patch_evolution_by_task_type" in task.task
     assert "failure_to_next_patch_map" in task.task
     assert "## Task consistency check" in task.task
+    assert "overlay_direction_vs_mechanism" in task.task
     assert "Task correction" in task.task
-    assert "rather than adding new metadata fields" in task.task
     assert task.config["source_origin"] == "existing_amd_gluon_operator"
     assert task.config["gluon_tl_policy"] == "production_source_allowed"
     assert task.config["layout_construction_policy"] == "source_preserve"
@@ -334,11 +332,9 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
     assert "Extension intent: `execution_anchor`" in task.task
     assert "L0 scope classification: `low_coupling`" in task.task
     assert "L0 coupling reasons: single memory subpath" in task.task
-    assert "Failure-driven routing" in task.task
-    assert "declared_failure_layer" in task.task
-    assert "generic failure-layer decomposition" in task.task
-    assert "layout map table" in task.task
-    assert "do not construct them dynamically inside `@gluon.jit`" in task.task
+    assert "60_real_patterns.md::patch_evolution_by_task_type" in task.task
+    assert "60_real_patterns.md::Task consistency check" in task.task
+    assert "Whole-kernel L0 comparison anchor" in task.task
     assert "Task signals: layout, memory, l0" in task.task
     assert "Routed doc reasons: layout signal -> component traits; api signal -> api reference" in task.task
     assert "Kernel family signal: `generic_memory_layout`" in task.task
