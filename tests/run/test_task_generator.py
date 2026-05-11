@@ -578,6 +578,7 @@ def test_audit_failure_writes_raw_and_parsed_task_diagnostics(tmp_path: Path) ->
     assert "gluon-l0-load-store-layout" in data["raw_submitted_json"]
     assert "Plain competitor `shared-paired-1d-acc-and-mask` is not a plain Triton competitor task" in data["error"]
     assert any("required_output_dialect=plain_triton" in hint for hint in data["repair_hints"])
+    assert any("title-case fields are preferred" in hint for hint in data["repair_hints"])
     summaries = {item["label"]: item for item in data["parsed_task_summaries"]}
     assert summaries["gluon-l0-load-store-layout"]["plain_competitor"] == "shared-paired-1d-acc-and-mask"
     assert summaries["gluon-l0-load-store-layout"]["minimum_executable_unit"] == ""
@@ -766,7 +767,7 @@ def test_parse_l0_metadata_from_snake_case_prompt_fields() -> None:
     assert cfg["scope_infeasible_policy"] == "shrink_or_report"
 
 
-def test_audit_rejects_l0_overlay_when_plain_competitor_lacks_auditable_component() -> None:
+def test_audit_rejects_l0_overlay_when_plain_competitor_lacks_auditable_component(tmp_path: Path) -> None:
     prompt = (
         _gluon_overlay_prompt(
             plain_competitor="precompute-kv-pointers",
@@ -796,7 +797,13 @@ def test_audit_rejects_l0_overlay_when_plain_competitor_lacks_auditable_componen
     )
 
     with pytest.raises(ValueError, match="lacks auditable Target component or Allowed change"):
-        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1, audit_diagnostics_dir=tmp_path)
+
+    data = json.loads(next(tmp_path.glob("task_generation_audit_failed_*.json")).read_text())
+    hint = "\n".join(data["repair_hints"])
+    assert "too broad to audit as an L0 plain competitor" in hint
+    assert "create a new same-batch plain Base task" in hint
+    assert "_fwd_kernel_stage2" in hint
 
 
 def test_audit_rejects_l0_overlay_when_optimization_direction_differs_from_plain_competitor() -> None:

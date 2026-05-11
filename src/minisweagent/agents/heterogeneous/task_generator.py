@@ -3320,9 +3320,15 @@ def _audit_repair_hints(errors: list[str], tasks: list[AgentTask]) -> list[str]:
             label = missing_component_match.group("label")
             plain = missing_component_match.group("plain")
             summary = summaries.get(label, {})
+            direction = summary.get("optimization_direction") or "<same optimization direction as the Gluon L0>"
+            source_family = summary.get("source_base_family") or "matching Base family"
+            target_component = summary.get("target_component") or "<Gluon target component>"
             hints.append(
-                f"{label}: update plain competitor `{plain}` to include an auditable `Target component:` "
-                f"or backticked/scoped `Allowed change:` matching `{summary.get('target_component') or '<Gluon target component>'}`."
+                f"{label}: `{plain}` is too broad to audit as an L0 plain competitor. "
+                f"Either update it to include `Target component: {target_component}` and a scoped `Allowed change:` "
+                f"with the exact same `Optimization direction: {direction}`, or create a new same-batch plain Base task "
+                f"with `Base family: {source_family}`, `required_output_dialect: plain_triton`, "
+                "that exact optimization direction, and the same target component."
             )
             continue
 
@@ -3336,7 +3342,7 @@ def _audit_repair_hints(errors: list[str], tasks: list[AgentTask]) -> list[str]:
             )
         elif "missing L0 execution-boundary field" in error:
             hints.append(
-                "Add parseable L0 execution-boundary fields to the Round-1 L0 overlay, preferably as top-level JSON metadata or exact task lines: `Minimum executable unit: ...`, `Allowed execution path: ...`, and `Scope infeasible policy: ...`. If the scoped path cannot execute, do not emit the overlay."
+                "Add parseable L0 execution-boundary fields to the Round-1 L0 overlay, preferably as top-level JSON metadata or exact task lines: `Minimum executable unit: ...`, `Allowed execution path: ...`, and `Scope infeasible policy: ...`. Snake_case prompt lines are accepted for compatibility, but title-case fields are preferred for audit readability. If the scoped path cannot execute, do not emit the overlay."
             )
 
     unique: list[str] = []
