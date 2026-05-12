@@ -151,6 +151,8 @@ Search policies:
   `### Search policy: overlay_direction_vs_mechanism`
 - `atomic_component_lattice` -> `10_search_policies.md`,
   `### Search policy: atomic_component_lattice`
+- `l0_scope_decision_before_emit` -> `10_search_policies.md`,
+  `### Search policy: l0_scope_decision_before_emit`
 - `overlay_priority_routing` -> `10_search_policies.md`,
   `### Search policy: overlay_priority_routing`
 - `measurement_boundary_policy` -> `10_search_policies.md`,
@@ -183,7 +185,7 @@ Task routing:
 | --- | --- |
 | Any Triton-Gluon task | `00_always_read.md`, `product_contract`, `semantic_contract`, `output_and_fallback_contract` |
 | Planning optimization-direction overlays or compatibility metadata | `10_search_policies.md`, `### Search policy: optimization_direction_metadata_sets`, `### Search policy: optimization_direction_dialect_overlay`, `### Search policy: overlay_direction_vs_mechanism`, `### Search policy: atomic_component_lattice`, `### Search policy: overlay_priority_routing`, `### Search policy: dialect_contract_metadata` |
-| L0 scope classification, micro-anchor, atomic component choice, or compile-risk whole-kernel task | `10_search_policies.md`, `### Search policy: l0_scope_classification`, `### Search policy: atomic_component_lattice`; `20_component_traits.md`, `whole_kernel_layout_map_recipe`; `60_real_patterns.md`, `broadcast_heavy_whole_kernel_l0`, `l0_scope_by_kernel_family` |
+| L0 scope classification, micro-anchor, atomic component choice, or compile-risk whole-kernel task | `10_search_policies.md`, `### Search policy: l0_scope_decision_before_emit`, `### Search policy: l0_scope_classification`, `### Search policy: atomic_component_lattice`; `20_component_traits.md`, `whole_kernel_layout_map_recipe`; `60_real_patterns.md`, `broadcast_heavy_whole_kernel_l0`, `l0_scope_by_kernel_family` |
 | Later-round composition from prior results | `10_search_policies.md`, `### Search policy: evidence_anchored_composition` |
 | End-to-end, wrapper-heavy, or multi-stage operator pipeline | `10_search_policies.md`, `### Search policy: measurement_boundary_policy`; `60_real_patterns.md`, `benchmark_boundary_and_integration_costs` |
 | `plain_triton -> amd_gluon` | `00_always_read.md`, `### Trait: dialect_plain_triton`; then relevant traits in `20_component_traits.md` |
@@ -309,6 +311,9 @@ Hard rules:
   use a `whole_jit_kernel` anchor only when the task declares it as the
   `minimum_executable_unit`. If the task says the scope is `infeasible`, report
   or shrink instead of saving a required Gluon patch.
+- A local L0 smoke/probe must not be upgraded by the worker into a whole-kernel
+  rewrite. A whole-helper skeleton must prove compile/wiring/layout ancestry
+  before MFMA, buffer ops, scheduler, epilogue, or performance tuning.
 - Patch evolution after failure is constrained: helper-not-executed fixes only
   wiring/launch/output feeding; forbidden-scope failures must revert forbidden
   changes; slow correctness passes may only change one named overhead source.

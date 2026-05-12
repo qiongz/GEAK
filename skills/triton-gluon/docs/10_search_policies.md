@@ -12,6 +12,7 @@ Implementation details live in worker-routed docs (`20_component_traits.md`,
 - `### Search policy: optimization_direction_dialect_overlay`
 - `### Search policy: overlay_direction_vs_mechanism`
 - `### Search policy: atomic_component_lattice`
+- `### Search policy: l0_scope_decision_before_emit`
 - `### Search policy: overlay_priority_routing`
 - `### Search policy: l0_scope_classification`
 - `### Search policy: evidence_anchored_composition`
@@ -179,6 +180,48 @@ Guidance:
 - Use family labels such as GEMM, attention, softmax, topk, or elementwise only
   to choose likely component groups. The component lattice decides the actual
   Gluon scope.
+
+### Search policy: l0_scope_decision_before_emit
+
+Before emitting a Gluon L0 task, connect the family/component route to exactly
+one executable branch:
+
+```text
+kernel family -> candidate atomic components -> one primary_component
+-> executable boundary -> Branch A or Branch B
+```
+
+Branch A: local single-component smoke/probe.
+
+- Use when the primary component is low-coupling, or when the planner cannot
+  prove that a whole helper is required.
+- Keep `Target component` and `Allowed change` local, such as one index/mask,
+  one load/store path, one parent layout, or one scale/dtype boundary.
+- Use `minimum_executable_unit: inline_scoped_helper` and
+  `allowed_execution_path: inline_scoped_helper`.
+- Put matrix, reduction, state, wrapper, or integration dependencies in
+  secondary/blocker notes or failure layers, not as `patch_0` targets.
+- Do not mix a local target with `whole_jit_kernel`.
+
+Branch B: whole-helper layout skeleton.
+
+- Use only when source evidence shows the local target cannot execute and feed
+  measured output without the whole helper/kernel.
+- Retarget the task to the whole helper/stage. Do not keep wording such as
+  "one load" or "one local path" as the target.
+- Use `minimum_executable_unit: whole_jit_kernel` and
+  `allowed_execution_path: whole_jit_kernel`.
+- Include `whole_kernel_required_reason`, `expected_failure_layers`,
+  `first_patch_compile_goal`, `do_not_optimize_before_compile: true`, and a
+  `matrix_lowering_required: true|false` value consistent with the skeleton.
+- Treat `patch_0` as compile/wiring/layout evidence, not performance tuning.
+
+Unknown or ambiguous boundary:
+
+- Default to Branch A, or spend the slot on Base/plain Triton.
+- Do not default uncertainty to `whole_jit_kernel`.
+- If Branch A later proves impossible, the worker records `Task correction` and
+  shrink/report evidence; a later planner round may emit a Branch B task.
 
 ### Search policy: overlay_priority_routing
 
