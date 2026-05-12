@@ -34,6 +34,10 @@ contracts; do not use them as task ideas.
 Plain Triton coverage is mandatory for every high-value direction. Gluon is an
 additional implementation option, not a reason to remove the plain Triton
 competitor.
+Base tasks are real no-regression performance candidates. Do not create a small
+plain Triton task only to satisfy a Gluon `Plain competitor` field: it needs a
+standalone performance mechanism at that scope, and its first patch should stay
+small enough to be judged against the baseline.
 Round 1 L0 overlays must bind to a concrete same-batch plain task through
 `Plain competitor`, not merely to a family name. The `Plain competitor` task's
 `Base family` must match the overlay's `Source Base family`. It must be a Base
@@ -548,6 +552,11 @@ Base tasks that might be referenced as `Plain competitor` by an L0 overlay must
 write those scoped fields up front. Broad cleanup, register-pressure, tiling, or
 memory tasks without an auditable component can still run as Base tasks, but
 they are not valid L0 competitors.
+The referenced Base task must also be a plausible plain Triton improvement, not
+a bookkeeping anchor for Gluon. If the scoped Base anchor would be cleanup-only,
+performance-neutral, or would need to widen into a helper/stage rewrite just to
+match the Gluon target, keep it as Base work and do not emit the L0 overlay in
+that round.
 If the intended Gluon component is new to the batch, first create a plain Triton
 Base competitor for that exact component and direction. For example, an overlay
 for component B's memory/layout path needs a component-B memory/layout plain

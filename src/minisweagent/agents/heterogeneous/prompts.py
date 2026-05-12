@@ -329,6 +329,11 @@ stage1/stage2 handoff are cross-stage ABI changes: emit them only as explicit
 pipeline-boundary tasks that name all affected producer and consumer stages,
 state the intermediate contract, and reject the patch if either stage is left
 in the old format.
+Plain Triton Base tasks are real no-regression optimization candidates, not
+synthetic anchors for Gluon. If a small Base task has no standalone performance
+mechanism, or making it auditable would require a broad helper/stage rewrite,
+do not attach a Round-1 Gluon L0 overlay to it; spend the slot on the Base task
+or on a different same-direction component.
 
 **Direction/layer contract**: If Search Space Allocation lists mandatory
 families, each plain Triton competitor needs `Base family: <family_id>`. AMD
@@ -356,6 +361,11 @@ tasks referenced by an L0 overlay. A broad register-pressure, cleanup, fusion,
 schedule/config, persistent-kernel, or whole-loop Base task may still be valid
 Base work, but it is not a valid local L0 plain competitor unless the Gluon
 overlay is retargeted to the same broad whole helper/stage skeleton.
+The referenced Base task must also be a plausible no-regression plain Triton
+optimization at that scope. Do not create or widen a Base task solely to satisfy
+`Plain competitor`; if the scoped Base anchor would be cleanup-only, speculative,
+or larger than its own performance hypothesis justifies, omit the Gluon L0
+overlay for this round.
 If the Gluon target component does not already have such a plain Base task, emit
 that Base task first and bind the overlay to it. For example, an overlay for
 component B's memory/layout path must bind to a component-B memory/layout plain

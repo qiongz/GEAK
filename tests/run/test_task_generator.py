@@ -33,6 +33,7 @@ from minisweagent.agents.heterogeneous.task_generator import (
 from minisweagent.agents.heterogeneous.prompts import TASKGEN_INSTANCE_TEMPLATE
 from minisweagent.agents.agent_spec import AgentTask
 from minisweagent.run.gluon_doc_profiles import GLUON_DOC_PROFILE_REQUIRED_KEYS
+from minisweagent.run.resource_paths import resolve_project_resource
 from minisweagent.run.task_file import read_task_file
 
 
@@ -145,6 +146,8 @@ def test_overlay_direction_policy_lives_in_split_docs() -> None:
     assert "selection_update" in search_doc
     assert "scheduler_launch" in search_doc
     assert "Use `Optimization direction` for the shared performance or algorithmic goal" in search_doc
+    assert "Base tasks are real no-regression performance candidates" in search_doc
+    assert "not a synthetic placeholder" in routing_doc
     assert "Gluon-specific mechanisms" in patterns_doc
     assert "Whole-kernel L0 comparison anchor" in patterns_doc
     assert "## broadcast_heavy_whole_kernel_l0" in patterns_doc
@@ -286,6 +289,8 @@ def test_search_space_allocation_for_two_gpus_preserves_base_without_weak_gluon(
     assert "Final L0 overlay pair validation" in guidance
     assert "exact same-direction, same-component Base anchor" in guidance
     assert "Branch A signal partition" in guidance
+    assert "Base/plain Triton tasks are no-regression performance candidates" in guidance
+    assert "credible no-regression performance hypothesis" in guidance
     assert "l0_scope_by_kernel_family" in guidance
     assert "Keep API-level rewrite and pass/fail patch details in the routed skills/docs" in guidance
     assert "patch_evolution_strategy" not in guidance
@@ -301,6 +306,10 @@ def test_taskgen_system_prompt_has_l0_final_submit_checklist() -> None:
     assert "`whole_kernel_required_reason` and compile-risk fields" in _SYSTEM_PROMPT
     assert "`task_signals` limited to the primary patch target component" in _SYSTEM_PROMPT
     assert "This stricter anchor requirement applies only to Base" in _SYSTEM_PROMPT
+    assert "Plain Triton Base tasks are real no-regression optimization candidates" in _SYSTEM_PROMPT
+    assert "synthetic anchors for Gluon" in _SYSTEM_PROMPT
+    assert "Gluon L0" in _SYSTEM_PROMPT
+    assert "overlay for this round" in _SYSTEM_PROMPT
 
 
 def test_search_space_allocation_for_large_budget_keeps_full_base() -> None:
@@ -1153,6 +1162,91 @@ def test_audit_failure_hint_combines_missing_anchor_with_l0_branch_choice(tmp_pa
     assert "too broad to audit as an L0 plain competitor" in hint
     summaries = {item["label"]: item for item in data["parsed_task_summaries"]}
     assert "local_target_promoted_to_whole_kernel" in summaries["gluon-l0-local-load-layout"]["soft_audit_diagnostics"]
+
+
+def test_audit_failure_hint_combines_missing_anchor_with_high_coupling_inline(tmp_path: Path) -> None:
+    payload = json.dumps(
+        [
+            {
+                "label": "fuse-k-buffer-loads",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "plain_triton",
+                "task_prompt": "\n".join(
+                    [
+                        "Base Set task",
+                        "Base family: base_hot_path_streamline",
+                        "Implementation layer: plain_triton",
+                        "Optimization direction: reduce KBuffer load transactions before dot product",
+                        "Broadly fuse KBuffer loads in the inner loop without a scoped target.",
+                    ]
+                ),
+            },
+            {
+                "label": "gluon-l0-kbuffer-load-layout",
+                "priority": 8,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "amd_gluon",
+                "implementation_layer": "amd_gluon overlay",
+                "extension_layer": "L0",
+                "source_base_family": "base_hot_path_streamline",
+                "plain_competitor": "fuse-k-buffer-loads",
+                "minimum_executable_unit": "inline_scoped_helper",
+                "allowed_execution_path": "inline_scoped_helper",
+                "scope_infeasible_policy": "shrink_or_report",
+                "task_signals": "load_store",
+                "failure_layers": "layout_construction, load_store",
+                "expected_failure_layers": "layout_construction, load_store",
+                "kernel_family_signal": "attention_decode",
+                "task_prompt": "\n".join(
+                    [
+                        "Extension Set task",
+                        "Extension layer: L0",
+                        "Optimization direction: reduce KBuffer load transactions before dot product",
+                        "Source Base family: base_hot_path_streamline",
+                        "Plain competitor: fuse-k-buffer-loads",
+                        "Gluon overlay reason: explicit_layout",
+                        "Overlay priority: high-confidence Consider",
+                        "Implementation layer: amd_gluon overlay",
+                        "Performance hypothesis: explicit layout may reduce KBuffer load transactions",
+                        "Measurement boundary: kernel_only",
+                        "Comparison target: true_baseline",
+                        "Target component: KBuffer load path feeding dot product",
+                        "Allowed change: convert one `KBuffer` load path only",
+                        "Reject if: non-executed Gluon or whole-kernel rewrite",
+                        "L0 scope classification: high_coupling",
+                        "L0 coupling reasons: KBuffer load path directly feeds dot product",
+                        "Minimum executable unit: inline_scoped_helper",
+                        "Allowed execution path: inline_scoped_helper",
+                        "Scope infeasible policy: shrink_or_report",
+                        "Task signals: load_store",
+                        "Failure layers: layout_construction, load_store",
+                        "Expected failure layers: layout_construction, load_store",
+                        "Kernel family signal: attention_decode",
+                    ]
+                ),
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="cannot use inline_scoped_helper"):
+        _parse_llm_response(
+            payload,
+            FakeAgentClass,
+            expected_extension_slots=1,
+            audit_diagnostics_dir=tmp_path,
+        )
+
+    data = json.loads(next(tmp_path.glob("task_generation_audit_failed_*.json")).read_text())
+    hint = "\n".join(data["repair_hints"])
+    assert "`inline_scoped_helper` was rejected because the declared L0 target is high-coupling" in hint
+    assert "neither an exact local Branch A Base anchor nor a retargeted Branch B whole-helper skeleton" in hint
+    assert "same-batch plain Base anchor" in hint
+    assert "only when the target is low-coupling" in hint
+    assert "credible plain Triton no-regression performance hypothesis" in hint
+    assert "Do not create a Base anchor solely for Gluon" in hint
 
 
 def test_l0_soft_audit_diagnostics_cover_atomic_component_scope() -> None:
@@ -2678,6 +2772,20 @@ def test_gluon_doc_profile_mapping_covers_prompt_enum_values() -> None:
     }
 
     assert set(GLUON_DOC_PROFILE_REQUIRED_KEYS) == expected
+
+
+def test_resolve_project_resource_finds_installed_geak_share_root(tmp_path: Path) -> None:
+    installed_doc = tmp_path / "share" / "geak" / "skills" / "triton-gluon" / "docs" / "00_always_read.md"
+    installed_doc.parent.mkdir(parents=True)
+    installed_doc.write_text("# installed doc\n")
+
+    resolved = resolve_project_resource(
+        "skills/triton-gluon/docs/00_always_read.md",
+        workspace=tmp_path / "workspace",
+        extra_roots=[tmp_path / "share" / "geak"],
+    )
+
+    assert resolved == installed_doc.resolve()
 
 
 def test_taskgen_planner_default_files_do_not_require_worker_deep_docs() -> None:

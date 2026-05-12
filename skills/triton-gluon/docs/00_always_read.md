@@ -302,6 +302,10 @@ Hard rules:
 - L0 is the smallest executed Gluon anchor and may be slower than Base. L1
   memory/MFMA/Hybrid work requires executed anchor evidence and a concrete
   performance hypothesis.
+- A Gluon L0 `Plain competitor` is not a synthetic placeholder. It must remain a
+  real plain Triton no-regression candidate with its own scoped performance
+  reason; do not widen or rewrite Base work merely to make the Gluon task pass
+  anchor audit.
 - For `extension_intent=execution_anchor`, slower correctness-passing L0 is
   overhead evidence. Record the overhead source and do not expand the same scope
   into L1 unless a later task names a removable overhead.

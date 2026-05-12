@@ -80,6 +80,7 @@ from minisweagent.run.preprocess.discovery_types import (
     feature_uses_gluon_guidance,
     feature_uses_gluon_guidance_from_meta,
 )
+from minisweagent.run.resource_paths import resolve_project_resource
 from minisweagent.run.gluon_doc_profiles import (
     add_unique_doc_key,
     required_doc_keys_for_profile,
@@ -932,9 +933,9 @@ def _find_knowledge_base(workspace: Path) -> Path | None:
     if knowledge_base:
         return knowledge_base
     for rel in _PLAIN_TRITON_KB_FALLBACK_RELS:
-        candidate = _GEAK_REPO_ROOT / rel
-        if candidate.exists():
-            return candidate.resolve()
+        candidate = resolve_project_resource(rel, workspace=workspace)
+        if candidate:
+            return candidate
     return None
 
 
@@ -955,24 +956,14 @@ def _resolve_task_knowledge_paths(
         allowed_output_dialects=feature_meta.get("allowed_output_dialects"),
     )
 
-    gluon_skill_path = (_GEAK_REPO_ROOT / _GLUON_SKILL_REL).resolve() if uses_gluon_guidance else None
-    gluon_kb_path = (_GEAK_REPO_ROOT / _GLUON_KB_REL).resolve() if uses_gluon_guidance else None
-    gluon_examples_path = (_GEAK_REPO_ROOT / _GLUON_EXAMPLES_REL).resolve() if uses_gluon_guidance else None
-    split_doc_paths = {
-        key: (_GEAK_REPO_ROOT / rel).resolve()
-        for key, rel in _GLUON_SPLIT_DOC_RELS.items()
-    } if uses_gluon_guidance else {}
-    if gluon_skill_path and not gluon_skill_path.exists():
-        gluon_skill_path = None
-    if gluon_kb_path and not gluon_kb_path.exists():
-        gluon_kb_path = None
-    if gluon_examples_path and not gluon_examples_path.exists():
-        gluon_examples_path = None
+    gluon_skill_path = resolve_project_resource(_GLUON_SKILL_REL, workspace=workspace) if uses_gluon_guidance else None
+    gluon_kb_path = resolve_project_resource(_GLUON_KB_REL, workspace=workspace) if uses_gluon_guidance else None
+    gluon_examples_path = resolve_project_resource(_GLUON_EXAMPLES_REL, workspace=workspace) if uses_gluon_guidance else None
     split_doc_paths = {
         key: path
-        for key, path in split_doc_paths.items()
-        if path.exists()
-    }
+        for key, rel in _GLUON_SPLIT_DOC_RELS.items()
+        if (path := resolve_project_resource(rel, workspace=workspace))
+    } if uses_gluon_guidance else {}
 
     resolved = {
         "knowledge_base_path": str(knowledge_base_path) if knowledge_base_path else "",
@@ -2053,6 +2044,7 @@ def _build_search_space_allocation_guidance(
         "- Set `source_origin` when known: `generated_overlay` for new plain->Gluon overlays, `existing_amd_gluon_operator` only when the measured baseline already executes a production AMD Gluon operator, and `nv_gluon_translation` for NVIDIA-facing Gluon translation.",
         "- Generated overlays default to `gluon_tl_policy: strict_generated` and `layout_construction_policy: host_preferred`; production Gluon source may use `production_source_allowed` and `source_preserve` only when source evidence supports it.",
         "- Keep a plain Triton competitor for every high-value direction unless AMD Gluon is explicitly required. Layering order: plain Triton -> optional L0/paired mapping -> L1 from viable/local-win evidence -> later Hybrid/Mixed.",
+        "- Base/plain Triton tasks are no-regression performance candidates, not synthetic Gluon anchors. A small Base task should keep a plausible standalone performance mechanism at its own scope; if making it auditable requires a broad rewrite or has no plain Triton upside, do not emit the Gluon L0 overlay.",
         "- Any Base task that may be referenced by a Gluon L0 overlay must include auditable scoped fields: `Target component:` naming the exact helper/stage/local subpath and `Allowed change:` naming the same component in plain Triton. This stricter anchor contract applies only to Base tasks referenced as L0 `Plain competitor`; broad Base tasks without those fields remain valid Base work but must not be used as local L0 anchors.",
         "- Round 1 plain Triton input may have at most one L0 overlay. Generate it only when `overlay_priority_routing` is Prefer/high-confidence Consider; otherwise spend the slot on another plain Triton direction.",
         "- Before emitting any L0 overlay or later task derived from L0 evidence, perform `Gluon L0 scope classification`: is the candidate layout-heavy, does it include loop-carried state, online reductions, dot/matrix paths, multiple 2D parents, nested layouts, wrapper reroute, cross-stage ABI changes, boundary-specific branches, or other high-coupling logic; can one exact subpath execute without translating the whole algorithm; and is the expected outcome `execution_anchor` or `performance_candidate`?",
@@ -2078,7 +2070,7 @@ def _build_search_space_allocation_guidance(
         "- Round-1 L0 overlays must bind to the same component and same optimization direction as `Plain competitor`, not merely to the same broad `Source Base family`. The referenced plain Triton task and the L0 overlay must use the exact same `Optimization direction:` text and must both include an auditable `Target component:` or `Allowed change:` with the same scoped symbol/stage.",
         "- Same-family Base tasks are not enough for L0 binding: the `Plain competitor` must target the same stage/helper/component named by the Gluon `Target symbol:` or `Target component:`. If the desired Gluon target lacks a same-batch Base task, emit that Base task first.",
         "- If the desired Gluon L0 target component does not already have a same-direction plain Base task in this batch, first emit that plain Base competitor, then point `Plain competitor:` at it. Example: if the overlay targets component B's memory/layout path, emit a plain component-B memory/layout Base task; do not bind it to a component-A cleanup, control-flow, or generic same-family task.",
-        "- If you cannot produce a same-direction same-component plain Base competitor for an L0 overlay, do not emit that Gluon overlay in this round; spend the slot on the missing Base competitor instead.",
+        "- If you cannot produce a same-direction same-component plain Base competitor with a credible no-regression performance hypothesis for an L0 overlay, do not emit that Gluon overlay in this round; spend the slot on the missing Base competitor or another Base direction instead.",
         "- L1 tasks additionally require an executed Gluon/mixed anchor (`Anchor patch`, `Anchor speedup`, `Anchor execution: true`, `Comparison target: anchor_patch`) and stage-specific tasks require target metadata such as `Target symbol` / `Target component` plus top-level `required_patch_target_symbols` when available.",
         "- If a plain Triton candidate wins, accept it as the best result rather than forcing more Gluon work.",
         "- If a Triton strategy wins and maps cleanly to Gluon traits, a later round may create an AMD Gluon variant of that winning strategy only with a concrete performance hypothesis.",
@@ -3766,9 +3758,26 @@ def _audit_repair_hints(errors: list[str], tasks: list[AgentTask]) -> list[str]:
     """Return planner-facing repair hints for common task-generation audit errors."""
     summaries = _task_label_map(tasks)
     hints: list[str] = []
+    inline_high_coupling_labels = {
+        match.group("label")
+        for error in errors
+        if (
+            match := re.search(
+                r"(?:Task-generation coverage audit failed:\s*)?(?P<label>\S+) cannot use inline_scoped_helper for high-coupling L0 target",
+                error,
+            )
+        )
+    }
     for summary in summaries.values():
         label = summary.get("label") or "<task>"
         diagnostics = summary.get("soft_audit_diagnostics") or []
+        if label in inline_high_coupling_labels:
+            hints.append(
+                f"{label}: `inline_scoped_helper` was rejected because the declared L0 target is high-coupling. "
+                "Do not fix this by broadening a local smoke task in place. Either shrink to a genuinely "
+                "low-coupling primary component with a same-component Base anchor, or skip the Gluon L0 overlay "
+                "until a real whole-helper/stage Base direction exists."
+            )
         if "local_target_promoted_to_whole_kernel" in diagnostics:
             hints.append(
                 f"{label}: local target appears promoted to `whole_jit_kernel`. Choose exactly one L0 branch: "
@@ -3816,15 +3825,15 @@ def _audit_repair_hints(errors: list[str], tasks: list[AgentTask]) -> list[str]:
             target_component = summary.get("target_component") or "<same target component as the Gluon L0>"
             source_family = summary.get("source_base_family") or "matching Base family"
             diagnostics = summary.get("soft_audit_diagnostics") or []
-            if "local_target_promoted_to_whole_kernel" in diagnostics:
+            if "local_target_promoted_to_whole_kernel" in diagnostics or label in inline_high_coupling_labels:
                 hints.append(
                     f"{label}: current L0 overlay is neither exact local Branch A nor retargeted Branch B. "
                     f"Either create an exact same-component Base competitor for `{target_component}` with "
                     f"`Optimization direction: {gluon_direction}` and keep the Gluon task as Branch A "
-                    "(`minimum_executable_unit: inline_scoped_helper`), or retarget the Gluon task to a "
-                    "whole helper/stage skeleton with `whole_kernel_required_reason` and compile-risk fields. "
-                    f"Do not bind the narrow local target to broad competitor `{plain}` while declaring "
-                    "`whole_jit_kernel`."
+                    "(`minimum_executable_unit: inline_scoped_helper`) only if the target is low-coupling, or "
+                    "retarget the Gluon task to a whole helper/stage skeleton with `whole_kernel_required_reason` "
+                    "and compile-risk fields. Do not bind a narrow or high-coupling local target to broad "
+                    f"competitor `{plain}`."
                 )
             hints.append(
                 f"{label}: create a same-batch plain Triton Base competitor for optimization direction "
@@ -3833,7 +3842,7 @@ def _audit_repair_hints(errors: list[str], tasks: list[AgentTask]) -> list[str]:
                 "`Optimization direction:`. Keep Gluon mechanisms such as explicit layouts, DotOperandLayout, "
                 f"or buffer ops in `Gluon overlay reason` / `Performance hypothesis`. The plain task should use "
                 f"`Base family: {source_family}`, `required_output_dialect: plain_triton`, and the exact same "
-                "`Optimization direction:` text."
+                "`Optimization direction:` text, with a scoped plain Triton no-regression performance hypothesis."
             )
             continue
 
@@ -3886,21 +3895,23 @@ def _audit_repair_hints(errors: list[str], tasks: list[AgentTask]) -> list[str]:
             source_family = summary.get("source_base_family") or "matching Base family"
             target_component = summary.get("target_component") or "<Gluon target component>"
             diagnostics = summary.get("soft_audit_diagnostics") or []
-            if "local_target_promoted_to_whole_kernel" in diagnostics:
+            if "local_target_promoted_to_whole_kernel" in diagnostics or label in inline_high_coupling_labels:
                 hints.append(
                     f"{label}: current L0 overlay has neither an exact local Branch A Base anchor nor a "
                     "retargeted Branch B whole-helper skeleton. Either create/fix a same-batch plain Base "
                     f"anchor for target `{target_component}` with `Optimization direction: {direction}` and "
-                    "keep the Gluon task local with `minimum_executable_unit: inline_scoped_helper`, or retarget "
-                    "both the Base anchor and Gluon overlay to the same whole helper/stage skeleton before using "
-                    "`whole_jit_kernel`."
+                    "keep the Gluon task local with `minimum_executable_unit: inline_scoped_helper` only when "
+                    "the target is low-coupling, or retarget both the Base anchor and Gluon overlay to the same "
+                    "whole helper/stage skeleton before using a whole-helper execution path. If that Base anchor "
+                    "would be broad, speculative, or performance-neutral, do not emit the Gluon L0 overlay."
                 )
             hints.append(
                 f"{label}: `{plain}` is too broad to audit as an L0 plain competitor. "
                 f"Either update it to include `Target component: {target_component}` and a scoped `Allowed change:` "
                 f"with the exact same `Optimization direction: {direction}`, or create a new same-batch plain Base task "
                 f"with `Base family: {source_family}`, `required_output_dialect: plain_triton`, "
-                "that exact optimization direction, and the same target component."
+                "that exact optimization direction, the same target component, and a credible plain Triton "
+                "no-regression performance hypothesis. Do not create a Base anchor solely for Gluon."
             )
             continue
 

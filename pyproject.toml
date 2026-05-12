@@ -121,6 +121,28 @@ minisweagent = [
     "memory/cross_session/*.json",
 ]
 
+[tool.setuptools.data-files]
+"share/geak/skills/triton-gluon" = ["skills/triton-gluon/SKILL.md"]
+"share/geak/skills/triton-gluon/docs" = [
+    "skills/triton-gluon/docs/00_always_read.md",
+    "skills/triton-gluon/docs/10_search_policies.md",
+    "skills/triton-gluon/docs/20_component_traits.md",
+    "skills/triton-gluon/docs/30_architecture_notes.md",
+    "skills/triton-gluon/docs/40_examples.md",
+    "skills/triton-gluon/docs/50_api_reference.md",
+    "skills/triton-gluon/docs/60_real_patterns.md",
+    "skills/triton-gluon/docs/70_backup_details.md",
+]
+"share/geak/knowledge-base" = ["knowledge-base/INDEX.md"]
+"share/geak/knowledge-base/amd-knowledge-base/layer-3-libraries/compilers" = [
+    "knowledge-base/amd-knowledge-base/layer-3-libraries/compilers/triton-on-rocm.md",
+    "knowledge-base/amd-knowledge-base/layer-3-libraries/compilers/triton-gluon-on-rocm.md",
+]
+"share/geak/knowledge-base/amd-knowledge-base/layer-5-llm/05-advanced/custom-kernels" = [
+    "knowledge-base/amd-knowledge-base/layer-5-llm/05-advanced/custom-kernels/triton-kernels.md",
+]
+"share/geak/examples/triton_gluon_inputs" = ["examples/triton_gluon_inputs/README.md"]
+
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.
 exclude = [

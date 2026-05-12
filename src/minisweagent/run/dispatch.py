@@ -18,7 +18,6 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-from minisweagent import get_repo_root
 from minisweagent.debug_runtime import emit_debug_log
 from minisweagent.run.preprocess.discovery_types import (
     allowed_skill_tiers_for_feature,
@@ -30,10 +29,10 @@ from minisweagent.run.gluon_doc_profiles import (
     required_doc_keys_for_profile,
     task_requires_gluon_worker_docs,
 )
+from minisweagent.run.resource_paths import resolve_project_resource
 from minisweagent.run.target_contracts import target_symbols_from_scoped_text
 from minisweagent.run.target_contracts import do_not_clauses, forbidden_symbols_from_scoped_text
 
-_GEAK_REPO_ROOT = get_repo_root()
 _GLUON_GATE_FALLBACK_RELS = {
     "gluon_skill_path": "skills/triton-gluon/SKILL.md",
     "gluon_always_read_path": "skills/triton-gluon/docs/00_always_read.md",
@@ -469,8 +468,8 @@ def _normalize_gate_path(value: Any) -> str:
 def _add_gate_path(paths: list[str], meta: dict[str, Any], key: str) -> None:
     value = meta.get(key)
     if not value and key in _GLUON_GATE_FALLBACK_RELS:
-        candidate = _GEAK_REPO_ROOT / _GLUON_GATE_FALLBACK_RELS[key]
-        if candidate.exists():
+        candidate = resolve_project_resource(_GLUON_GATE_FALLBACK_RELS[key], workspace=meta.get("repo_root"))
+        if candidate:
             value = str(candidate)
     path = _normalize_gate_path(value)
     if path and path not in paths:
