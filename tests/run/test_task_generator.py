@@ -28,6 +28,7 @@ from minisweagent.agents.heterogeneous.task_generator import (
     _run_task_agent,
     _task_audit_summary,
     generate_tasks,
+    get_last_gluon_task_generation_diagnostics,
     write_task_files,
 )
 from minisweagent.agents.heterogeneous.prompts import TASKGEN_INSTANCE_TEMPLATE
@@ -1521,6 +1522,110 @@ def test_parse_repairs_missing_family_and_drops_plain_consider_l0_overlay() -> N
     assert "triton-swizzle-and-tile-schedule" in labels
 
 
+def _mla_low_priority_l0_payload() -> str:
+    overlay_prompt = (
+        _gluon_overlay_prompt(
+            plain_competitor="dot-accumulator-and-cast-cleanup",
+            target_component="load_store for K_Buffer inner loop loads",
+        )
+        .replace("Overlay priority: Prefer", "Overlay priority: Consider")
+        .replace("L0 scope classification: low_coupling", "L0 scope classification: high_coupling")
+        .replace(
+            "L0 coupling reasons: single local memory/layout component without loop-carried state",
+            "L0 coupling reasons: online softmax, tl.dot paths, loop-carried state, and 2D parent layouts",
+        )
+        .replace("Minimum executable unit: inline_scoped_helper", "Minimum executable unit: whole_jit_kernel")
+        .replace("Allowed execution path: inline_scoped_helper", "Allowed execution path: whole_jit_kernel")
+    )
+    overlay_prompt += "\n".join(
+        [
+            "",
+            "Whole kernel required reason: K_Buffer loads feed tl.dot and online softmax accumulation.",
+            "Expected failure layers: layout_verifier, dot_operand_layout, broadcast_slice",
+            "First patch compile goal: compile the whole stage1 kernel with explicit layout",
+            "Do not optimize before compile: true",
+            "Matrix lowering required: true",
+        ]
+    )
+    return json.dumps(
+        [
+            {
+                "label": "dot-accumulator-and-cast-cleanup",
+                "priority": 5,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "\n".join(
+                    [
+                        "Base Set task",
+                        "Optimization direction: memory/layout cleanup",
+                        "Base family: base_hot_path_streamline",
+                        "Target component: load_store for K_Buffer inner loop loads",
+                        "Allowed change: one load/store layout path for K_Buffer access in the inner loop",
+                    ]
+                ),
+            },
+            {
+                "label": "gluon-l0-layout-load-store-anchor",
+                "priority": 8,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "amd_gluon",
+                "task_prompt": overlay_prompt,
+            },
+        ]
+    )
+
+
+def test_auto_mode_records_and_drops_mla_low_priority_l0_overlay(tmp_path: Path) -> None:
+    tasks = _parse_llm_response(
+        _mla_low_priority_l0_payload(),
+        FakeAgentClass,
+        expected_extension_slots=1,
+        audit_diagnostics_dir=tmp_path,
+        gluon_feature_mode="auto",
+    )
+
+    assert [task.label for task in tasks] == ["dot-accumulator-and-cast-cleanup"]
+    diagnostics = get_last_gluon_task_generation_diagnostics()
+    dropped = diagnostics["dropped_gluon_overlays"]
+    assert dropped[0]["label"] == "gluon-l0-layout-load-store-anchor"
+    assert dropped[0]["overlay_priority"] == "Consider"
+    assert dropped[0]["l0_scope_classification"] == "high_coupling"
+    assert (tmp_path / "task_generation_gluon_diagnostics.json").exists()
+
+
+def test_force_l0_anchor_mode_keeps_mla_low_priority_l0_overlay(tmp_path: Path) -> None:
+    tasks = _parse_llm_response(
+        _mla_low_priority_l0_payload(),
+        FakeAgentClass,
+        expected_extension_slots=1,
+        audit_diagnostics_dir=tmp_path,
+        gluon_feature_mode="force_l0_anchor",
+    )
+
+    assert [task.label for task in tasks] == [
+        "dot-accumulator-and-cast-cleanup",
+        "gluon-l0-layout-load-store-anchor",
+    ]
+    assert get_last_gluon_task_generation_diagnostics() == {}
+    assert not (tmp_path / "task_generation_gluon_diagnostics.json").exists()
+
+
+def test_require_viable_gluon_mode_reports_no_viable_task(tmp_path: Path) -> None:
+    tasks = _parse_llm_response(
+        _mla_low_priority_l0_payload(),
+        FakeAgentClass,
+        expected_extension_slots=1,
+        audit_diagnostics_dir=tmp_path,
+        gluon_feature_mode="require_viable_gluon",
+    )
+
+    assert tasks == []
+    diagnostics = get_last_gluon_task_generation_diagnostics()
+    assert diagnostics["no_viable_gluon_task"]["dropped_gluon_overlay_count"] == 1
+    assert diagnostics["dropped_gluon_overlays"][0]["label"] == "gluon-l0-layout-load-store-anchor"
+
+
 def test_plain_competitor_requires_plain_triton_contract() -> None:
     shared_with_base_family = AgentTask(
         agent_class=FakeAgentClass,
@@ -2755,7 +2860,12 @@ def test_taskgen_planner_default_files_do_not_require_worker_deep_docs() -> None
     assert "Triton-Gluon API reference" not in TASKGEN_INSTANCE_TEMPLATE
     assert "Triton-Gluon schematic examples" not in TASKGEN_INSTANCE_TEMPLATE
     assert "Triton-Gluon residual backup routing" not in TASKGEN_INSTANCE_TEMPLATE
-    assert "Worker-routed Gluon implementation docs" in TASKGEN_INSTANCE_TEMPLATE
+    assert "gluon_component_traits_path" not in TASKGEN_INSTANCE_TEMPLATE
+    assert "gluon_architecture_notes_path" not in TASKGEN_INSTANCE_TEMPLATE
+    assert "gluon_real_patterns_path" not in TASKGEN_INSTANCE_TEMPLATE
+    assert "gluon_api_reference_path" not in TASKGEN_INSTANCE_TEMPLATE
+    assert "gluon_kb_path" not in TASKGEN_INSTANCE_TEMPLATE
+    assert "Gluon worker docs are profile-routed" in TASKGEN_INSTANCE_TEMPLATE
 
 
 def test_gluon_entry_docs_keep_hard_contract_and_profile_performance_hints() -> None:
@@ -2773,11 +2883,13 @@ def test_gluon_entry_docs_keep_hard_contract_and_profile_performance_hints() -> 
         assert "broad `try/except Exception` fallback" in text
         assert "one subpath/component" in text
         assert "backup" in text.lower()
-    assert "Profile Routing Hints" in component
-    assert "performance prior" in component
-    assert "Profile Routing Hints" in api
+    assert "When To Read This File" in component
+    assert "First patch" in component
+    assert "Hard-case stops" in component
+    assert "When To Read This File" in api
     assert "API cookbook" in api
-    assert "Profile Routing Hints" in real
+    assert "When To Read This File" in real
+    assert "background_rag" in real
     assert "source-first" in real
 
 

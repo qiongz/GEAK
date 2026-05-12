@@ -1,30 +1,11 @@
 # Triton-Gluon API Reference
 
-Worker-routed API cookbook. Read this file when a worker needs concrete API
-surface, code skeletons, small rewrite tables, or failure-driven debug order. It
-expands the concise rules in `20_component_traits.md`.
+Worker-routed API cookbook. Read this file only when a task needs concrete API
+surface, code skeletons, small rewrite tables, or failure-driven debug order.
+Atomic component scope is decided in `20_component_traits.md`; kernel-family and
+benchmark context is decided in `60_real_patterns.md`.
 
-## Profile Routing Hints
-
-- `extension_l0_minimal`: read `imports`, `jit_entry_and_host_launcher`,
-  `core_language_and_layout_surface`, and `common_rewrite_table`. Keep the first
-  patch small enough to prove real execution. If the task declares
-  `minimum_executable_unit=whole_jit_kernel`, keep the rewrite mechanical and do
-  not add MFMA, buffer ops, split-K, persistent scheduling, or shape dispatch
-  unless the task explicitly allows those L1 mechanisms.
-- `memory_lowering`: read `common_rewrite_table` and AMD buffer sections only
-  after the task names loaded dtype, `other` value/layout, store dtype, and why
-  the memory path is hot.
-- `matrix_lowering`: read `matrix_lowering_ladders_by_arch` before copying
-  quick patterns. API syntax is not enough; the plan must name result layout,
-  operand layouts, conversion cost, target op, and epilogue.
-- `jit_aot_sensitive`: read `aot_compile_api_surface` and
-  `version_and_compatibility_checklist` before changing signatures, scratch, or
-  prebuilt/JIT gates.
-
-Do not read this whole file by default. Use the routed section(s) below.
-
-## Read Only These Sections
+## When To Read This File
 
 | If the task needs... | Read |
 | --- | --- |
@@ -39,29 +20,12 @@ Do not read this whole file by default. Use the routed section(s) below.
 | broadcast/layout compile failure | `broadcast_failure_debug_recipe`, then `slice_broadcast_recipe` |
 | dot/MFMA operand compile failure | `dot_lowering_minimal_recipe`, then `matrix_lowering_ladders_by_arch` |
 | reduction or accumulator layout failure | `reduction_accumulator_layout_recipe` |
+| runtime layout object failure | `jit_entry_and_host_launcher`, then `common_failures_and_fix_order` |
 | NVIDIA TMA/WGMMA/Blackwell recognition only | `nvidia_quick_patterns` |
 | failure triage | `common_failures_and_fix_order`; read `common_pitfalls` only if stuck |
 
-## Internal Index
-
-- `imports`
-- `jit_entry_and_host_launcher`
-- `core_language_and_layout_surface`
-- `common_language_api_surface`
-- `common_rewrite_table`
-- `aot_compile_api_surface`
-- `slice_broadcast_recipe`
-- `broadcast_failure_debug_recipe`
-- `dot_lowering_minimal_recipe`
-- `reduction_accumulator_layout_recipe`
-- `shared_memory_synchronization_cluster`
-- `descriptor_and_tensor_memory_surface`
-- `matrix_lowering_ladders_by_arch`
-- `amd_quick_patterns`
-- `nvidia_quick_patterns`
-- `version_and_compatibility_checklist`
-- `common_pitfalls`
-- `common_failures_and_fix_order`
+Do not read this whole file by default. Pick the exact row that matches the
+current component or failure layer.
 
 ## imports
 
@@ -90,6 +54,17 @@ may now be host-created and passed as `constexpr`.
 
 Wiring rules before coding:
 
+- Prefer defining or replacing Gluon kernels in the canonical kernel module that
+  already owns the target helper. Keep public wrappers as import/dispatch layers
+  unless the task explicitly declares `wrapper_integration`.
+- For wrapper-heavy tasks, do not redefine a kernel inside a public wrapper just
+  to get a Gluon symbol to compile. Put the kernel body in the canonical module,
+  then update the wrapper only for same-ABI import, dispatch, layout factory
+  arguments, or measured-output feeding.
+- If the task's declared `Target component` cannot execute from that canonical
+  module without changing module, stage, branch, or component, report
+  `Task correction` instead of counting the patch as success for the original
+  target.
 - Define the Gluon kernel/helper in the edited module before the host dispatch
   imports or calls it. Do not add an import for a guessed `_..._gluon` helper
   that is not present in the patch.
@@ -113,6 +88,62 @@ Wiring rules before coding:
   `tl.where` / `tl.cdiv` only for source-proven production or translation code,
   and do not newly add `tl.arange`, `tl.load`, `tl.store`, `tl.zeros`,
   `tl.full`, or `tl.dot` inside the Gluon subpath.
+
+Whole-kernel launch proof:
+
+- For `whole_jit_kernel` L0, prefer a distinct selector-visible Gluon symbol:
+
+```python
+@gluon.jit
+def target_kernel_gluon(...):
+    ...
+
+def run_kernel(...):
+    target_kernel_gluon[grid](...)
+```
+
+- This proof shape is easier to audit than an unused helper: the measured
+  wrapper launches the `_gluon` symbol and its result feeds correctness.
+- If the safest patch is same-name in-place replacement, record this evidence in
+  strategy notes before `save_and_test`:
+
+```text
+In-place whole-kernel replacement proof:
+- Measured wrapper:
+- Original launch line:
+- Replaced symbol:
+- Replacement decorator: @gluon.jit
+- Same-name launch still feeds measured output: yes/no
+```
+
+- Do not use in-place replacement to hide a scope mismatch. If the task says
+  local load/store, index, or mask anchor but requires replacing the whole
+  kernel, report `Task correction` and wait for a whole-kernel task.
+
+`strict_generated` pre-save scan:
+
+- Before `save_and_test`, inspect every edited `@gluon.jit` body for forbidden
+  generated-overlay `tl.*` device APIs: `tl.arange`, `tl.load`, `tl.store`,
+  `tl.zeros`, `tl.full`, `tl.where`, `tl.sum`, `tl.max`, `tl.dot`,
+  `tl.maximum`, `tl.minimum`, `tl.exp`, `tl.sigmoid`, and scalar helpers such as
+  `tl.cdiv`.
+- Scalar metadata loads are still device dataflow inside Gluon. Convert examples
+  such as `seq_len = tl.load(...)`, `num_blocks = tl.cdiv(...)`, and
+  `physical_block = tl.load(...)` to `gl.load` / `gl.cdiv` in generated overlay
+  paths.
+- `tl.constexpr` and `tl.range` are governed by `gluon_tl_policy`; for
+  `strict_generated`, prefer `gl.constexpr` and Gluon language APIs unless the
+  task explicitly allows source-preserved exceptions.
+- Also inspect every edited `@gluon.jit` body for runtime layout-object
+  construction. Generated overlays must not create layouts in the kernel body:
+  `gl.SliceLayout(...)`, `gl.BlockedLayout(...)`, `gl.DotOperandLayout(...)`,
+  `gl.amd.AMDMFMALayout(...)`, `gl.amd.AMDWMMALayout(...)`, or any
+  `layout=gl.<Layout>(...)` expression. Build these in host/layout-factory code
+  and pass them as `gl.constexpr`.
+- `gl.arange(..., layout=gl.SliceLayout(...))` and
+  `gl.convert_layout(x, gl.SliceLayout(...))` are runtime layout-object
+  failures, not shortcuts. Pass a named `slice_layout: gl.constexpr` argument or
+  regenerate the index from the correct host-created parent slice.
 
 ```python
 import triton
@@ -772,6 +803,8 @@ AMD-side:
 | `GluonSemantic.arange() missing required positional argument: 'layout'` | edited `@gluon.jit` path for leftover `tl.arange` or layout-less arange | replace the whole planned index subpath with `gl.arange(..., layout=...)` |
 | `Did you forget to add @triton.jit` | helper called from the wrong JIT/language boundary | use `@gluon.jit` for Gluon device helpers and keep host helpers outside the kernel |
 | import error for `_..._gluon` helper | module wiring and definitions in the patch | define the helper before host dispatch imports or calls it |
+| helper-only / not-executed | measured wrapper launch and output feeding | wire the existing Gluon symbol into the declared target path; do not edit layouts or kernel body in the next patch |
+| `layout_contract_status=runtime_layout_object` | edited `@gluon.jit` body for layout constructors such as `gl.SliceLayout(...)` or `layout=gl.<Layout>(...)` | move layout construction to host/layout-factory code and pass the layout as `gl.constexpr` before changing any other failure layer |
 | `BlockedLayout size_per_thread` verifier failure | tile size, `threads_per_warp`, `warps_per_cta`, and power-of-two values | recompute layout from launch contract instead of patching arbitrary integers |
 | `buffer_load other dtype` or `other has no dtype` | `other` argument and loaded pointer element type | create `other` with `gl.full(shape, value, ptr.dtype.element_ty, layout=...)` |
 | `buffer_store stored_value` dtype mismatch | stored value dtype and destination pointer element type | cast the computed value to `out_ptr.dtype.element_ty` before `buffer_store` |

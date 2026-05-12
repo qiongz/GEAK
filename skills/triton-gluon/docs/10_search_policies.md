@@ -133,12 +133,36 @@ Examples:
   "convert to @gluon.jit", "use DotOperandLayout", or "try buffer ops" the
   optimization direction by themselves. Those can be good overlay reasons when
   attached to a shared direction and a comparable target component.
+- A whole-kernel Gluon translation mechanism is still not a same-direction
+  overlay unless it implements the plain competitor's core mechanism. If the
+  plain competitor is about parallelization, fusion, a memory path, scheduling,
+  or an algorithmic rewrite, a Gluon patch that only changes syntax, layout
+  explicitness, or matrix dialect is execution evidence, not same-direction
+  performance evidence.
 
 For high-coupling L0 work, the same rule still applies: if the Gluon path needs
 `whole_jit_kernel`, the comparison anchor should describe a comparable helper or
 execution boundary. If the only available Base task is a narrow local cleanup,
 prefer shrinking the Gluon target to that local component or generating a
 matching Base task before emitting the overlay.
+
+Same-direction L0 binding is strict:
+
+- `Plain competitor`, `Optimization direction`, `Allowed change`, `Target
+  symbol`, and `Target component` must name the same stage, helper, component,
+  or execution boundary.
+- A Base task for stage1 register pressure is not a valid competitor for a Gluon
+  L0 that edits a stage2 reduction, even when both belong to the same operator
+  family.
+- A broad whole-kernel Gluon anchor must still name the same helper/execution
+  boundary and the same optimization mechanism as its plain competitor. If it
+  only proves that a Gluon whole-kernel path can execute, keep it as execution
+  evidence and do not promote it to L1/MFMA/buffer follow-up.
+- If the planner cannot produce a same-component competitor, it should drop the
+  overlay, emit diagnostic/no-dispatch evidence, or generate a matching Base
+  competitor for that boundary.
+- `force_l0_anchor` only relaxes overlay priority. It does not relax
+  same-direction, same-component, same-helper, or same-boundary requirements.
 
 ### Search policy: atomic_component_lattice
 
@@ -213,12 +237,21 @@ Branch B: whole-helper layout skeleton.
   measured output without the whole helper/kernel.
 - Retarget the task to the whole helper/stage. Do not keep wording such as
   "one load" or "one local path" as the target.
+- If `minimum_executable_unit=whole_jit_kernel`, the task label,
+  `Optimization direction`, `Allowed change`, and `Target component` should all
+  say whole helper/stage/kernel anchor. Local phrases such as `index_anchor`,
+  `mask_anchor`, or `load_store_anchor` may appear only as target subpath
+  evidence, not as the patch scope name.
 - Use `minimum_executable_unit: whole_jit_kernel` and
   `allowed_execution_path: whole_jit_kernel`.
 - Include `whole_kernel_required_reason`, `expected_failure_layers`,
   `first_patch_compile_goal`, `do_not_optimize_before_compile: true`, and a
   `matrix_lowering_required: true|false` value consistent with the skeleton.
 - Treat `patch_0` as compile/wiring/layout evidence, not performance tuning.
+- For standalone micro-kernels or tiny whole-helper anchors, the default outcome
+  is compile/execution evidence. Do not upgrade the task to a performance
+  candidate unless the same boundary has a concrete removable overhead and a
+  same-boundary plain competitor.
 
 Unknown or ambiguous boundary:
 
@@ -269,6 +302,19 @@ plain Triton direction. Later rounds may create L1, `gluon_variant`, or
 `hybrid_dispatch` only from verified Gluon execution evidence and safe-anchor
 comparison.
 
+Run-mode semantics:
+
+- `auto`: keep the rule above. Ordinary `Consider`, high-coupling, or
+  whole-kernel compile-risk L0 overlays may be dropped while Base/plain Triton
+  tasks remain valid.
+- `force_l0_anchor`: for coverage experiments only, allow at most one ordinary
+  `Consider` L0 to run as a real AMD Gluon compile/execution anchor. Keep the
+  same-direction plain Triton competitor and treat the result as evidence, not a
+  guaranteed performance candidate.
+- `require_viable_gluon`: do not replace a missing viable Gluon task with a
+  Base-only plan. If no dispatchable Prefer/high-confidence Consider overlay
+  exists, report no viable Gluon task for the round.
+
 ### Search policy: l0_scope_classification
 
 Before emitting a Round-1 L0 task, or a later task that builds on L0 evidence,
@@ -294,6 +340,28 @@ explicitly the minimum executable unit and `whole_kernel_required_reason` is
 provided. A task that declares `inline_scoped_helper` but requires whole-kernel
 conversion is invalid.
 
+Treat a whole-kernel L0 candidate as `too_high_coupling_for_round1_l0` when
+several complexity signals are present at once: loop-carried or cross-loop
+state, multiple interdependent compute/memory subpaths, indirect or dynamic
+shape-dependent memory routing, mixed mask/broadcast/layout conversion and
+reduction state, or wrapper routes whose measured output path needs several
+steps to prove. In `auto`, drop or diagnose these instead of dispatching a
+required Gluon rewrite. In `force_l0_anchor`, prefer a diagnostic route map or
+layout/failure-layer map unless the task clearly states a high-risk
+compile/execution anchor.
+
+High-coupling whole-kernel contract:
+
+- `l0_scope_classification=high_coupling` plus
+  `minimum_executable_unit=whole_jit_kernel` must retarget the task as a
+  whole-kernel or whole-helper execution anchor.
+- Do not keep local anchor labels such as `load_store_anchor`, `index_anchor`,
+  or `mask_anchor` as the task scope when the patch must translate the whole
+  helper to execute.
+- The first patch proves execution path, launcher/ABI, and measured-output
+  feeding. Matrix/MFMA, buffer, scheduler, or epilogue improvements are separate
+  follow-up changes unless explicitly bundled.
+
 Round-1 L0 overlays bind to the same component and same optimization direction
 as `Plain competitor`, not merely to the same broad `Source Base family`. The
 plain task may be a broad Base task, but it is only a valid local L0 anchor when
@@ -308,6 +376,33 @@ overlays. Other routing fields such as `task_signals`,
 worker docs, but they should be inferred or warned on when possible rather than
 turning otherwise useful task batches into planner failures.
 
+Required target path proof:
+
+- `required_patch_target_symbols` must contain executable symbols: actual
+  functions, helpers, kernel symbols, wrapper branches, or callable dispatch
+  targets.
+- Do not create required symbols by splitting prose from `Target component` or
+  `Allowed change` into words such as `tl`, `load`, `of`, or pointer names that
+  are not callable targets.
+- Complex or wrapper-heavy tasks should include a `Required execution route`
+  instead of relying on ambiguous target fragments:
+
+```text
+Required execution route:
+- Benchmark case / shape:
+- Public wrapper:
+- Branch condition:
+- Plain called kernel symbol:
+- Expected Gluon symbol:
+- Required target load/store or reduction path:
+- Output feeding path:
+- Proof after patch:
+```
+
+If this route cannot be stated for a high-coupling L0, use diagnostic/no-dispatch
+or keep the slot for Base/plain Triton rather than asking a worker to guess the
+target path.
+
 Round progression:
 
 - Prior Gluon compile failed, did not execute, or hit scope escalation: do not
@@ -316,6 +411,10 @@ Round progression:
 - Prior Gluon passed correctness but was slower: refine only the recorded
   overhead source, such as layout conversion, buffer path, or one matrix operand
   layout.
+- Prior Gluon executed and passed correctness but regressed on every shape:
+  classify it as `Gluon-slower` / `not_viable_for_l1=true` unless the next task
+  names one concrete removable overhead. Do not emit automatic MFMA, buffer,
+  scheduler, or same-scope whole-kernel follow-up from that evidence alone.
 - Prior Gluon wins for a shape or sub-operation: `gluon_variant` or
   `hybrid_dispatch` may be emitted, but must cite the safe anchor, the winning
   shape/sub-operation evidence, and `Comparison target: safe_anchor` or
@@ -511,6 +610,28 @@ profile docs, explicit `required_gluon_docs`, then heuristic docs for old or
 hand-written tasks. Explicit docs augment the profile; they must not replace the
 mandatory/profile set.
 
+Profile and metadata consistency:
+
+- `gluon_doc_profile` is a documentation routing profile. Valid values are the
+  enum in the table above, such as `extension_l0_minimal`, `memory_lowering`,
+  `matrix_lowering`, or `jit_aot_sensitive`.
+- `mi3xx`, `raw`, or architecture/backend names belong in
+  `gluon_baseline_profile`, `target_backend`, or benchmark metadata, not
+  `gluon_doc_profile`.
+- Ordinary L0 execution anchors should not become `jit_aot_sensitive` merely
+  because they use `@gluon.jit` or have a compile goal. Use
+  `jit_aot_sensitive` only when JIT/AOT, prebuilt artifacts, signatures,
+  scratch, target triples, or version-sensitive integration is part of the task.
+- Task frontmatter is the planner/dispatch/worker gate source of truth. Avoid
+  repeating `gluon_doc_profile`, `required_gluon_docs`, and target fields in the
+  task body; if repeated for human readability, the body must match frontmatter
+  exactly.
+- Task body prose must not override frontmatter values for
+  `required_output_dialect`, `source_origin`, `gluon_doc_profile`,
+  `required_gluon_docs`, `Target symbol`, `Target component`, or
+  `required_patch_target_symbols`. If the template needs human-readable routing,
+  derive it from frontmatter rather than hand-writing a second value.
+
 Run-level Gluon feature metadata is a planner/search-space switch. Task-level
 `required_output_dialect`, `implementation_layer`, and `extension_layer` are the
 worker/selector contract. Legacy `search_set` values are audit metadata and
@@ -564,6 +685,10 @@ Round 1:
 - make the first Gluon patch prove the smallest real executed Gluon path. Later
   patches in the same task should be single-variable experiments so round 2 can
   attribute which component helped or hurt;
+- for `whole_jit_kernel` L0, make the execution proof visible. Prefer a distinct
+  `_gluon` kernel symbol launched from the measured wrapper; if using same-name
+  in-place replacement, record the original launch, replacement decorator, and
+  measured-output path explicitly in strategy notes;
 - for low-latency kernels or tiny stages, do not spend L0 follow-up patches on
   repeated launch-constant sweeps after a slower correctness pass. Record the
   slower anchor as evidence and keep Base/Shared width;

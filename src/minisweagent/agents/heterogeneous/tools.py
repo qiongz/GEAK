@@ -32,7 +32,10 @@ def tool_generate_tasks(
 
     Returns a JSON string with a ``tasks`` key listing the created task file paths.
     """
-    from minisweagent.agents.heterogeneous.task_generator import generate_tasks as _gen
+    from minisweagent.agents.heterogeneous.task_generator import (
+        generate_tasks as _gen,
+        get_last_gluon_task_generation_diagnostics,
+    )
 
     output_dir = Path(ctx["output_dir"]) / "tasks" / f"round_{round_num}"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -208,6 +211,9 @@ def tool_generate_tasks(
             for i, f in enumerate(task_file_paths)
         ],
     }
+    gluon_diagnostics = get_last_gluon_task_generation_diagnostics()
+    if gluon_diagnostics:
+        result["gluon_task_generation_diagnostics"] = gluon_diagnostics
     return json.dumps(result, default=str)
 
 

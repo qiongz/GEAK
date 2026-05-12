@@ -1,51 +1,17 @@
 # Triton-Gluon Component Traits
 
-Worker-routed implementation doc. Read this file when a task's
-`gluon_doc_profile` or doc gate routes you to concrete component traits. Search
-policy and task allocation live in `10_search_policies.md`.
+Worker-routed implementation doc for the atomic component axis. Read this file
+only after task metadata or `60_real_patterns.md` has identified one primary
+component. Kernel-family writing rules live in `60_real_patterns.md`; concrete
+API and failure recipes live in `50_api_reference.md`; target-sensitive details
+live in `30_architecture_notes.md`.
 
-## Profile Routing Hints
+## When To Read This File
 
-- `extension_l0_minimal`: use `layout_basic`, `layout_slice_broadcast`, and
-  `memory_generic` to build the smallest executed Gluon subpath. Treat it as an
-  anchor, not a promised speedup.
-- `memory_lowering`: use `memory_generic` before `memory_amd_buffer`. The
-  performance prior is hot memory/cache traffic; the common slowdown is adding
-  buffer/layout work when generic `gl.load/store` or plain Triton is cheaper.
-- `matrix_lowering`: use `matrix_dot`, `matrix_scaled_dot`, or
-  `matrix_wmma_descriptor` only after a hot dot path and layout anchor are known.
-  The hard part is avoiding conversion overhead that dominates the MFMA/WMMA win.
-- `shape_bucketed_dispatch`: use `shape_*` traits when layout constexprs or
-  matrix tile choices vary by shape. Prefer explicit host dispatch over hidden
-  heuristic mutation.
-- `shared_transplant` / `gluon_variant_from_anchor`: identify one portable
-  component and preserve safe-anchor semantics before changing layout, memory, or
-  matrix behavior.
-
-## Internal Index
-
-- `worker_atomic_component_routes`
-- `### Trait: layout_basic`
-- `### Trait: layout_slice_broadcast`
-- `### Trait: layout_source_first_required`
-- `layout_derivation_and_cost_model`
-- `whole_kernel_layout_map_recipe`
-- `### Trait: memory_generic`
-- `### Trait: memory_amd_buffer`
-- `### Trait: memory_shared_async_descriptor`
-- `### Trait: matrix_none`
-- `### Trait: matrix_dot`
-- `### Trait: matrix_scaled_dot`
-- `### Trait: matrix_wmma_descriptor`
-- `### Trait: shape_coverage_unknown`
-- `### Trait: shape_coverage_single`
-- `### Trait: shape_coverage_multi`
-- `### Trait: shape_coverage_bucketed`
-- `### Trait: shape_layout_constexpr_risk`
-- `### Trait: shape_dispatch_required`
-- `portable_component_compatibility`
-- `api_quick_reference`
-- `common_failures_and_fix_order`
+Use one row from `worker_atomic_component_routes`, then jump to the named trait
+heading. Do not read the whole file by default. If a task needs several
+components at once, record blockers or a `Task correction` instead of widening
+the first patch.
 
 ## worker_atomic_component_routes
 
@@ -53,18 +19,44 @@ Use this as the worker-side "how to change one thing" map. Pick one primary
 component for `patch_0`; put every other concern in blockers, failure layers, or
 the next patch.
 
-| Atomic component | Read first | Patch shape |
-| --- | --- | --- |
-| `index_map` / `mask_boundary` | `layout_basic`, `layout_slice_broadcast` | One index, offset, or mask expression with its parent layout. |
-| `load_store` | `memory_generic`; then `memory_amd_buffer` only with dtype/layout evidence | One `gl.load` / `gl.store` value layout before AMD buffer ops. |
-| `layout_broadcast` | `layout_slice_broadcast`, `layout_derivation_and_cost_model` | One parent layout and its slices; do not reuse slices across parents. |
-| `matrix_operand` | `matrix_dot` or scaled/WMMA trait; API details in `50_api_reference.md` | Result layout, operand layouts, one conversion boundary, then epilogue. |
-| `reduction_accumulator` | `layout_derivation_and_cost_model`; reduction API in `50_api_reference.md` | One accumulator layout or reduction axis, not the whole algorithm. |
-| `shape_dispatch` | shape coverage traits | Explicit host bucket or parametric layout; preserve no-regression. |
-| `wrapper_integration` | `60_real_patterns.md` benchmark/source-first sections | Wiring or artifact selection evidence, not kernel-body tuning. |
+| Atomic component | Read first | First patch | Stop / failure route |
+| --- | --- | --- | --- |
+| `index_map` / `mask_boundary` | `layout_basic`, `layout_slice_broadcast` | Recreate one index, offset, or mask from the correct parent layout. | Stop if it needs wrapper, matrix, or reduction changes; route compile failures to `50_api_reference.md` broadcast debug. |
+| `load_store` | `memory_generic`; then `memory_amd_buffer` only with dtype/layout evidence | Convert one value layout with generic `gl.load` / `gl.store`. | Do not add buffer ops until dtype, `other`, store dtype, and hot memory path are known. For tiny stages, generic load/store is execution evidence, not a performance claim. |
+| `layout_broadcast` | `layout_slice_broadcast`, `layout_derivation_and_cost_model` | Write one parent-layout map and derive slices from that parent. | Stop if a slice must be reused across different logical parents. |
+| `matrix_operand` | `matrix_dot`, `matrix_scaled_dot`, or `matrix_wmma_descriptor`; API details in `50_api_reference.md` | Establish result layout, operand layouts, one conversion boundary, and epilogue correctness. | Downgrade to L0 layout evidence if conversion cost or operand layout is unknown. |
+| `reduction_accumulator` | `layout_derivation_and_cost_model`; reduction recipe in `50_api_reference.md` | Convert one accumulator layout or one reduction axis. | Stop before whole-algorithm online softmax/state rewrites unless the task declares `whole_jit_kernel`. Tiny 1D reductions may be whole-helper execution anchors but not index-only anchors. |
+| `shape_dispatch` | shape coverage traits | Add an explicit host bucket or parametric layout under the same ABI. | Reject hidden heuristic mutation or single-shape hardcoding. |
+| `wrapper_integration` | `60_real_patterns.md` benchmark/source-first sections; launcher details in `50_api_reference.md` | Wire an already-scoped Gluon helper into the declared target path. | Treat this as integration evidence, not kernel-body tuning or a license to change public API. |
 
-Stop and shrink the task when the component cannot execute without also
-changing matrix, reduction, wrapper, and layout families at once.
+Hard-case stops:
+
+- `matrix_operand`: if result layout, operand layouts, conversion boundary, and
+  epilogue are not all named, stop at layout evidence or read the matrix API
+  ladder before editing.
+- `layout_broadcast`: if two expressions share a symbolic dimension but have
+  different 2D parents, create separate slice tensors; do not reuse a convenient
+  1D index across parents.
+- `layout_broadcast`: if the fix needs a new parent layout, slice layout, and
+  another matrix/reduction/wrapper change at the same time, stop and record the
+  next failure layer. Do not construct `SliceLayout` or other layouts inside
+  `@gluon.jit` to avoid changing the host layout contract.
+- `matrix_operand`: if fixing the matrix path also requires new parent/slice
+  layouts, accumulator state, and wrapper routing, split those as blockers or
+  failure layers instead of widening this atomic component.
+- `reduction_accumulator`: online softmax, loop-carried state, and multi-stage
+  reductions are high-coupling. A local accumulator anchor must not silently
+  become a whole-kernel rewrite.
+- `reduction_accumulator`: for tiny 1D reductions, record padding and launch
+  overhead before claiming a performance candidate. If the first viable layout
+  requires padding the active dimension to `64 * num_warps` or a larger wave64
+  multiple, set `overhead_source=layout_padding` or `tiny_stage_overhead`.
+- `load_store`: a generic `gl.load` / `gl.store` rewrite on a tiny stage proves
+  execution and API viability. Do not infer a memory-path win until the task
+  names a hot memory path, removable transaction cost, or buffer-op precondition.
+- `wrapper_integration`: only repair launch, import, or output feeding for the
+  declared target path. Changing the stage/component requires a `Task
+  correction`, not a success claim for the original task.
 
 ### Trait: layout_basic
 
@@ -252,6 +244,13 @@ Rules:
 - Do not introduce AMD buffer paths only because the target is AMD.
 - Do not add shared-memory staging in the first candidate unless the source
   structure requires it.
+- For tiny or latency-bound stages, generic `gl.load` / `gl.store` is usually an
+  execution anchor. Record `tiny_stage_overhead`, `layout_padding`, or
+  `memory_path_overhead` if correctness passes but the path is slower.
+- If a single load/store anchor cannot feed measured output without converting a
+  matrix, reduction, wrapper, or whole helper, return to
+  `10_search_policies.md::l0_scope_classification` instead of widening the
+  patch.
 
 ### Trait: memory_amd_buffer
 
@@ -335,6 +334,23 @@ gfx1250 WMMA, descriptor, `tdm`, cluster, and shared-layout rules are a
 separate family from CDNA MFMA behavior.
 
 Do not treat gfx1250 as CDNA with renamed APIs.
+
+### Trait: reduction_accumulator
+
+- Use a single logical reduction axis as the first target.
+- Keep identity values, accumulator dtype, and output dtype explicit.
+- Do not change reduction order, layout, and wrapper wiring in the same patch
+  unless the task declares `whole_jit_kernel`.
+- A tiny 1D reduction can be a `whole_jit_kernel` execution anchor when the whole
+  helper is the smallest measured unit. It is not an `index_anchor` or
+  `load_store_anchor`.
+- If layout constraints force padding, record the padding boundary and overhead
+  source before further tuning. Typical risk: padding a short `BLOCK_DV`, head
+  dimension, or token axis to `64 * num_warps` / wave64 coverage adds more work
+  than the stage contains.
+- If correctness passes but speed regresses on every shape, mark the anchor as
+  `not_viable_for_l1=true` unless a later task names a removable reduction,
+  padding, or conversion cost.
 
 ### Trait: shape_coverage_unknown
 

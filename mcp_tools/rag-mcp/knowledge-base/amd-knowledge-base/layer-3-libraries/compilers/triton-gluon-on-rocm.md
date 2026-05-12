@@ -463,9 +463,11 @@ Read operator-local source before rewriting the kernel if you see:
 - [GEAK Triton-Gluon split-doc entrypoint](../../../../skills/triton-gluon/docs/00_always_read.md)
 
 For GEAK agent runs, prefer the split-doc entrypoint:
-`skills/triton-gluon/docs/00_always_read.md`. Use its `Task routing` table to
-jump to exact split-doc files and headings. If routed split docs do not contain
-the needed detail, report the missing route so the primary docs can be updated.
+`skills/triton-gluon/docs/00_always_read.md`. Use task metadata
+(`gluon_doc_profile`, `required_gluon_docs`, target component, and task signals)
+to jump to exact split-doc files and headings. If routed split docs do not
+contain the needed detail, report the missing route so the primary docs can be
+updated.
 
 This knowledge-base page is background reference. The skill-local split docs and
 task metadata (`gluon_doc_profile`, `required_gluon_docs`) are the workflow

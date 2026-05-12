@@ -5,6 +5,7 @@ import pytest
 from minisweagent.run.preprocess import benchmark_parsing as preprocess_benchmark_parsing
 from minisweagent.run.postprocess.benchmark_parsing import (
     _dialect_contract_satisfied,
+    _gluon_execution_contract_satisfied,
     _has_added_generic_gluon_dot,
     _has_added_plain_exception_fallback,
     _infer_forbidden_patch_target_symbols,
@@ -205,6 +206,55 @@ def test_forbidden_whole_kernel_does_not_reject_scoped_helper() -> None:
 
     assert _patch_touches_forbidden_target_symbol(patch, ["whole_kernel_rewrite"]) is None
     assert _patch_touches_forbidden_target_symbol(patch, ["new_gluon_helper"]) == "new_gluon_helper"
+
+
+def test_same_name_gluon_replacement_counts_as_target_execution_proof() -> None:
+    patch = "\n".join(
+        [
+            "diff --git a/kernel.py b/kernel.py",
+            "@@ def run_kernel(x):",
+            " def run_kernel(x):",
+            "     target_kernel[grid](x)",
+            "@@",
+            "-@triton.jit",
+            "+@gluon.jit",
+            " def target_kernel(x):",
+            "     return x",
+        ]
+    )
+
+    assert _patch_touches_any_target_symbol(patch, ["target_kernel"]) is True
+    assert (
+        _gluon_execution_contract_satisfied(
+            patch,
+            required_symbols=["target_kernel"],
+            required_output_dialect="amd_gluon",
+        )
+        is True
+    )
+
+
+def test_same_name_gluon_replacement_without_launch_proof_is_not_execution_proof() -> None:
+    patch = "\n".join(
+        [
+            "diff --git a/kernel.py b/kernel.py",
+            "@@",
+            "-@triton.jit",
+            "+@gluon.jit",
+            " def target_kernel(x):",
+            "     return x",
+        ]
+    )
+
+    assert _patch_touches_any_target_symbol(patch, ["target_kernel"]) is True
+    assert (
+        _gluon_execution_contract_satisfied(
+            patch,
+            required_symbols=["target_kernel"],
+            required_output_dialect="amd_gluon",
+        )
+        is False
+    )
 
 
 def test_scope_escalation_detects_inline_task_replacing_target_kernel() -> None:

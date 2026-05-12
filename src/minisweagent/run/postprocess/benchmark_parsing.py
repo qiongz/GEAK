@@ -636,6 +636,7 @@ def _patch_touches_any_target_symbol(patch_text: str, required_symbols: list[str
     code_text = "\n".join(_diff_code_lines(patch_text))
     return any(
         _contains_identifier(code_text, symbol) or _patch_edits_target_body(patch_text, symbol)
+        or _patch_replaces_target_triton_jit_with_gluon_jit(patch_text, symbol)
         for symbol in required_symbols
     )
 
@@ -1008,6 +1009,52 @@ def _edits_existing_gluon_jit_context(patch_text: str) -> bool:
     return any(line.startswith(" ") and "@gluon.jit" in line for line in patch_text.splitlines())
 
 
+def _hunk_replaces_target_triton_jit_with_gluon_jit(chunk: str, target: str) -> bool:
+    removed_triton_jit = False
+    added_gluon_jit = False
+    target_def_seen = False
+    for raw_line in chunk.splitlines():
+        if raw_line.startswith("---"):
+            continue
+        if raw_line.startswith("-") and "@triton.jit" in raw_line:
+            removed_triton_jit = True
+            continue
+        if raw_line.startswith("+") and "@gluon.jit" in raw_line:
+            added_gluon_jit = True
+            continue
+        text = raw_line[1:] if raw_line[:1] in {"+", "-", " "} else raw_line
+        if _line_defines_symbol(text, target):
+            target_def_seen = True
+    return removed_triton_jit and added_gluon_jit and target_def_seen
+
+
+def _patch_replaces_target_triton_jit_with_gluon_jit(patch_text: str, target: str) -> bool:
+    return any(_hunk_replaces_target_triton_jit_with_gluon_jit(chunk, target) for chunk in _iter_diff_hunks(patch_text))
+
+
+def _patch_has_same_name_launch_evidence(patch_text: str, target: str) -> bool:
+    launch_pattern = re.compile(rf"(?<![A-Za-z0-9_]){re.escape(target)}(?![A-Za-z0-9_])\s*\[")
+    for raw_line in patch_text.splitlines():
+        if raw_line.startswith("-") and not raw_line.startswith("---"):
+            continue
+        line = raw_line[1:].strip() if raw_line.startswith(("+", " ")) else raw_line.strip()
+        if not line or line.startswith(("#", "@", "def ", "class ", "import ", "from ")):
+            continue
+        if launch_pattern.search(line):
+            return True
+    return False
+
+
+def _has_same_name_gluon_replacement_execution_evidence(patch_text: str, required_symbols: list[str]) -> bool:
+    for symbol in required_symbols:
+        if _patch_replaces_target_triton_jit_with_gluon_jit(
+            patch_text,
+            symbol,
+        ) and _patch_has_same_name_launch_evidence(patch_text, symbol):
+            return True
+    return False
+
+
 def _has_added_gluon_marker(patch_text: str) -> bool:
     added_text = "\n".join(_added_lines(patch_text))
     return any(marker in added_text for marker in _AMD_GLUON_PATCH_MARKERS) or bool(
@@ -1030,6 +1077,8 @@ def _gluon_execution_contract_satisfied(
         return True
     gluon_defs = _extract_added_gluon_jit_defs(patch_text)
     if not gluon_defs:
+        if _has_same_name_gluon_replacement_execution_evidence(patch_text, required_symbols):
+            return True
         if _has_target_related_gluon_launch_evidence(patch_text, required_symbols):
             return True
         if not required_symbols and _edits_existing_gluon_jit_context(patch_text):

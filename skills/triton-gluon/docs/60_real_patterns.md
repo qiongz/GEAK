@@ -1,28 +1,11 @@
 # Triton-Gluon Real Patterns And Benchmark Rules
 
-Worker-routed evidence and benchmark doc. Read this file when docs or examples
-are not enough: source-first triggers, benchmark boundary, real operator
-patterns, repo-local defaults, and negative evidence live here. API syntax and
-small skeletons belong in `50_api_reference.md`.
+Worker-routed kernel-family and benchmark doc. Read this file only to decide how
+to write a class of kernel, how to preserve source-first contracts, or how to
+interpret benchmark boundaries. Atomic component changes live in
+`20_component_traits.md`; concrete API syntax lives in `50_api_reference.md`.
 
-## Profile Routing Hints
-
-- `nv_to_amd_translation`: use `nvidia_amd_family_differences` and source-first
-  triggers to separate concepts that translate from APIs that must not be
-  renamed.
-- `shape_bucketed_dispatch` / `hybrid_dispatch*`: use benchmark boundary and
-  real-pattern evidence to justify visible host dispatch. A kernel-only Gluon win
-  does not replace a fair/full-operator path without same-ABI evidence.
-- `shared_transplant` / `gluon_variant_from_anchor`: use safe-anchor evidence and
-  portable-component rules. Preserve the anchor algorithm before changing memory,
-  matrix, or dispatch behavior.
-- Real attention/GEMM/descriptor paths are source-first. If the task shows
-  `DistributedLinearLayout`, host `TensorDescriptor`, unshuffle transforms, or
-  JIT/AOT gates, read operator-local source before generic rewriting.
-
-Do not read this whole file by default. Use the routed section(s) below.
-
-## Read Only These Sections
+## When To Read This File
 
 | If the task needs... | Read |
 | --- | --- |
@@ -39,30 +22,13 @@ Do not read this whole file by default. Use the routed section(s) below.
 | real attention, GEMM, descriptor, or wrapper-heavy operator patterns | `real_operator_patterns`, `operator_local_support_matrix` |
 | elementwise/attention/GEMM/preshuffled/gfx1250 strategy order | `optimization_paths_by_kernel_family` |
 | end-to-end, wrapper-heavy, fair benchmark, or same-ABI comparison | `benchmark_boundary_and_integration_costs` |
+| complex whole-kernel composition or several failure layers at once | `extension_l0_scope_for_layout_heavy_kernels`, then `benchmark_boundary_and_integration_costs` |
 | source-first triggers | `source_first_triggers` |
 | repo-local defaults or benchmark interpretation | `repo_local_notes`, `benchmark_aware_rules` |
 | final sanity check for risky patterns | `anti_patterns` |
 
-## Internal Index
-
-- `product_and_runtime_context`
-- `kernel_family_quick_routes`
-- `evidence_inventory_for_guide_authoring`
-- `writing_model`
-- `extension_l0_scope_for_layout_heavy_kernels`
-- `extension_l1_memory_lowering_anchor`
-- `layout_sync_descriptor_mental_model`
-- `nvidia_amd_family_differences`
-- `translator_derived_amd_dispatch`
-- `generalized_real_code_patterns`
-- `real_operator_patterns`
-- `operator_local_support_matrix`
-- `optimization_paths_by_kernel_family`
-- `benchmark_boundary_and_integration_costs`
-- `source_first_triggers`
-- `repo_local_notes`
-- `benchmark_aware_rules`
-- `anti_patterns`
+Do not read this whole file by default. Pick one kernel-family row, then combine
+it with exactly one atomic component route from `20_component_traits.md`.
 
 ## kernel_family_quick_routes
 
@@ -107,36 +73,26 @@ layout construction and AOT metadata, especially around Triton `3.5` versus
 ## evidence_inventory_for_guide_authoring
 
 Quick directions are guide rails for a first correct and plausible candidate,
-not proof of the fastest possible kernel. Before turning a pattern into reusable
-guidance, classify its evidence:
+not proof of the fastest possible kernel. Normal workers usually do not need
+this section; use it when authoring or reviewing reusable guidance.
 
-| Evidence source | Use it for | Do not use it for |
-| --- | --- | --- |
-| `skills/triton-gluon/docs/*.md`, `docs/triton_gluon.md`, and the ROCm Gluon knowledge-base | existing product contracts, routed headings, and known API names | inventing new API calls that are absent from docs or source |
-| `40_examples.md` | reasoning shape, host/layout wiring, version guards, and fallback patterns | benchmark truth or constants to copy |
-| upstream Gluon tutorials | common Gluon mental model: layouts, host launch, shared-memory phases, barriers | assuming target-specific tutorial APIs are AMD APIs |
-| upstream block-scaled matrix tutorials | scale-packing reasoning for scaled matrix variants | assuming one scale packing works for every instruction shape |
-| upstream AMD Gluon tests | WMMA, scaled WMMA, descriptor, and constraint examples | extrapolating CDNA MFMA behavior to RDNA/GFX1250 |
-| upstream AMD Gluon examples | descriptor setup, split-K scale-layout rank changes, and codegen-check patterns | treating advanced example structure as required L0 scope |
-| upstream AMD backend/tests with target-specific matrix, async, or descriptor support | architecture capability boundaries and verifier/lowering constraints | writing a concrete Gluon API template when no Gluon example exists |
-| downstream real-operator Gluon sources | real operator composition, guards, layouts, JIT/AOT wiring, and launch/config practices | treating one operator's constants as universal defaults |
-| external support matrices, low-precision GEMM configs, and integration tests | architecture/operator support side evidence | deriving Gluon API syntax directly |
+Evidence labels:
 
-Use evidence labels when writing new guidance:
-
-- `exact_sample`: the API shape appears in a Gluon doc, tutorial, test, or real
-  Gluon source.
-- `backend_support`: the architecture/lowering appears in Triton AMD backend or
-  tests, but the exact Gluon API call still needs sample confirmation.
+- `exact_sample`: the API shape appears in split docs, upstream Gluon docs/tests,
+  or real Gluon source.
 - `operator_local`: the pattern is valid for a specific operator family or
   wrapper contract; generalize only the decision rule.
+- `backend_support`: the architecture/lowering appears in Triton AMD backend or
+  tests, but the exact Gluon API call still needs sample confirmation.
+- `background_rag`: the ROCm Gluon knowledge base or other long-form references
+  can suggest concepts and search terms, but they do not create required docs,
+  audit contracts, or worker success criteria.
 - `hypothesis`: the idea follows from hardware or source structure but needs
   profiling or a missing-doc report before becoming a rule.
 
-If only backend or CK evidence exists for a `gfx950` feature, document the
-capability boundary and verification checklist, not a concrete Gluon call
-template. If a claim cannot be tied to one of the evidence labels above, do not
-put it in a quick direction.
+If only backend, CK, or `background_rag` evidence exists for a feature, document
+the capability boundary and verification checklist, not a concrete Gluon call
+template.
 
 ## writing_model
 
@@ -280,6 +236,29 @@ on every benchmark shape, record `observed_speedup`, `overhead_source`, and
 overhead. Do not automatically generate same-scope MFMA, buffer, shared-memory,
 or scheduler follow-up.
 
+For multi-shape runs, `observed_speedup` must use the same aggregate on both
+sides. Compare baseline per-shape total to candidate per-shape total, or
+baseline geomean to candidate geomean. Do not compare baseline total with a
+single candidate `GEAK_RESULT_LATENCY_MS` marker. If a per-shape result map is
+available, report that map, total/geomean, and the regression/win decision.
+
+Use this overhead record for slower correctness-passing L0 anchors:
+
+```text
+L0 overhead attribution:
+- observed_speedup:
+- not_viable_for_l1: true|false
+- overhead_source: layout_padding | layout_conversion | extra_launch_or_dispatch | tiny_stage_overhead | memory_path_overhead | unknown
+- evidence: <which shape/path showed the cost>
+- removable_by_next_task: <named removable cost, or none>
+```
+
+Tiny whole-helper or 1D reduction anchors often regress because the work is too
+small to amortize layout/JIT costs, because the layout pads a short axis to
+wave64, or because the patch adds conversion/dispatch around an already short
+stage. Treat that as useful execution evidence, not a reason to queue MFMA,
+buffer, scheduler, or launch sweeps without a named removable overhead.
+
 If the selected scoped path cannot be implemented without touching forbidden
 paths, do not reinterpret the task as a larger Gluon rewrite. Use the task's
 execution path policy:
@@ -330,6 +309,9 @@ Patch evolution model:
   only connect the already-written Gluon helper to the declared target path and
   measured output. Do not add new layout factories, MFMA paths, or wrapper API
   changes while the helper is still unexecuted.
+- After one wiring-only patch still fails with helper-not-executed or wrong
+  target, stop and report `Task correction: target route ambiguous`. Do not keep
+  producing layout, kernel-body, or multi-wrapper wiring variants.
 - If a patch bundles unrelated changes, later rounds cannot tell whether Gluon
   helped or was masked by another regression.
 - Quick directions and checked-in examples are starting points for `patch_0` or
@@ -412,6 +394,23 @@ Task consistency check:
   patch.
 - If `Plain competitor` names a different direction or target component, stop
   and report the mismatch. Do not use a different competitor to justify success.
+- For wrapper-heavy tasks, write the route before the first edit:
+
+```text
+Required execution route:
+- Benchmark case / shape:
+- Public wrapper:
+- Branch condition:
+- Plain called kernel symbol:
+- Expected Gluon symbol:
+- Required target load/store or reduction path:
+- Output feeding path:
+- Proof after patch:
+```
+
+If this route is missing or the benchmark does not reach the declared branch,
+record `Task correction: target route ambiguous or not reached` instead of
+guessing with multiple wrapper edits.
 
 Whole-kernel L0 comparison anchor:
 
@@ -428,6 +427,37 @@ Whole-kernel L0 comparison anchor:
   buffer ops stay in `Gluon overlay reason`, `Performance hypothesis`, and
   `Allowed change`. They should explain how the Gluon implementation tests the
   same goal, not create a separate optimization direction.
+- If the plain competitor's core mechanism is parallelization, fusion, memory
+  path selection, scheduling, or an algorithmic rewrite, a Gluon patch that only
+  performs whole-kernel syntax/layout/matrix translation is execution evidence.
+  It is not a same-direction performance win unless it implements that core
+  mechanism at the same comparison boundary.
+- Standalone micro-kernel whole-helper anchors should be named as whole-helper
+  execution anchors, not as local `index`, `mask`, or `load_store` anchors. The
+  first patch proves compile, launch, target-path execution, and output feeding.
+- Prefer a selector-visible `_gluon` kernel symbol launched from the measured
+  wrapper. If the worker performs same-name in-place replacement, it must record
+  `In-place whole-kernel replacement proof`: original wrapper, original launch
+  line, replacement decorator, unchanged symbol call, and measured output path.
+
+Complex-composition L0:
+
+- Treat a candidate as high-risk when it combines several of these signals:
+  loop-carried state, multiple interdependent compute/memory subpaths, dynamic
+  or indirect memory routing, mask/broadcast/layout-domain conversion plus
+  reduction state, or a wrapper route that needs several steps to prove measured
+  output.
+- The first response for that shape of task should be a route map,
+  layout/failure-layer map, diagnostic/no-dispatch, or a high-risk
+  compile/execution anchor. Do not expect `patch_0` to produce a performance
+  whole-kernel rewrite.
+- If a required Gluon patch is still dispatched, work one failure layer at a
+  time: route/launch proof, host layout factory, shape/index/mask correctness,
+  state or reduction correctness, compute/memory subpath lowering, then
+  performance refinement.
+- If any layer fails, the next patch fixes only that layer. Helper-only,
+  runtime layout object, broadcast mismatch, state/reduction mismatch, and
+  matrix/memory tuning are separate failure layers.
 
 Public API freeze:
 
@@ -437,6 +467,9 @@ Public API freeze:
 - If a Gluon path needs host dispatch, add the dispatch inside the existing
   wrapper or behind an internal helper. Do not rename `decode_*`, `matmul_*`,
   `softmax_*`, or other public entrypoints that tests import.
+- Prefer placing Gluon kernel bodies in the canonical kernel module that owns the
+  target helper/kernel. Public wrappers should remain same-ABI dispatch/import
+  glue unless the task explicitly declares `wrapper_integration`.
 - A patch that cannot wire Gluon without changing the public API should report
   the integration boundary and request a separate task, not mutate the harness
   contract.
@@ -948,6 +981,20 @@ Hot-path task strategy:
   or shape-specialized dispatch that beats the plain competitor.
 - For pipeline kernels, keep the Gluon scope to one stage or subpath unless the
   task explicitly allows a bundled end-to-end rewrite.
+- For wrapper-heavy or multi-stage tasks, the task's optimization direction,
+  target symbol, target component, and allowed change must name the same stage or
+  helper. If implementation evidence points to a different stage, record `Task
+  correction` and do not count the patch as success for the original target.
+- Prefer placing Gluon kernel bodies in the canonical kernel module and keeping
+  wrappers as same-ABI dispatch/import glue. Redefining a kernel inside a wrapper
+  is integration evidence only when the task is explicitly wrapper-scoped.
+- For multi-branch wrappers, require a route map before high-coupling Gluon L0
+  work. The route must name the benchmark shape, wrapper function, branch
+  condition, called plain kernel symbol, expected Gluon symbol, target load/store
+  or reduction path, and output feeding path.
+- If implementation requires changing module, branch, stage, or component to get
+  execution, record `Task correction`; do not count the patch as success for the
+  original target.
 - Hybrid dispatch must preserve the plain Triton path for shapes or subpaths
   where it wins. A kernel-only Gluon win cannot replace a fair/full-operator
   path unless the same boundary also preserves no-regression against the safe
@@ -1000,6 +1047,11 @@ or optimization logs into reusable syntax guidance.
 - Preserve correctness before optimizing speed.
 - When a harness supports multiple modes, keep one ordered case stream across
   correctness, profile, and benchmark.
+- When a harness reports multiple shapes, compare the same aggregate on both
+  sides: per-shape total to per-shape total, or geomean to geomean. A baseline
+  total must not be compared with a single candidate latency marker.
+- If `GEAK_BENCHMARK_RESULTS_MS` is present, treat it as the benchmark summary
+  source of truth and report per-shape map, aggregate, and material regressions.
 - If `plain_triton` remains an allowed output, compare it against `amd_gluon`
   instead of assuming AMD Gluon wins.
 - Gluon must beat the safe plain Triton anchor to count as `Gluon-positive`.

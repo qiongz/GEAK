@@ -29,8 +29,16 @@ ALL_INPUT_DIALECTS = frozenset((PLAIN_TRITON_DIALECT, NV_GLUON_DIALECT, AMD_GLUO
 GLUON_FEATURE_MODE_OFF = "off"
 GLUON_FEATURE_MODE_AUTO = "auto"
 GLUON_FEATURE_MODE_FORCE = "force"
+GLUON_FEATURE_MODE_FORCE_L0_ANCHOR = "force_l0_anchor"
+GLUON_FEATURE_MODE_REQUIRE_VIABLE = "require_viable_gluon"
 ALL_GLUON_FEATURE_MODES = frozenset(
-    (GLUON_FEATURE_MODE_OFF, GLUON_FEATURE_MODE_AUTO, GLUON_FEATURE_MODE_FORCE)
+    (
+        GLUON_FEATURE_MODE_OFF,
+        GLUON_FEATURE_MODE_AUTO,
+        GLUON_FEATURE_MODE_FORCE,
+        GLUON_FEATURE_MODE_FORCE_L0_ANCHOR,
+        GLUON_FEATURE_MODE_REQUIRE_VIABLE,
+    )
 )
 
 GLUON_BASELINE_PROFILE_RAW = "raw"
@@ -166,6 +174,15 @@ def _normalize_gluon_feature_mode(
         "false": GLUON_FEATURE_MODE_OFF,
         "gluon-off": GLUON_FEATURE_MODE_OFF,
         "gluon_off": GLUON_FEATURE_MODE_OFF,
+        "force-l0-anchor": GLUON_FEATURE_MODE_FORCE_L0_ANCHOR,
+        "force_l0": GLUON_FEATURE_MODE_FORCE_L0_ANCHOR,
+        "force-l0": GLUON_FEATURE_MODE_FORCE_L0_ANCHOR,
+        "gluon-only-force-anchor": GLUON_FEATURE_MODE_FORCE_L0_ANCHOR,
+        "gluon_only_force_anchor": GLUON_FEATURE_MODE_FORCE_L0_ANCHOR,
+        "require-viable-gluon": GLUON_FEATURE_MODE_REQUIRE_VIABLE,
+        "require_viable": GLUON_FEATURE_MODE_REQUIRE_VIABLE,
+        "gluon-only-require-viable": GLUON_FEATURE_MODE_REQUIRE_VIABLE,
+        "gluon_only_require_viable": GLUON_FEATURE_MODE_REQUIRE_VIABLE,
     }
     text = aliases.get(text, text)
     return text if text in ALL_GLUON_FEATURE_MODES else default_mode
@@ -375,6 +392,8 @@ def derive_output_dialect_search_policy(
     )
     allowed = _normalize_allowed_output_dialects(allowed_output_dialects)
     if gluon_feature_mode == GLUON_FEATURE_MODE_FORCE:
+        return REQUIRE_AMD_GLUON_POLICY
+    if gluon_feature_mode == GLUON_FEATURE_MODE_REQUIRE_VIABLE:
         return REQUIRE_AMD_GLUON_POLICY
     if preferred == [PLAIN_TRITON_DIALECT] and AMD_GLUON_DIALECT not in allowed:
         return PLAIN_TRITON_ONLY_SEARCH_POLICY

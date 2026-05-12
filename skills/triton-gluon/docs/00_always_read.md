@@ -37,8 +37,16 @@ split-doc routing. It is not an API cookbook.
 ## required_before_editing_or_save_and_test
 
 - Read this file first.
-- Use `stable_split_doc_index` and `Task routing` to choose exact split-doc
-  files and headings.
+- Use task metadata (`gluon_doc_profile`, `required_gluon_docs`,
+  `Target component`, `Allowed change`, and task signals) to choose the exact
+  split-doc files and headings.
+- Treat task frontmatter/metadata as the source of truth for doc routing and
+  target contracts. If the task body repeats `gluon_doc_profile`,
+  `required_gluon_docs`, or target fields and conflicts with frontmatter, record
+  `Task correction` and follow the frontmatter contract.
+- Do not rely on repeated task-body metadata for routing. If the body repeats
+  frontmatter fields only for readability, it must be derived from and
+  consistent with frontmatter.
 - If task metadata provides `required_gluon_docs`, view every listed absolute
   path with `str_replace_editor command="view"` before editing or calling
   `save_and_test`.
@@ -86,132 +94,31 @@ Before reporting success:
 
 ## stable_split_doc_index
 
-Use this stable index instead of reading broad background references. Do not
-implement from memory or guess missing Gluon APIs. A planner or worker must map
-the task to the exact file and heading below before generating or editing a
-Gluon candidate.
+This file is the stable entrypoint, not a full routing table. Keep the route
+short:
 
-Worker gate: the planner or dispatch metadata may provide `required_gluon_docs`.
+- Planner/search policy: `10_search_policies.md`, including
+  `overlay_direction_vs_mechanism` for same-direction overlays and
+  `atomic_component_lattice` / `l0_scope_decision_before_emit` for L0 scope
+  choices.
+- Worker axis 1, kernel-family writing model: `60_real_patterns.md` for
+  source-first cases, wrapper/multi-stage behavior, and benchmark boundaries.
+- Worker axis 2, atomic component implementation: `20_component_traits.md` for
+  the one component changed by the current patch.
+- Concrete API snippets, rewrites, and failure triage: `50_api_reference.md`.
+- Target family, version, JIT/AOT, descriptor, MFMA/WMMA architecture details:
+  `30_architecture_notes.md`.
+- Examples: `40_examples.md`, at most one relevant section.
+- Missing routed detail: `70_backup_details.md`, then report the missing route.
+
+Worker gate: planner or dispatch metadata may provide `required_gluon_docs`.
 Before editing or calling `save_and_test`, view every listed absolute path with
 `str_replace_editor command="view"`. `save_and_test` rejects Gluon tasks until
 the required docs have been viewed.
 
-Component traits:
-
-- `semantics_contract` -> this file, `### Trait: semantics_contract`
-- `dialect_plain_triton` -> this file, `### Trait: dialect_plain_triton`
-- `dialect_nv_gluon` -> this file, `### Trait: dialect_nv_gluon`
-- `dialect_amd_gluon` -> this file, `### Trait: dialect_amd_gluon`
-- `layout_basic` -> `20_component_traits.md`, `### Trait: layout_basic`
-- `layout_slice_broadcast` -> `20_component_traits.md`,
-  `### Trait: layout_slice_broadcast`
-- `layout_source_first_required` -> `20_component_traits.md`,
-  `### Trait: layout_source_first_required`
-- `layout_derivation_and_cost_model` -> `20_component_traits.md`,
-  `## layout_derivation_and_cost_model`
-- `memory_generic` -> `20_component_traits.md`, `### Trait: memory_generic`
-- `memory_amd_buffer` -> `20_component_traits.md`,
-  `### Trait: memory_amd_buffer`
-- `memory_shared_async_descriptor` -> `20_component_traits.md`,
-  `### Trait: memory_shared_async_descriptor`
-- `matrix_none` -> `20_component_traits.md`, `### Trait: matrix_none`
-- `matrix_dot` -> `20_component_traits.md`, `### Trait: matrix_dot`
-- `matrix_scaled_dot` -> `20_component_traits.md`,
-  `### Trait: matrix_scaled_dot`
-- `matrix_wmma_descriptor` -> `20_component_traits.md`,
-  `### Trait: matrix_wmma_descriptor`
-- `execution_jit_aot_sensitive` -> `30_architecture_notes.md`,
-  `### Trait: execution_jit_aot_sensitive`
-- `version_sensitive` -> `30_architecture_notes.md`,
-  `### Trait: version_sensitive`
-- `operator_support_sensitive` -> `30_architecture_notes.md`,
-  `### Trait: operator_support_sensitive`
-- `amd_arch_family_quick_directions` -> `30_architecture_notes.md`,
-  `## amd_arch_family_quick_directions`
-- `shape_coverage_unknown` -> `20_component_traits.md`,
-  `### Trait: shape_coverage_unknown`
-- `shape_coverage_single` -> `20_component_traits.md`,
-  `### Trait: shape_coverage_single`
-- `shape_coverage_multi` -> `20_component_traits.md`,
-  `### Trait: shape_coverage_multi`
-- `shape_coverage_bucketed` -> `20_component_traits.md`,
-  `### Trait: shape_coverage_bucketed`
-- `shape_layout_constexpr_risk` -> `20_component_traits.md`,
-  `### Trait: shape_layout_constexpr_risk`
-- `shape_dispatch_required` -> `20_component_traits.md`,
-  `### Trait: shape_dispatch_required`
-
-Search policies:
-
-- `optimization_direction_metadata_sets` -> `10_search_policies.md`,
-  `### Search policy: optimization_direction_metadata_sets`
-- `optimization_direction_dialect_overlay` -> `10_search_policies.md`,
-  `### Search policy: optimization_direction_dialect_overlay`
-- `overlay_direction_vs_mechanism` -> `10_search_policies.md`,
-  `### Search policy: overlay_direction_vs_mechanism`
-- `atomic_component_lattice` -> `10_search_policies.md`,
-  `### Search policy: atomic_component_lattice`
-- `l0_scope_decision_before_emit` -> `10_search_policies.md`,
-  `### Search policy: l0_scope_decision_before_emit`
-- `overlay_priority_routing` -> `10_search_policies.md`,
-  `### Search policy: overlay_priority_routing`
-- `measurement_boundary_policy` -> `10_search_policies.md`,
-  `### Search policy: measurement_boundary_policy`
-- `evidence_anchored_composition` -> `10_search_policies.md`,
-  `### Search policy: evidence_anchored_composition`
-- `dialect_contract_metadata` -> `10_search_policies.md`,
-  `### Search policy: dialect_contract_metadata`
-
-Detailed references:
-
-- API surface, concrete snippets, quick patterns, compatibility checklist, and
-  debug order -> `50_api_reference.md`
-- Matrix lowering ladder by architecture family ->
-  `50_api_reference.md`, `### matrix_lowering_ladders_by_arch`
-- Evidence inventory and generalized real-code patterns ->
-  `60_real_patterns.md`, `evidence_inventory_for_guide_authoring` and
-  `generalized_real_code_patterns`
-- product/runtime context, writing model, layout/sync/descriptor mental model,
-  NVIDIA/AMD family differences, real operator patterns, kernel-family
-  optimization paths, source-first triggers, repo-local notes, benchmark rules,
-  and anti-patterns -> `60_real_patterns.md`
-- Representative schematic examples -> `40_examples.md`
-- Residual long-form details not covered by the routed primary docs ->
-  `70_backup_details.md`
-
-Task routing:
-
-| Task need or visible signal | Must read |
-| --- | --- |
-| Any Triton-Gluon task | `00_always_read.md`, `product_contract`, `semantic_contract`, `output_and_fallback_contract` |
-| Planning optimization-direction overlays or compatibility metadata | `10_search_policies.md`, `### Search policy: optimization_direction_metadata_sets`, `### Search policy: optimization_direction_dialect_overlay`, `### Search policy: overlay_direction_vs_mechanism`, `### Search policy: atomic_component_lattice`, `### Search policy: overlay_priority_routing`, `### Search policy: dialect_contract_metadata` |
-| L0 scope classification, micro-anchor, atomic component choice, or compile-risk whole-kernel task | `10_search_policies.md`, `### Search policy: l0_scope_decision_before_emit`, `### Search policy: l0_scope_classification`, `### Search policy: atomic_component_lattice`; `20_component_traits.md`, `whole_kernel_layout_map_recipe`; `60_real_patterns.md`, `broadcast_heavy_whole_kernel_l0`, `l0_scope_by_kernel_family` |
-| Later-round composition from prior results | `10_search_policies.md`, `### Search policy: evidence_anchored_composition` |
-| End-to-end, wrapper-heavy, or multi-stage operator pipeline | `10_search_policies.md`, `### Search policy: measurement_boundary_policy`; `60_real_patterns.md`, `benchmark_boundary_and_integration_costs` |
-| `plain_triton -> amd_gluon` | `00_always_read.md`, `### Trait: dialect_plain_triton`; then relevant traits in `20_component_traits.md` |
-| `nv_gluon -> amd_gluon` | `00_always_read.md`, `### Trait: dialect_nv_gluon`; `60_real_patterns.md`, `nvidia_amd_family_differences`; optionally `40_examples.md`, `nv_gluon_to_amd_gluon_translation` |
-| existing `amd_gluon` input | `00_always_read.md`, `### Trait: dialect_amd_gluon`; `30_architecture_notes.md`, `### Trait: operator_support_sensitive` |
-| `tl.arange`, block sizes, layout, masks, broadcasts, `[:, None]`, `expand_dims`, `BlockedLayout`, `SliceLayout`, `convert_layout` | `20_component_traits.md`, `### Trait: layout_basic`, `### Trait: layout_slice_broadcast`, and `layout_derivation_and_cost_model` |
-| broadcast or layout compile error such as `expected expand_dims input layout`, rank mismatch, or parent-layout mismatch | `20_component_traits.md`, `### Trait: layout_slice_broadcast` and `whole_kernel_layout_map_recipe`; `50_api_reference.md`, `broadcast_failure_debug_recipe` |
-| `tl.load` / `tl.store`, buffer ops, memory-bound path | `20_component_traits.md`, `### Trait: memory_generic` and/or `### Trait: memory_amd_buffer` |
-| shared memory, swizzle, async, descriptor, `tdm`, cluster, scheduler hints | `20_component_traits.md`, `### Trait: memory_shared_async_descriptor`; `50_api_reference.md`, `shared_memory_synchronization_cluster` and `descriptor_and_tensor_memory_surface` |
-| `tl.dot`, `tl.dot_scaled`, MFMA, WMMA, FP8/FP4/scales, `AMDMFMALayout`, `AMDWMMALayout`, `DotOperandLayout` | `20_component_traits.md`, `### Trait: matrix_dot`, `### Trait: matrix_scaled_dot`, and/or `### Trait: matrix_wmma_descriptor`; `50_api_reference.md`, `matrix_lowering_ladders_by_arch` and `amd_quick_patterns`; `30_architecture_notes.md`, `amd_arch_family_quick_directions` |
-| dot or matrix compile error such as `DotOperandEncodingAttr`, `tt.dot failed to infer`, or missing `gl.dot` | `20_component_traits.md`, `### Trait: matrix_dot`; `50_api_reference.md`, `dot_lowering_minimal_recipe` and `matrix_lowering_ladders_by_arch` |
-| reduction or accumulator layout mismatch | `20_component_traits.md`, `layout_derivation_and_cost_model`; `50_api_reference.md`, `reduction_accumulator_layout_recipe` |
-| target backend, `gfx942`, `gfx950`, `gfx1250`, arch guards, wave32/wave64 assumptions | `30_architecture_notes.md`, `amd_arch_family_quick_directions`, target section, and `runtime_target_resolution`; `60_real_patterns.md`, `nvidia_amd_family_differences` |
-| Triton version, `instr_shape`, JIT/AOT, prebuilt kernels | `30_architecture_notes.md`, `### Trait: version_sensitive` and `### Trait: execution_jit_aot_sensitive`; `50_api_reference.md`, `version_and_compatibility_checklist` |
-| multi-shape or bucketed benchmark | `20_component_traits.md`, relevant `shape_coverage_*` trait plus `### Trait: shape_layout_constexpr_risk` / `### Trait: shape_dispatch_required` |
-| concrete code skeleton or exact API call needed | `50_api_reference.md`; do not invent API names from memory |
-| source-derived guide claim, limited Gluon sample, backend-only support, or `gfx950` capability question | `60_real_patterns.md`, `evidence_inventory_for_guide_authoring`; then the relevant API/architecture/source section |
-| real attention-style, GEMM, preshuffled, descriptor, or RDNA WMMA pattern | `60_real_patterns.md`, `generalized_real_code_patterns`, `real_operator_patterns`, and `optimization_paths_by_kernel_family` |
-| source shows `DistributedLinearLayout`, `PartitionedSharedLayout`, host `TensorDescriptor`, nested 3D/5D layouts, unshuffle transforms, JIT/AOT package gates | `60_real_patterns.md`, `source_first_triggers`; then read operator-local source before editing |
-| one schematic example would help | at most one relevant section in `40_examples.md` after reading the trait/policy file above |
-| routed split docs still lack a needed nuance or rationale | `70_backup_details.md`; report the missing route if still unresolved |
-
-If a task does not match any route above, stop and read `00_always_read.md`
-again plus the closest trait/policy file. If the routed primary docs lack the
-required detail, read `70_backup_details.md` and report the missing split-doc
-route if still unresolved.
+Use `gluon_doc_profile`, `required_gluon_docs`, and task signals to select the
+exact heading in those docs. Do not replace this gate with the ROCm Gluon
+knowledge base; that page is background/RAG, not an execution contract.
 
 ## pre_edit_knowledge_lookup_contract
 
@@ -282,6 +189,24 @@ buffer path or "generic load/store", module wiring, target symbol/component,
 and patch hygiene. Use profile-routed implementation docs for the detailed API,
 layout, MFMA, buffer, JIT/AOT, or real-operator checklist.
 
+For complex or wrapper-heavy targets, add this route before editing:
+
+```text
+Required execution route:
+- Benchmark case / shape:
+- Public wrapper:
+- Branch condition:
+- Plain called kernel symbol:
+- Expected Gluon symbol:
+- Required target load/store or reduction path:
+- Output feeding path:
+- Proof after patch:
+```
+
+`required_patch_target_symbols` must be callable symbols or explicit route
+entries, not words split from prose. If the route cannot be stated, report
+`Task correction: target route ambiguous` instead of guessing.
+
 Hard rules:
 
 - Do not start a required AMD Gluon task by wrapping the full plain Triton body
@@ -309,6 +234,17 @@ Hard rules:
 - For `extension_intent=execution_anchor`, slower correctness-passing L0 is
   overhead evidence. Record the overhead source and do not expand the same scope
   into L1 unless a later task names a removable overhead.
+- Use this compact overhead template for slower L0 anchors:
+
+```text
+L0 overhead attribution:
+- observed_speedup:
+- not_viable_for_l1: true|false
+- overhead_source: layout_padding | layout_conversion | extra_launch_or_dispatch | tiny_stage_overhead | memory_path_overhead | unknown
+- evidence:
+- removable_by_next_task:
+```
+
 - If a scoped L0 cannot be implemented without touching forbidden paths, do not
   widen the patch. Follow `allowed_execution_path` / `scope_infeasible_policy`:
   inline only when legal, split to a separate Gluon kernel only when allowed, or
@@ -325,6 +261,21 @@ Hard rules:
   wiring-only: launch the existing helper from the target path or feed its output
   into measured correctness. Do not continue editing layout, matrix, memory, or
   wrapper ABI until that execution contract is satisfied.
+- If one wiring-only patch still cannot prove the required target path executes,
+  stop and report `Task correction: target route ambiguous`; do not keep
+  changing layout factories, kernel bodies, or wrapper branches.
+- For `whole_jit_kernel`, prefer a visible `_gluon` kernel symbol launched from
+  the measured wrapper. Same-name in-place replacement must record the wrapper,
+  original launch line, replaced decorator, same-name launch, and output-feeding
+  path in strategy notes.
+- Before `save_and_test` on `strict_generated` tasks, scan edited `@gluon.jit`
+  bodies for forbidden device `tl.*` APIs, including scalar `tl.load`,
+  `tl.cdiv`, `tl.dot`, and `tl.store`. Convert generated-overlay device
+  dataflow to `gl.*` before saving.
+- Before `save_and_test`, also scan edited `@gluon.jit` bodies for runtime
+  layout-object construction such as `layout=gl.SliceLayout(...)`,
+  `gl.DotOperandLayout(...)`, or target-specific layout constructors. Layouts
+  should be host-created and passed as `gl.constexpr`.
 
 ## semantic_contract
 
@@ -469,7 +420,12 @@ When the harness exposes multiple cases:
 
 - correctness and performance use the same ordered case stream;
 - every shape must pass correctness;
-- compare aggregate latency and per-shape speedups;
+- compare like with like: baseline per-shape total against candidate per-shape
+  total, or baseline geomean against candidate geomean;
+- never compare a baseline total across shapes with a single candidate
+  `GEAK_RESULT_LATENCY_MS` / fastest-shape latency;
+- when `GEAK_BENCHMARK_RESULTS_MS` is available, use that per-shape map as the
+  source of truth for no-regression and summary reporting;
 - do not accept a patch with material per-shape regression;
 - do not hardcode shape literals to win one case;
 - prefer explicit host-side dispatch for bucketed shape regimes;

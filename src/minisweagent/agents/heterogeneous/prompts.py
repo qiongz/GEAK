@@ -348,14 +348,9 @@ Generate optimization tasks for the kernel at {{ kernel_path }}.
 {% endif %}{% if baseline_metrics_path %}- **Baseline metrics**: {{ baseline_metrics_path }}
 {% endif %}{% if commandment_path %}- **COMMANDMENT.md** (evaluation contract): {{ commandment_path }}
 {% endif %}{% if knowledge_base_path %}- **Knowledge base** (optimization strategies): {{ knowledge_base_path }}
-{% endif %}{% if gluon_skill_path %}- **Triton-Gluon skill**: {{ gluon_skill_path }}
-{% endif %}{% if gluon_always_read_path %}- **Triton-Gluon split-doc entrypoint**: {{ gluon_always_read_path }}
-{% endif %}{% if gluon_search_policies_path %}- **Triton-Gluon planner/search policies** (planner default): {{ gluon_search_policies_path }}
-{% endif %}{% if gluon_component_traits_path %}- **Triton-Gluon component traits** (read only when routed by detected traits or overlay reason): {{ gluon_component_traits_path }}
-{% endif %}{% if gluon_architecture_notes_path %}- **Triton-Gluon architecture/runtime notes** (read only for target/JIT/AOT/matrix-sensitive planning): {{ gluon_architecture_notes_path }}
-{% endif %}{% if gluon_real_patterns_path %}- **Triton-Gluon real patterns and benchmark rules** (read for source-first, end-to-end, benchmark-boundary, or real-operator risks): {{ gluon_real_patterns_path }}
-{% endif %}{% if gluon_api_reference_path %}- **Worker-routed Gluon implementation docs**: choose API/example/backup docs through `gluon_doc_profile` and `required_gluon_docs`; do not read or inline API tutorials by default while planning.
-{% endif %}{% if gluon_kb_path %}- **Gluon knowledge base** (structured AMD Gluon knowledge): {{ gluon_kb_path }}
+{% endif %}{% if gluon_always_read_path %}- **Triton-Gluon hard-contract entrypoint**: {{ gluon_always_read_path }}
+{% endif %}{% if gluon_search_policies_path %}- **Triton-Gluon planner/search policies**: {{ gluon_search_policies_path }}
+{% endif %}{% if gluon_always_read_path or gluon_search_policies_path %}- **Gluon worker docs are profile-routed**: use `gluon_doc_profile`, `required_gluon_docs`, and task metadata to choose component, API, architecture, real-pattern, example, or backup docs. Treat the ROCm Gluon knowledge base as background/RAG only, not a required planner or worker contract.
 {% endif %}{% if deep_search_path %}- **Deep search findings**: {{ deep_search_path }}
 {% endif %}{% if previous_results_path %}- **Prior round results** (what actually happened): {{ previous_results_path }}
 {% endif %}{% if previous_tasks_path %}- **Prior tasks planned** (avoid repeating): {{ previous_tasks_path }}

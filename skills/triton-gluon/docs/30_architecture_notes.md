@@ -1,37 +1,19 @@
 # Triton-Gluon Architecture Notes
 
-Worker-routed architecture doc. Read this file when a task mentions target
+Worker-routed architecture doc. Read this file only when a task mentions target
 backend, architecture guards, Triton versions, JIT/AOT, MFMA, WMMA, descriptors,
 or prebuilt kernels.
 
-## Profile Routing Hints
+## When To Read This File
 
-- `nv_to_amd_translation`: check target family before carrying over NVIDIA
-  layout, async-copy, descriptor, or tensor-memory assumptions. Translation
-  should preserve semantics first, then optimize AMD-specific paths.
-- `matrix_lowering`: choose CDNA3 MFMA, CDNA4 scaled MFMA, or RDNA WMMA from
-  target evidence. Do not infer `instr_shape`, K width, or scale layout from
-  local block constants.
-- `jit_aot_sensitive`: treat Triton version, target triple, signature, scratch,
-  and prebuilt assets as execution contract. Preserve gates unless the same
-  benchmark boundary proves they are irrelevant.
-- `shape_bucketed_dispatch`: target family and layout version can change which
-  shape buckets are valid. Keep arch-sensitive dispatch visible to audit.
-
-## Internal Index
-
-- `gfx942_cdna3`
-- `gfx950_cdna4`
-- `gfx1250_rdna_wmma`
-- `amd_arch_family_quick_directions`
-- `### Trait: version_sensitive`
-- `### Trait: execution_jit_aot_sensitive`
-- `### Trait: operator_support_sensitive`
-- `runtime_target_resolution`
-- `kernel_path_compatibility`
-- `aot_compile_contract`
-- `amd_layout_version_map`
-- `gfx1250_descriptor_constraints`
+- `gfx942`, `gfx950`, or `gfx1250` target evidence: read the matching target
+  section and `amd_arch_family_quick_directions`.
+- Matrix, descriptor, or arch-specific memory path: read the target section
+  before using `50_api_reference.md` matrix or descriptor recipes.
+- Triton version, JIT/AOT, prebuilt assets, scratch, or target triples: read
+  `version_sensitive`, `execution_jit_aot_sensitive`, and related contracts.
+- Shape buckets whose layout or matrix path changes by target: keep dispatch
+  visible and verify against `20_component_traits.md` shape traits.
 
 ## gfx942_cdna3
 

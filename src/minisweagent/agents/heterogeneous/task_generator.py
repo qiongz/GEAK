@@ -65,7 +65,10 @@ from minisweagent.debug_runtime import emit_debug_log, model_tools_snapshot, too
 from minisweagent.run.preprocess.discovery_types import (
     DEFAULT_SHAPE_COVERAGE_PROFILE,
     GLUON_BASELINE_PROFILE_MI3XX,
+    GLUON_FEATURE_MODE_FORCE,
+    GLUON_FEATURE_MODE_FORCE_L0_ANCHOR,
     GLUON_FEATURE_MODE_OFF,
+    GLUON_FEATURE_MODE_REQUIRE_VIABLE,
     PREFER_AMD_GLUON_IF_VIABLE_POLICY,
     REQUIRE_AMD_GLUON_POLICY,
     SHAPE_COVERAGE_BUCKETED,
@@ -94,6 +97,7 @@ from minisweagent.run.target_contracts import (
 
 logger = logging.getLogger(__name__)
 _GEAK_REPO_ROOT = get_repo_root()
+_LAST_GLUON_TASK_GENERATION_DIAGNOSTICS: dict[str, Any] = {}
 
 _KNOWLEDGE_BASE_REL = "knowledge_base/optimization_strategies.py"
 _PLAIN_TRITON_KB_FALLBACK_RELS = (
@@ -121,6 +125,16 @@ _TRITON_FAMILY_MARKERS = (
     "triton.experimental.gluon",
     "from triton.experimental import gluon",
 )
+
+
+def get_last_gluon_task_generation_diagnostics() -> dict[str, Any]:
+    """Return diagnostics from the most recent task-generation parse."""
+    return json.loads(json.dumps(_LAST_GLUON_TASK_GENERATION_DIAGNOSTICS))
+
+
+def _set_last_gluon_task_generation_diagnostics(diagnostics: dict[str, Any]) -> None:
+    _LAST_GLUON_TASK_GENERATION_DIAGNOSTICS.clear()
+    _LAST_GLUON_TASK_GENERATION_DIAGNOSTICS.update(diagnostics)
 
 _BASE_FAMILY_SWIZZLE_TILE = "base_swizzle_and_tile_schedule"
 _BASE_FAMILY_SPLIT_K = "base_split_k_or_multipass_reduce"
@@ -518,6 +532,7 @@ def generate_tasks(
         required_base_families=required_base_families,
         expected_extension_slots=expected_extension_slots,
         audit_diagnostics_dir=audit_diagnostics_dir,
+        gluon_feature_mode=gluon_feature_mode,
     )
 
 
@@ -2199,13 +2214,14 @@ def _build_gluon_task_generation_guidance(feature_meta: dict[str, Any]) -> str:
 
     input_dialect = str(feature_meta.get("input_dialect") or "").strip().lower()
     search_policy = str(feature_meta.get("output_dialect_search_policy") or "").strip().lower()
+    feature_mode = str(feature_meta.get("gluon_feature_mode") or "").strip().lower()
 
     lines = [
         "## Gluon Task Staging Policy",
         "- Follow the standard GEAK progression by optimization direction, then implementation layer:",
         "  1. Pick a Triton optimization direction from profiling and baseline evidence.",
         "  2. Keep a plain Triton competitor for each high-value direction.",
-        "  3. Add L0 only as a minimal compileable AMD Gluon overlay for that same direction, and only from the `overlay_priority_routing` Prefer/high-confidence Consider buckets.",
+        "  3. Add L0 only as a minimal compileable AMD Gluon overlay for that same direction, and only from the `overlay_priority_routing` Prefer/high-confidence Consider buckets unless `gluon_feature_mode=force_l0_anchor` explicitly asks for one diagnostic execution anchor.",
         "  4. Add paired mapping when the same idea can be tested in both dialects.",
         "  5. Add L1 trait-specific lowering only after executed viable/local-win Gluon evidence.",
         "  6. Add Hybrid/mixed host-side dispatch only in later rounds with per-shape or sub-operation evidence.",
@@ -2243,6 +2259,14 @@ def _build_gluon_task_generation_guidance(feature_meta: dict[str, Any]) -> str:
         lines.append("- AMD Gluon is required for this run, but the first goal is still a passing baseline candidate before the most ambitious rewrites.")
     elif search_policy == PREFER_AMD_GLUON_IF_VIABLE_POLICY:
         lines.append("- Prefer AMD Gluon only as an early same-direction overlay after preserving the plain Triton competitor; the first Gluon task is L0 viability, not a reason to replace plain Triton tasks.")
+    if feature_mode == GLUON_FEATURE_MODE_FORCE_L0_ANCHOR:
+        lines.append(
+            "- Forced L0 anchor mode: if no Prefer/high-confidence Consider overlay exists, emit at most one ordinary-Consider AMD Gluon L0 execution anchor, mark it as compile/execution evidence, and keep its same-direction plain Triton competitor."
+        )
+    elif feature_mode == GLUON_FEATURE_MODE_REQUIRE_VIABLE:
+        lines.append(
+            "- Require viable Gluon mode: do not substitute a Base-only plan for a missing Gluon task. Emit a dispatchable Prefer/high-confidence Consider Gluon task, or let task generation report no viable Gluon task for this round."
+        )
 
     return "\n".join(lines)
 
@@ -3551,19 +3575,90 @@ def _gluon_l0_execution_boundary_errors(task: AgentTask) -> list[str]:
     return errors
 
 
-def _filter_low_priority_l0_overlays(tasks: list[AgentTask]) -> list[AgentTask]:
+def _mode_allows_low_priority_l0_anchor(gluon_feature_mode: str | None) -> bool:
+    mode = str(gluon_feature_mode or "").strip().lower()
+    return mode in {GLUON_FEATURE_MODE_FORCE, GLUON_FEATURE_MODE_FORCE_L0_ANCHOR}
+
+
+def _mode_requires_viable_gluon(gluon_feature_mode: str | None) -> bool:
+    return str(gluon_feature_mode or "").strip().lower() == GLUON_FEATURE_MODE_REQUIRE_VIABLE
+
+
+def _dropped_gluon_overlay_summary(task: AgentTask, errors: list[str]) -> dict[str, Any]:
+    summary = _task_audit_summary(task)
+    text = f"{task.label}\n{task.task}"
+    return {
+        "label": task.label,
+        "priority": task.priority,
+        "drop_reason": "; ".join(errors),
+        "drop_reasons": list(errors),
+        "overlay_priority": _parse_prompt_field_value(text, "Overlay priority") or "",
+        "source_base_family": summary.get("source_base_family") or "",
+        "plain_competitor": summary.get("plain_competitor") or "",
+        "l0_scope_classification": summary.get("l0_scope_classification") or "",
+        "minimum_executable_unit": summary.get("minimum_executable_unit") or "",
+        "allowed_execution_path": summary.get("allowed_execution_path") or "",
+        "target_component": summary.get("target_component") or "",
+    }
+
+
+def _filter_low_priority_l0_overlays(
+    tasks: list[AgentTask],
+    *,
+    gluon_feature_mode: str | None = None,
+) -> tuple[list[AgentTask], list[dict[str, Any]]]:
     filtered: list[AgentTask] = []
+    dropped: list[dict[str, Any]] = []
+    allow_low_priority_anchor = _mode_allows_low_priority_l0_anchor(gluon_feature_mode)
     for task in tasks:
         priority = _parse_prompt_field_value(f"{task.label}\n{task.task}", "Overlay priority")
-        if _is_l0_gluon_overlay_task(task) and priority and not _has_valid_l0_overlay_priority(task):
+        if (
+            _is_l0_gluon_overlay_task(task)
+            and priority
+            and not _has_valid_l0_overlay_priority(task)
+            and not allow_low_priority_anchor
+        ):
+            errors = _gluon_overlay_priority_errors(task)
             logger.warning(
                 "Dropping low-priority AMD Gluon L0 overlay %s before task write: %s",
                 task.label,
-                "; ".join(_gluon_overlay_priority_errors(task)),
+                "; ".join(errors),
             )
+            dropped.append(_dropped_gluon_overlay_summary(task, errors))
             continue
         filtered.append(task)
-    return filtered
+    return filtered, dropped
+
+
+def _write_task_generation_gluon_diagnostics(
+    *,
+    diagnostics_dir: Path | None,
+    dropped_gluon_overlays: list[dict[str, Any]],
+    no_viable_gluon_task: dict[str, Any] | None = None,
+) -> None:
+    if not dropped_gluon_overlays and not no_viable_gluon_task:
+        _set_last_gluon_task_generation_diagnostics({})
+        return
+    payload: dict[str, Any] = {
+        "dropped_gluon_overlays": list(dropped_gluon_overlays),
+    }
+    if no_viable_gluon_task:
+        payload["no_viable_gluon_task"] = dict(no_viable_gluon_task)
+    _set_last_gluon_task_generation_diagnostics(payload)
+
+    out_dir = diagnostics_dir
+    if out_dir is None:
+        env_dir = os.getenv("GEAK_TASKGEN_AUDIT_DUMP_DIR")
+        out_dir = Path(env_dir) if env_dir else None
+    if out_dir is None:
+        return
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "task_generation_gluon_diagnostics.json").write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+        )
+    except OSError as exc:
+        logger.warning("Could not write task-generation Gluon diagnostics: %s", exc)
 
 
 def _gluon_overlay_binding_errors(task: AgentTask, tasks: list[AgentTask]) -> list[str]:
@@ -4039,8 +4134,10 @@ def _parse_llm_response(
     required_base_families: list[str] | None = None,
     expected_extension_slots: int | None = None,
     audit_diagnostics_dir: Path | None = None,
+    gluon_feature_mode: str | None = None,
 ) -> list[AgentTask]:
     """Parse JSON response into AgentTask objects."""
+    _set_last_gluon_task_generation_diagnostics({})
     content = content.strip()
     if content.startswith("```"):
         lines = content.splitlines()
@@ -4157,7 +4254,25 @@ def _parse_llm_response(
     if not tasks:
         raise ValueError("LLM response contained no valid tasks")
 
-    tasks = _filter_low_priority_l0_overlays(tasks)
+    tasks, dropped_gluon_overlays = _filter_low_priority_l0_overlays(
+        tasks,
+        gluon_feature_mode=gluon_feature_mode,
+    )
+    extension_tasks_after_filter = [task for task in tasks if _is_gluon_extension_task(task)]
+    if _mode_requires_viable_gluon(gluon_feature_mode) and not extension_tasks_after_filter:
+        _write_task_generation_gluon_diagnostics(
+            diagnostics_dir=audit_diagnostics_dir,
+            dropped_gluon_overlays=dropped_gluon_overlays,
+            no_viable_gluon_task={
+                "reason": "require_viable_gluon mode found no dispatchable AMD Gluon task",
+                "dropped_gluon_overlay_count": len(dropped_gluon_overlays),
+            },
+        )
+        return []
+    _write_task_generation_gluon_diagnostics(
+        diagnostics_dir=audit_diagnostics_dir,
+        dropped_gluon_overlays=dropped_gluon_overlays,
+    )
     tasks = _ensure_mandatory_plain_families(
         tasks,
         required_base_families or [],
@@ -4374,6 +4489,7 @@ def main():
         discovery_path=discovery_path,
         codebase_context_path=codebase_context_path,
         num_gpus=args.num_gpus,
+        audit_diagnostics_dir=Path(args.output) if args.output else None,
     )
 
     # Print summary to stderr
