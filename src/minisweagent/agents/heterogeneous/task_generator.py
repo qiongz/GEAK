@@ -2945,10 +2945,13 @@ def _is_plain_competitor_task(task: AgentTask) -> bool:
     extension_layer = str(task.config.get("extension_layer") or "").strip().lower()
     if required_output != "plain_triton":
         return False
-    if "amd_gluon" in implementation_layer or "mixed" in implementation_layer or extension_layer in {"l0", "l1", "hybrid"}:
+    has_gluon_signal = _task_has_explicit_gluon_signal(task)
+    if "amd_gluon" in implementation_layer or "mixed" in implementation_layer or (
+        extension_layer in {"l0", "l1", "hybrid"} and has_gluon_signal
+    ):
         return False
     text = f"{task.label}\n{task.task}".lower()
-    if "extension layer:" in text or "implementation layer: amd_gluon" in text:
+    if "implementation layer: amd_gluon" in text or has_gluon_signal:
         return False
     return search_set == "base" or "base family:" in text
 
@@ -3019,15 +3022,38 @@ def _is_gluon_extension_task(task: AgentTask) -> bool:
     if required_output in {"amd_gluon", "mixed"}:
         return True
     implementation_layer = str(task.config.get("implementation_layer") or "").strip().lower()
-    extension_layer = str(task.config.get("extension_layer") or "").strip().lower()
-    if "amd_gluon" in implementation_layer or extension_layer in {"l0", "l1", "hybrid"}:
+    if "amd_gluon" in implementation_layer:
         return True
     text = f"{task.label}\n{task.task}".lower()
-    return (
+    search_set = str(task.config.get("search_set") or "").strip().lower()
+    if search_set == "shared" or "shared set task" in text or "shared source family:" in text:
+        return False
+    doc_profile = str(task.config.get("gluon_doc_profile") or "").strip().lower()
+    if doc_profile and doc_profile != "base_or_shared_gluon":
+        return True
+    if task.config.get("required_gluon_docs"):
+        return True
+    return any(
+        marker in text
+        for marker in (
+            "@gluon.jit",
+            "amd_gluon",
+            "nv_gluon",
+            "amd-gluon",
+            "triton-gluon",
+            "gluon overlay",
+            "gluon variant",
+            "gluon_doc_profile",
+            "required_gluon_docs",
+        )
+    ) or (
         "extension set" in text
-        or "extension layer:" in text
         or task.label.lower().startswith(("ext-", "extension-"))
-    )
+    ) and "gluon" in text
+
+
+def _task_has_explicit_gluon_signal(task: AgentTask) -> bool:
+    return _is_gluon_extension_task(task)
 
 
 def _has_l0_extension_tag(task: AgentTask) -> bool:

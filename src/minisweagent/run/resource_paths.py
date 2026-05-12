@@ -55,8 +55,11 @@ def resolve_project_resource(
         return rel.resolve() if rel.exists() else None
     workspace_path = Path(workspace).expanduser() if workspace is not None else None
     for root in _candidate_roots(workspace_path, extra_roots):
-        candidate = root / rel
-        if candidate.exists():
-            return candidate.resolve()
+        candidates = [root / rel]
+        if rel.parts and rel.parts[0] == "knowledge-base":
+            candidates.append(root / "mcp_tools" / "rag-mcp" / rel)
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate.resolve()
     return None
 

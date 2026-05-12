@@ -248,13 +248,14 @@ def _task_required_output_dialect(meta: dict[str, Any], task_body: str = "") -> 
     required = str(meta.get("required_output_dialect") or "").strip().lower()
     implementation_layer = str(meta.get("implementation_layer") or _task_body_field(task_body, "Implementation layer")).strip().lower()
     extension_layer = str(meta.get("extension_layer") or _task_body_field(task_body, "Extension layer")).strip().lower()
+    has_gluon_signal = _task_has_explicit_gluon_signal(meta, task_body)
 
     layer_required = ""
     if "hybrid" in label_text or "mixed" in label_text:
+        layer_required = "mixed" if has_gluon_signal else ""
+    elif ("mixed" in implementation_layer or "hybrid" in implementation_layer or extension_layer == "hybrid") and has_gluon_signal:
         layer_required = "mixed"
-    elif "mixed" in implementation_layer or "hybrid" in implementation_layer or extension_layer == "hybrid":
-        layer_required = "mixed"
-    elif "amd_gluon" in implementation_layer or extension_layer in {"l0", "l1"}:
+    elif "amd_gluon" in implementation_layer or (extension_layer in {"l0", "l1"} and has_gluon_signal):
         layer_required = "amd_gluon"
     elif (
         label_text.startswith(("ext-", "extension-"))
@@ -268,6 +269,36 @@ def _task_required_output_dialect(meta: dict[str, Any], task_body: str = "") -> 
             return layer_required
         return required
     return layer_required or "any"
+
+
+def _task_has_explicit_gluon_signal(meta: dict[str, Any], task_body: str = "") -> bool:
+    """Return whether task metadata/text explicitly names Triton-Gluon behavior."""
+    text = "\n".join(
+        str(part or "")
+        for part in (
+            task_body,
+            meta.get("label"),
+            meta.get("implementation_layer"),
+            meta.get("required_output_dialect"),
+            meta.get("gluon_doc_profile"),
+            meta.get("required_gluon_docs"),
+            meta.get("source_origin"),
+        )
+    ).lower()
+    return any(
+        marker in text
+        for marker in (
+            "amd_gluon",
+            "nv_gluon",
+            "amd-gluon",
+            "triton-gluon",
+            "gluon_doc_profile",
+            "required_gluon_docs",
+            "@gluon.jit",
+            "gluon overlay",
+            "gluon variant",
+        )
+    )
 
 
 def _task_uses_skills(meta: dict[str, Any], task_body: str = "") -> bool:
@@ -313,11 +344,14 @@ def _task_required_amd_gluon_contract_tags(meta: dict[str, Any], task_body: str 
     required_output = _task_required_output_dialect(meta, task_body)
     implementation = str(meta.get("implementation_layer") or _task_body_field(task_body, "Implementation layer") or "").lower()
     extension = str(meta.get("extension_layer") or _task_body_field(task_body, "Extension layer") or "").lower()
-    if required_output not in {"amd_gluon", "mixed"} and "amd_gluon" not in implementation and extension not in {
+    has_gluon_signal = _task_has_explicit_gluon_signal(meta, task_body)
+    if required_output not in {"amd_gluon", "mixed"} and "amd_gluon" not in implementation and not (
+        has_gluon_signal and extension in {
         "l0",
         "l1",
         "hybrid",
-    }:
+        }
+    ):
         return []
     text = "\n".join(
         str(part or "")

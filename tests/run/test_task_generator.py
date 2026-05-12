@@ -2788,6 +2788,29 @@ def test_resolve_project_resource_finds_installed_geak_share_root(tmp_path: Path
     assert resolved == installed_doc.resolve()
 
 
+def test_resolve_project_resource_finds_main_rag_knowledge_base(tmp_path: Path) -> None:
+    kb_doc = (
+        tmp_path
+        / "mcp_tools"
+        / "rag-mcp"
+        / "knowledge-base"
+        / "amd-knowledge-base"
+        / "layer-3-libraries"
+        / "compilers"
+        / "triton-gluon-on-rocm.md"
+    )
+    kb_doc.parent.mkdir(parents=True)
+    kb_doc.write_text("# source RAG doc\n")
+
+    resolved = resolve_project_resource(
+        "knowledge-base/amd-knowledge-base/layer-3-libraries/compilers/triton-gluon-on-rocm.md",
+        workspace=tmp_path / "workspace",
+        extra_roots=[tmp_path],
+    )
+
+    assert resolved == kb_doc.resolve()
+
+
 def test_taskgen_planner_default_files_do_not_require_worker_deep_docs() -> None:
     assert "Triton-Gluon API reference" not in TASKGEN_INSTANCE_TEMPLATE
     assert "Triton-Gluon schematic examples" not in TASKGEN_INSTANCE_TEMPLATE

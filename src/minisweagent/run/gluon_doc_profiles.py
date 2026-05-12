@@ -106,16 +106,35 @@ def task_requires_gluon_worker_docs(
             task_body,
             label,
             implementation,
-            extension,
             profile,
         )
     ).lower()
+    has_gluon_signal = bool(
+        required in {"amd_gluon", "mixed"}
+        or "amd_gluon" in implementation
+        or "amd-gluon" in implementation
+        or any(
+            marker in text
+            for marker in (
+                "composition type: shared_transplant",
+                "composition type: gluon_variant",
+                "composition type: hybrid_dispatch",
+                "shared_transplant",
+                "gluon_variant",
+                "@gluon.jit",
+                "amd gluon overlay",
+                "amd_gluon variant",
+                "required output dialect: amd_gluon",
+                "required_output_dialect=amd_gluon",
+            )
+        )
+    )
 
     if required in {"amd_gluon", "mixed"}:
         return True
     if "amd_gluon" in implementation or "amd-gluon" in implementation:
         return True
-    if extension in {"l0", "l1", "hybrid"}:
+    if extension in {"l0", "l1", "hybrid"} and has_gluon_signal:
         return True
     if profile in {
         "extension_l0_minimal",
@@ -126,16 +145,4 @@ def task_requires_gluon_worker_docs(
         "hybrid_dispatch_from_evidence",
     }:
         return True
-    return any(
-        marker in text
-        for marker in (
-            "composition type: shared_transplant",
-            "composition type: gluon_variant",
-            "composition type: hybrid_dispatch",
-            "shared_transplant",
-            "gluon_variant",
-            "@gluon.jit",
-            "amd gluon overlay",
-            "amd_gluon variant",
-        )
-    )
+    return has_gluon_signal

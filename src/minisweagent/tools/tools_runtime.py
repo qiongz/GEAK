@@ -36,6 +36,11 @@ _TOOL_PROFILES: dict[str, set[str] | None] = {
 }
 
 
+def get_tools_list(*, use_strategy_manager: bool = True, tool_profile: str = "full") -> list[dict]:
+    """Backward-compatible module-level tool schema helper."""
+    return ToolRuntime.fetch_tools_list(use_strategy_manager=use_strategy_manager, tool_profile=tool_profile)
+
+
 class ToolRuntime:
     @classmethod
     def load_tools_json(cls) -> list[dict[str, Any]]:

@@ -116,6 +116,30 @@ def test_plain_base_task_with_gluon_run_meta_does_not_enable_doc_gate(tmp_path) 
     assert "## REQUIRED BEFORE EDITING OR SAVE_AND_TEST" not in task.task
 
 
+def test_extension_layer_alone_does_not_enable_gluon_doc_gate(tmp_path) -> None:
+    task_path = tmp_path / "non_gluon_extension.md"
+    write_task_file(
+        task_path,
+        {
+            "label": "extension-scheduler-probe",
+            "priority": 4,
+            "kernel_type": "triton",
+            "kernel_path": str(tmp_path / "kernel.py"),
+            "repo_root": str(tmp_path),
+            "required_output_dialect": "plain_triton",
+            "implementation_layer": "plain_triton",
+            "extension_layer": "L0",
+        },
+        "Extension layer: L0\nImplementation layer: plain_triton\nOptimize scheduling only.",
+    )
+
+    task = task_file_to_agent_task(task_path)
+
+    assert task.config["use_skills"] is False
+    assert "gluon_doc_gate_enabled" not in task.config
+    assert "## Canonical Gluon References" not in task.task
+
+
 def test_required_block_matches_gluon_doc_gate_even_when_run_guidance_off(tmp_path) -> None:
     task_path = tmp_path / "required_gluon_feature_off.md"
     write_task_file(

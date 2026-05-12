@@ -133,13 +133,13 @@ minisweagent = [
     "skills/triton-gluon/docs/60_real_patterns.md",
     "skills/triton-gluon/docs/70_backup_details.md",
 ]
-"share/geak/knowledge-base" = ["knowledge-base/INDEX.md"]
+"share/geak/knowledge-base" = ["mcp_tools/rag-mcp/knowledge-base/INDEX.md"]
 "share/geak/knowledge-base/amd-knowledge-base/layer-3-libraries/compilers" = [
-    "knowledge-base/amd-knowledge-base/layer-3-libraries/compilers/triton-on-rocm.md",
-    "knowledge-base/amd-knowledge-base/layer-3-libraries/compilers/triton-gluon-on-rocm.md",
+    "mcp_tools/rag-mcp/knowledge-base/amd-knowledge-base/layer-3-libraries/compilers/triton-on-rocm.md",
+    "mcp_tools/rag-mcp/knowledge-base/amd-knowledge-base/layer-3-libraries/compilers/triton-gluon-on-rocm.md",
 ]
 "share/geak/knowledge-base/amd-knowledge-base/layer-5-llm/05-advanced/custom-kernels" = [
-    "knowledge-base/amd-knowledge-base/layer-5-llm/05-advanced/custom-kernels/triton-kernels.md",
+    "mcp_tools/rag-mcp/knowledge-base/amd-knowledge-base/layer-5-llm/05-advanced/custom-kernels/triton-kernels.md",
 ]
 "share/geak/examples/triton_gluon_inputs" = ["examples/triton_gluon_inputs/README.md"]
 
