@@ -401,7 +401,8 @@ class SaveAndTestTool:
                 "PATCH_CONTRACT_FAILED: patch defines a Gluon helper without executing it "
                 "for the required target path. NEXT_PATCH_SCOPE=wiring_only: the next patch "
                 "should only fix helper wiring, launch, target association, or measured-output "
-                "feeding; do not edit layout factories, matrix lowering, kernel body, or public API."
+                "feeding; do not edit layout factories, matrix lowering, kernel body, public API, "
+                "or upgrade a local smoke/probe into a whole-kernel rewrite."
             )
         return None
 

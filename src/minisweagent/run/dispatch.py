@@ -311,6 +311,15 @@ def _task_requires_gluon_worker_docs(meta: dict[str, Any], task_body: str = "") 
 
 
 def _task_required_amd_gluon_contract_tags(meta: dict[str, Any], task_body: str = "") -> list[str]:
+    required_output = _task_required_output_dialect(meta, task_body)
+    implementation = str(meta.get("implementation_layer") or _task_body_field(task_body, "Implementation layer") or "").lower()
+    extension = str(meta.get("extension_layer") or _task_body_field(task_body, "Extension layer") or "").lower()
+    if required_output not in {"amd_gluon", "mixed"} and "amd_gluon" not in implementation and extension not in {
+        "l0",
+        "l1",
+        "hybrid",
+    }:
+        return []
     text = "\n".join(
         str(part or "")
         for part in (

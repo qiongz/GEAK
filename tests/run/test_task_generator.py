@@ -149,6 +149,13 @@ def test_overlay_direction_policy_lives_in_split_docs() -> None:
     assert "Whole-kernel L0 comparison anchor" in patterns_doc
     assert "## broadcast_heavy_whole_kernel_l0" in patterns_doc
     assert "## l0_scope_by_kernel_family" in patterns_doc
+    assert "### Search policy: l0_scope_decision_before_emit" in search_doc
+    assert "Branch A: local single-component smoke/probe" in search_doc
+    assert "Branch B: whole-helper layout skeleton" in search_doc
+    assert "Unknown or ambiguous boundary" in search_doc
+    assert "l0_scope_decision_before_emit" in routing_doc
+    assert "Branch A local smoke/probe L0" in patterns_doc
+    assert "Branch B whole-helper skeleton L0" in patterns_doc
     assert "softmax/reduction/norm" in patterns_doc
     assert "topk/sampler/routing" in patterns_doc
     assert "overlay_direction_vs_mechanism" in routing_doc
@@ -273,6 +280,9 @@ def test_search_space_allocation_for_two_gpus_preserves_base_without_weak_gluon(
     assert "do_not_optimize_before_compile: true" in guidance
     assert "overlay_direction_vs_mechanism" in guidance
     assert "atomic_component_lattice" in guidance
+    assert "l0_scope_decision_before_emit" in guidance
+    assert "First-pass L0 branch rule" in guidance
+    assert "default to a local single-component smoke/probe" in guidance
     assert "l0_scope_by_kernel_family" in guidance
     assert "Keep API-level rewrite and pass/fail patch details in the routed skills/docs" in guidance
     assert "patch_evolution_strategy" not in guidance
@@ -291,6 +301,8 @@ def test_search_space_allocation_for_large_budget_keeps_full_base() -> None:
     assert "AMD Gluon overlay: 1 task(s)" in guidance
     assert "Round 1 plain Triton input may have at most one L0 overlay" in guidance
     assert "Gluon L0 scope classification" in guidance
+    assert "local target + whole_jit_kernel" in guidance
+    assert "default whole-kernel rewrite" in guidance
     assert "Target component" in guidance
     assert "same component and same optimization direction" in guidance
     assert "overlay_priority_routing" in guidance
@@ -979,8 +991,74 @@ def test_l0_soft_audit_diagnostics_cover_atomic_component_scope() -> None:
     summary = _task_audit_summary(task)
 
     assert "local_target_promoted_to_whole_kernel" in summary["soft_audit_diagnostics"]
-    assert "matrix_metadata_inconsistent" in summary["soft_audit_diagnostics"]
     assert "reduction_metadata_inconsistent" in summary["soft_audit_diagnostics"]
+    assert "matrix_metadata_inconsistent" not in summary["soft_audit_diagnostics"]
+    assert "component_bundle_too_broad" not in summary["soft_audit_diagnostics"]
+
+
+def test_l0_soft_audit_ignores_blockers_and_negative_clauses_for_local_smoke() -> None:
+    task = AgentTask(
+        agent_class=FakeAgentClass,
+        task="\n".join(
+            [
+                "Extension layer: L0",
+                "Target component: K_Buffer load path",
+                "Allowed change: convert one K_Buffer load/store path only",
+                "Primary atomic component: load_store",
+                "Secondary components / blockers: matrix_operand, reduction_accumulator, wrapper_integration",
+                "Failure layers: load_store, layout_broadcast, matrix_operand, reduction_accumulator",
+                "L0 scope classification: low_coupling",
+                "Minimum executable unit: inline_scoped_helper",
+                "Allowed execution path: inline_scoped_helper",
+                "Reject if: MFMA or tl.dot is introduced",
+                "Do NOT introduce buffer ops or whole-kernel rewrite",
+                "Matrix lowering required: false",
+            ]
+        ),
+        config={
+            "kernel_type": "triton",
+            "required_output_dialect": "amd_gluon",
+            "extension_layer": "L0",
+            "implementation_layer": "amd_gluon overlay",
+            "minimum_executable_unit": "inline_scoped_helper",
+            "allowed_execution_path": "inline_scoped_helper",
+            "scope_infeasible_policy": "shrink_or_report",
+        },
+    )
+
+    summary = _task_audit_summary(task)
+
+    assert "component_bundle_too_broad" not in summary["soft_audit_diagnostics"]
+    assert "matrix_metadata_inconsistent" not in summary["soft_audit_diagnostics"]
+    assert "local_target_promoted_to_whole_kernel" not in summary["soft_audit_diagnostics"]
+
+
+def test_l0_soft_audit_detects_multiple_patch_target_components() -> None:
+    task = AgentTask(
+        agent_class=FakeAgentClass,
+        task="\n".join(
+            [
+                "Extension layer: L0",
+                "Target component: K_Buffer load_store and layout_broadcast path",
+                "Allowed change: change load_store and layout_broadcast together",
+                "Primary atomic component: load_store, layout_broadcast",
+                "L0 scope classification: low_coupling",
+                "Minimum executable unit: inline_scoped_helper",
+                "Allowed execution path: inline_scoped_helper",
+            ]
+        ),
+        config={
+            "kernel_type": "triton",
+            "required_output_dialect": "amd_gluon",
+            "extension_layer": "L0",
+            "implementation_layer": "amd_gluon overlay",
+            "minimum_executable_unit": "inline_scoped_helper",
+            "allowed_execution_path": "inline_scoped_helper",
+        },
+    )
+
+    summary = _task_audit_summary(task)
+
     assert "component_bundle_too_broad" in summary["soft_audit_diagnostics"]
 
 

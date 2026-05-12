@@ -321,9 +321,12 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
     assert "Task execution_mode: mixed_jit_aot" in task.task
     assert "## Patch Evolution Working Set" in task.task
     assert "atomic_component_lattice" in task.task
+    assert "l0_scope_decision_before_emit" in task.task
     assert "primary_component" in task.task
     assert "patch_evolution_by_task_type" in task.task
     assert "failure_to_next_patch_map" in task.task
+    assert "Branch A local smoke/probe stays local" in task.task
+    assert "Branch B whole-helper skeleton starts as compile/wiring/layout evidence" in task.task
     assert "## Task consistency check" in task.task
     assert "overlay_direction_vs_mechanism" in task.task
     assert "l0_scope_by_kernel_family" in task.task
@@ -502,6 +505,33 @@ def test_worker_context_sets_matrix_contract_tag_for_mfma_task(tmp_path) -> None
     task = task_file_to_agent_task(task_path)
 
     assert task.config["required_amd_gluon_contract_tags"] == ["matrix_lowering"]
+
+
+def test_plain_base_matrix_task_does_not_get_amd_gluon_contract_tags(tmp_path) -> None:
+    task_path = tmp_path / "plain_matrix_base.md"
+    write_task_file(
+        task_path,
+        {
+            "label": "base-matrix-dot-cleanup",
+            "priority": 0,
+            "kernel_type": "triton",
+            "kernel_path": str(tmp_path / "kernel.py"),
+            "repo_root": str(tmp_path),
+            "input_dialect": "plain_triton",
+            "gluon_feature_mode": "auto",
+            "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+            "search_set": "base",
+            "required_output_dialect": "plain_triton",
+            "implementation_layer": "plain_triton",
+        },
+        "Base Set task\nBase family: base_hot_path_streamline\nOptimization direction: improve tl.dot matrix path without MFMA rewrite.",
+    )
+
+    task = task_file_to_agent_task(task_path)
+
+    assert "required_amd_gluon_contract_tags" not in task.config
+    assert "gluon_doc_gate_enabled" not in task.config
+    assert "## Gluon Working Set" not in task.task
 
 
 def test_worker_context_infers_required_gluon_from_body_layer_contract(tmp_path) -> None:

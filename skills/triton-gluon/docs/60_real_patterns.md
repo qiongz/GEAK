@@ -338,9 +338,18 @@ Patch evolution model:
 - Generated L0 overlays use `patch_0` only as a compile/execute/correctness
   anchor. If that anchor passes, later patches change one allowed variable. If
   it fails, later patches fix the classified failure layer first.
+- Branch A local smoke/probe L0 uses `patch_0` to prove exactly one primary
+  component can execute and feed measured output. If the helper is not executed,
+  the next patch is wiring-only. If source evidence proves the local path cannot
+  execute independently, record `Task correction` and shrink/report; do not
+  promote the worker patch to a whole-kernel rewrite.
 - Whole-kernel Gluon anchors are compile-risk tasks. `patch_0` proves launcher,
   layout factory, ABI, and minimum execution wiring before any performance
   tuning. `patch_1+` works through one failure layer at a time.
+- Branch B whole-helper skeleton L0 is a whole-kernel anchor whose `patch_0`
+  proves compile, wiring, parent-layout lineage, and measured-output feeding.
+  Passing `patch_0` does not permit immediate MFMA, buffer, scheduler, epilogue,
+  or performance tuning unless the next patch names one removable overhead.
 - L1 trait-specific tasks start from a verified anchor and change only the
   named trait, such as one memory path, one layout conversion, or one matrix
   subpath. A failed L1 patch repairs that trait's failure layer before trying
@@ -381,6 +390,10 @@ Task consistency check:
   docs. Confirm that `Target component`, `Allowed change`,
   `minimum_executable_unit`, and `allowed_execution_path` describe the same
   scoped work.
+- Classify the task as Branch A local smoke/probe or Branch B whole-helper
+  skeleton using `10_search_policies.md::l0_scope_decision_before_emit`. Branch
+  A stays within one primary component; Branch B starts from a whole-helper
+  layout/compile skeleton. Do not silently switch branches inside a worker patch.
 - If the source shows an unavoidable matrix, reduction, layout, or wrapper layer
   that is absent from `failure_layers` / `expected_failure_layers`, record a
   `Task correction` in strategy notes and summary, then use
