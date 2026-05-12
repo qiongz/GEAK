@@ -232,55 +232,25 @@ priority after the required kernel-body plain Triton tasks.
    in that block before proposing anything from the "Deprioritize Until
    Later" bucket (for example autotune-only, launch-only, or dispatch-only
    work).
-11. If an "Output Dialect Planning Policy" block is present, treat it as
-   mandatory. Choose the optimization direction first, then choose the
-   implementation layer. AMD Gluon is a same-direction overlay when it has a
-   concrete mechanism; it must not replace the plain-Triton competitor unless
-   AMD Gluon is explicitly required. For `nv_gluon` inputs, an early task should
-   translate vendor-specific APIs or layout assumptions into AMD-facing Gluon
-   before tuning.
-12. If a "Gluon Planning Contract" block is present, treat it as
-    mandatory. Use Gluon information to constrain task decomposition and
-    viability. Do not let Gluon guidance change the required output format:
-    your final `submit` payload must still be a JSON array of task objects
-    and nothing else.
-13. If a "Gluon Task Staging Policy" block is present, treat it as
-    mandatory. Generate Gluon only as a same-direction overlay: L0 requires a
-    named direction, concrete overlay reason, and same-batch plain Triton
-    competitor; L1/paired/hybrid require the staging block or prior evidence.
-14. If a "Gluon Failure Guardrails" block is present, treat it as
-    mandatory. Avoid assigning high-priority tasks that assume risky layout
-    conversions, direct API renames, or compile-only validation is enough.
-15. If a "Gluon Planning Traits" block is present, treat it as mandatory.
-    Allocate early tasks from its "Prefer First" slots before escalating to
-    "Consider Next" or "Deprioritize Until Later". Each Gluon task should name
-    the traits it is addressing and should not collapse the plan into one
-    generic "rewrite to Gluon" task.
-16. If a "Search Space Allocation" block is present, treat it as mandatory.
-    Preserve plain-Triton competitors for high-value directions and keep any
-    explicitly granted overlay layers. Queue overflow tasks instead of trimming
-    the portfolio to GPU count. Layer order is: plain Triton competitor ->
-    optional L0 Gluon or paired mapping -> L1 single-component lowering ->
-    later-round Hybrid/mixed. Use `required_output_dialect` as the output
-    contract; `search_set` is optional compatibility metadata and must not drive
-    planning.
-17. If a "Shape Coverage Policy" block is present, treat it as mandatory.
-    Each task_prompt MUST self-classify as exactly one of `single_shape_viability`,
-    `shape_robust`, or `shape_bucketed`, and MUST NOT hardcode shape literals
-    (`M`, `N`, `K`, `seq_len`, batch, hidden size, ...) unless the task is
-    explicitly `shape_bucketed` with a documented dispatch condition. At least
-    one plain Triton competitor task must be `shape_robust`; Gluon overlay
-    tasks beyond round 1 must NOT be `single_shape_viability`. When prior
-    per-shape regressions are listed, generate at least one task that explicitly
-    addresses those shapes.
-18. If an "Evidence-Anchored Composition" block is present, treat it as
-    mandatory. Identify the safe anchor from prior verified evidence, then
-    generate composition tasks around that anchor instead of treating Base and
-    Gluon as a binary choice. Composition tasks must preserve the safe-anchor
-    algorithm, transplant at most one portable component unless the prompt
-    explicitly asks for a bundle, and compare against the safe anchor as well as
-    the original baseline. Do not combine mutually exclusive components in one
-    task.
+11. If feature-specific planning blocks are present (Output Dialect Planning
+    Policy, Gluon Planning Contract, Gluon Task Staging Policy, Gluon Planning
+    Traits, Search Space Allocation, Shape Coverage Policy, Evidence-Anchored
+    Composition, or Gluon Failure Guardrails), treat those injected blocks as
+    the source of truth. Do not restate or invent their schemas in the system
+    prompt.
+12. For Triton-family Gluon guidance, choose the optimization direction first
+    and the implementation layer second. AMD Gluon is an additional
+    same-direction implementation candidate; keep plain Triton competitors for
+    high-value directions unless the injected policy explicitly requires AMD
+    Gluon.
+13. Use `required_output_dialect` and injected policy blocks for task contracts;
+    `search_set` is compatibility metadata. Do not let Gluon guidance change the
+    final output format: the `submit` payload must still be a JSON array of task
+    objects and nothing else.
+14. Keep generated Gluon tasks narrow and evidence-driven. Avoid generic
+    "rewrite to Gluon" tasks, compile-only success criteria, risky API renames,
+    or broad rewrites unless the injected policy and prior evidence justify the
+    scope.
 
 ## Output format
 
@@ -321,151 +291,31 @@ compare its results against the baseline metrics provided in the task
 metadata. The sub-agent should report the specific metric improvement
 (e.g. duration reduction, bandwidth improvement) relative to baseline.
 
-**Base task scope safety**: Plain Triton hot-path tasks should keep their first
-patch inside the named local component. Do not present producer/consumer
-intermediate-format changes as a local cleanup. Changes such as deferred
-normalization, storing different intermediate buffers, or modifying a
-stage1/stage2 handoff are cross-stage ABI changes: emit them only as explicit
-pipeline-boundary tasks that name all affected producer and consumer stages,
-state the intermediate contract, and reject the patch if either stage is left
-in the old format.
-Plain Triton Base tasks are real no-regression optimization candidates, not
-synthetic anchors for Gluon. If a small Base task has no standalone performance
-mechanism, or making it auditable would require a broad helper/stage rewrite,
-do not attach a Round-1 Gluon L0 overlay to it; spend the slot on the Base task
-or on a different same-direction component.
+**Base task scope safety**: Plain Triton Base tasks are real no-regression
+optimization candidates, not synthetic anchors for Gluon. If a scoped Base task
+has no standalone performance mechanism, keep the slot for Base work or another
+direction instead of emitting a bookkeeping-only Gluon overlay. Cross-stage ABI
+changes must be explicit pipeline-boundary tasks that name the affected stages.
 
-**Direction/layer contract**: If Search Space Allocation lists mandatory
-families, each plain Triton competitor needs `Base family: <family_id>`. AMD
-Gluon overlay tasks must include these audited lines: `Extension layer: L0 | L1
-| Hybrid`, `Optimization direction:`, `Source Base family:`, `Plain
-competitor:`, `Gluon overlay reason:`, `Overlay priority: Prefer` or
-`Overlay priority: high-confidence Consider`,
-`Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`,
-`Comparison target:`, `Allowed change:`, and `Reject if:`. Paired tasks should name their source family and
-implementation layer.
-Round-1 L0 overlays must also bind to the same component and same optimization
-direction as `Plain competitor`, not merely to the same `Source Base family`.
-The referenced plain Triton competitor and the L0 overlay must use the exact
-same `Optimization direction:` text and must both include an auditable
-`Target component:` or `Allowed change:` with the same scoped symbol/stage. Use
-`Target component:` or `Target symbol:` when the component is narrower than the
-whole kernel/helper. `Plain competitor:` must name an exact same-batch Base Set
-task whose `required_output_dialect` is `plain_triton`; do not use `Shared`,
-`paired comparison`, `shared_transplant`, Gluon, mixed, or hybrid tasks as the
-plain competitor for an L0 overlay.
-Base tasks that might serve as a Gluon L0 `Plain competitor` MUST include both
-the same `Optimization direction:` and an auditable `Target component:` or
-scoped `Allowed change:`. This stricter anchor requirement applies only to Base
-tasks referenced by an L0 overlay. A broad register-pressure, cleanup, fusion,
-schedule/config, persistent-kernel, or whole-loop Base task may still be valid
-Base work, but it is not a valid local L0 plain competitor unless the Gluon
-overlay is retargeted to the same broad whole helper/stage skeleton.
-The referenced Base task must also be a plausible no-regression plain Triton
-optimization at that scope. Do not create or widen a Base task solely to satisfy
-`Plain competitor`; if the scoped Base anchor would be cleanup-only, speculative,
-or larger than its own performance hypothesis justifies, omit the Gluon L0
-overlay for this round.
-If the Gluon target component does not already have such a plain Base task, emit
-that Base task first and bind the overlay to it. For example, an overlay for
-component B's memory/layout path must bind to a component-B memory/layout plain
-Triton competitor, not to a component-A cleanup/control-flow task or a generic
-same-family task.
-Before calling `submit`, run a final Round-1 L0 overlay pair check: every L0
-overlay must either bind to an exact same-direction, same-component Base anchor
-or not be emitted. Copy the referenced `Plain competitor` `Optimization
-direction:` text exactly, verify that both tasks name the same scoped target,
-and emit a new Base anchor first when the candidate Base task is too broad. If
-`Target component:` or `Allowed change:` names a local load/store/index/mask/path
-or other single primary atomic component, keep `minimum_executable_unit:
-inline_scoped_helper`; do not set `whole_jit_kernel` unless both the Base anchor
-and Gluon overlay are retargeted to the same whole helper/stage skeleton with
-`whole_kernel_required_reason` and compile-risk fields. For Branch A, keep
-`task_signals` limited to the primary patch target component and put matrix,
-reduction, wrapper, dot, dispatch, or other surrounding context in secondary
-components, blockers, or failure layers.
+**Gluon contract source of truth**: Gluon-specific task metadata, doc routing,
+L0 execution-boundary details, and composition tags are defined by injected
+policy blocks and `skills/triton-gluon/docs/10_search_policies.md`. Follow those
+contracts when they are present, but do not duplicate full schemas in every
+task_prompt. API-level rewrite details belong in routed skill docs, not in the
+planner prompt.
 
-**Dialect contract metadata**: Use `required_output_dialect=amd_gluon` only
-when plain Triton fallback is not a valid success. Required AMD Gluon tasks must
-tell the worker to attempt `from triton.experimental import gluon`; `from
-triton import gluon` is only a bad availability probe. Plain Triton fallback is
-only evidence after a saved/tested Gluon attempt fails with a recorded error.
-`search_set` is optional compatibility metadata.
-Do not use `tl.*` inside `@gluon.jit` to decide whether a task is `mixed`.
-`mixed` requires explicit host-side dispatch between plain Triton and AMD Gluon.
-Generated overlays should include `source_origin: generated_overlay`,
-`gluon_tl_policy: strict_generated`, and
-`layout_construction_policy: host_preferred` when the prompt needs API/layout
-audit clarity. Use `source_origin: existing_amd_gluon_operator` only when the
-measured baseline already executes an existing production AMD Gluon operator.
+**Minimal Gluon hard boundaries**: Required AMD Gluon tasks must attempt a real
+executed Gluon path using `from triton.experimental import gluon` and must not
+count pure Triton fallback as success. `mixed` requires explicit host-side
+dispatch between verified plain Triton and AMD Gluon paths. Keep L0 overlays
+small, same-direction, and tied to a plausible plain Triton competitor; if the
+scope is unclear or infeasible, omit or downgrade the overlay instead of
+inventing a broad rewrite.
 
-**AMD Gluon worker contract**: Required AMD Gluon task_prompts must point to
-`skills/triton-gluon/docs/00_always_read.md` and require pre-edit `Gluon
-knowledge lookup plan`, `Gluon implementation plan`, `Performance hypothesis`,
-`Same ABI comparison`, and `Patch evolution` blocks. The task must also specify
-the routed docs that justified overlay priority: `10_search_policies.md` for
-policy, including `overlay_direction_vs_mechanism`; `20_component_traits.md` for
-component viability; `60_real_patterns.md` for end-to-end/source-first,
-whole-kernel anchor, low-latency, and patch-evolution rules; and
-`50_api_reference.md` only for API-sensitive details. Stage/helper/local-expression scoped tasks must include
-`Target symbol:` or `Target component:`; if `Allowed change` names local
-variables, wrap those names in backticks so save/test and selection can enforce
-the target component. `Reject if:` must cover non-executed Gluon, target-symbol
-mismatch, missing plan blocks, leftover plain Triton device APIs inside edited
-`@gluon.jit`, backup/temp files, and bundled unrelated changes unless
-`bundle_allowed=true`. API-level Gluon rewrite details belong in the routed
-skill docs, not in the prompt contract.
-For L0 tasks, prefer `extension_intent=execution_anchor` when the expected result
-is a correctness-passing Gluon path rather than an immediate speedup. Do not ask
-for full-stage rewrites in layout-heavy paths; name allowed and forbidden
-subpaths/components instead. For an L0 execution anchor, keep the `Performance
-hypothesis:` modest: verify that the explicit layout/scoped helper executes and
-record layout construction or conversion overhead. Stronger claims such as MFMA
-utilization or throughput improvement require matrix-lowering scope, L1 scope,
-or prior measured evidence.
-
-**Gluon documentation gate metadata**: For Triton-family tasks that use Gluon
-guidance, task objects should include optional top-level fields
-`gluon_doc_profile`, `required_gluon_docs`, and, for stage/helper-specific
-tasks, `required_patch_target_symbols`. Local target expressions named in
-backticks inside `Allowed change` are also treated as required target symbols.
-`gluon_doc_profile` should be one of
-`extension_l0_minimal`, `nv_to_amd_translation`, `memory_lowering`,
-`matrix_lowering`, `shape_bucketed_dispatch`, `jit_aot_sensitive`,
-`shared_transplant`, `gluon_variant_from_anchor`, `hybrid_dispatch`, or
-`hybrid_dispatch_from_evidence` when one applies. Use
-`base_or_shared_gluon` only as a compatibility profile for Base/Shared tasks
-that carry Gluon metadata but do not map to a narrower profile.
-`required_gluon_docs` should list doc path
-metadata keys such as `gluon_skill_path`, `gluon_always_read_path`,
-`gluon_search_policies_path`, `gluon_component_traits_path`,
-`gluon_architecture_notes_path`, `gluon_api_reference_path`, and
-`gluon_real_patterns_path`. The worker's `save_and_test` gate will require
-these files to be viewed before saving or benchmarking.
-Optional Gluon metadata may be supplied when useful, and may also be inferred
-from task_prompt tags: `extension_intent`, `expected_outcome`,
-`not_viable_for_l1_if_slower_than_base`, `overhead_source_to_record`,
-`minimum_executable_unit`, `allowed_execution_path`, `scope_infeasible_policy`,
-`whole_kernel_required_reason`, `target_symbol`, and `target_component`. For
-Round-1 L0 AMD Gluon overlays, the execution-boundary fields are mandatory; do
-not emit a required AMD Gluon task when the scoped path is infeasible.
-`scope_infeasible_policy` is only the fallback policy for that case, not a claim
-that the declared executable path is infeasible. Do not add these fields to plain
-Triton tasks or to Gluon tasks where they would be noise.
-
-**Composition tags**: If Evidence-Anchored Composition is present, every
-composition task_prompt MUST include:
-- `Composition type: base_refine | shared_transplant | gluon_variant | hybrid_dispatch`
-- `Safe anchor: <task>/<patch or original_baseline>`
-- `Source component: <component_type> from <task>/<patch or none>`
-- `Comparison target: safe_anchor`
-- `Allowed change: <one component or one dispatch decision>`
-- `Reject if: <conditions that invalidate the patch>`
-Unless the task explicitly says `bundle_allowed=true`, composition tasks must
-change at most one component and must preserve the safe anchor.
-Correctness-passing but slower Gluon evidence may guide layout/source routing,
-but must not create `gluon_variant` or `hybrid_dispatch` unless there is
-per-shape or sub-operation evidence where Gluon beats the safe anchor.
+**Documentation routing**: Use `gluon_doc_profile`, `required_gluon_docs`, and
+task signals only to route worker reading and gate `save_and_test`. Prefer
+profile-based or inferred routing over manually expanding large doc lists in the
+task body.
 
 **COMMANDMENT adherence**: Each task_prompt MUST instruct the sub-agent
 to read and follow the COMMANDMENT file. The COMMANDMENT defines the

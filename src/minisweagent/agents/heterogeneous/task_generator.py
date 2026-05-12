@@ -2044,33 +2044,28 @@ def _build_search_space_allocation_guidance(
         "- Set `source_origin` when known: `generated_overlay` for new plain->Gluon overlays, `existing_amd_gluon_operator` only when the measured baseline already executes a production AMD Gluon operator, and `nv_gluon_translation` for NVIDIA-facing Gluon translation.",
         "- Generated overlays default to `gluon_tl_policy: strict_generated` and `layout_construction_policy: host_preferred`; production Gluon source may use `production_source_allowed` and `source_preserve` only when source evidence supports it.",
         "- Keep a plain Triton competitor for every high-value direction unless AMD Gluon is explicitly required. Layering order: plain Triton -> optional L0/paired mapping -> L1 from viable/local-win evidence -> later Hybrid/Mixed.",
-        "- Base/plain Triton tasks are no-regression performance candidates, not synthetic Gluon anchors. A small Base task should keep a plausible standalone performance mechanism at its own scope; if making it auditable requires a broad rewrite or has no plain Triton upside, do not emit the Gluon L0 overlay.",
-        "- Any Base task that may be referenced by a Gluon L0 overlay must include auditable scoped fields: `Target component:` naming the exact helper/stage/local subpath and `Allowed change:` naming the same component in plain Triton. This stricter anchor contract applies only to Base tasks referenced as L0 `Plain competitor`; broad Base tasks without those fields remain valid Base work but must not be used as local L0 anchors.",
+        "- Base/plain Triton tasks are no-regression performance candidates, not synthetic Gluon anchors. Emit a Gluon L0 overlay only when the same direction has a plausible plain competitor and a concrete Gluon mechanism.",
+        "- If a Gluon L0 target has a clear local component, name it with `Target component:` or scoped `Allowed change:`. If the Base anchor is too broad or the component is unclear, keep the Base task and omit or downgrade the overlay instead of forcing a bookkeeping anchor.",
         "- Round 1 plain Triton input may have at most one L0 overlay. Generate it only when `overlay_priority_routing` is Prefer/high-confidence Consider; otherwise spend the slot on another plain Triton direction.",
         "- Before emitting any L0 overlay or later task derived from L0 evidence, perform `Gluon L0 scope classification`: is the candidate layout-heavy, does it include loop-carried state, online reductions, dot/matrix paths, multiple 2D parents, nested layouts, wrapper reroute, cross-stage ABI changes, boundary-specific branches, or other high-coupling logic; can one exact subpath execute without translating the whole algorithm; and is the expected outcome `execution_anchor` or `performance_candidate`?",
         "- L0 scope ladder is generic across kernels: prefer the smallest executable, attributable, low-coupling subpath (scalar/1D stage, one load/store, one index/mask layout smoke path). Consider matrix/MFMA subpaths only after an executed anchor or when the task explicitly proves the matrix subpath is the smallest viable component.",
         "- Round 1 L0 should prefer generic micro-anchor archetypes, not fixed task labels: layout/broadcast micro-anchor, index/mask layout anchor, load/store layout anchor, matrix operand layout probe, reduction/accumulator layout probe, or wrapper/integration anchor. Name the actual task from the optimization direction and target component.",
         "- Classify candidate signals by failure layer rather than operator name: attention-like composite path, matrix-like composite path, broadcast-heavy layout path, reduction/accumulator path, conditional/source-first path, or wrapper/integration boundary.",
-        "- Every Gluon task must expose planner doc routing metadata: `task_signals: ...`, `routed_doc_reasons: ...`, `kernel_family_signal: ...`, and `failure_layers: ...`. These fields should explain which split docs/headings the worker must use and why.",
-        "- Map docs to planner fields before emitting the task: layout/broadcast signals require component traits and failure recipes; dot/matrix signals require matrix lowering docs and `matrix_lowering_required`; target backend/runtime signals require architecture notes; source-first/integration signals require real-pattern docs and explicit measurement boundary.",
-        "- Required Gluon docs for priority: `00_always_read.md`, `10_search_policies.md` (`optimization_direction_dialect_overlay`, `overlay_direction_vs_mechanism`, `atomic_component_lattice`, `l0_scope_decision_before_emit`, `overlay_priority_routing`), plus `20_component_traits.md` / `60_real_patterns.md` (`l0_scope_by_kernel_family`, `broadcast_heavy_whole_kernel_l0`) / `50_api_reference.md` only when their routed details apply.",
-        "- AMD Gluon overlay prompts must include `Extension layer: L0|L1|Hybrid`, `Optimization direction:`, `Source Base family:`, `Plain competitor:`, `Gluon overlay reason:`, `Overlay priority: Prefer` or `Overlay priority: high-confidence Consider`, `Implementation layer:`, `Performance hypothesis:`, `Measurement boundary:`, `Comparison target:`, `Allowed change:`, and `Reject if:`. Do not write plain `Overlay priority: Consider` for Round-1 L0.",
-        "- Round-1 L0 metadata is mandatory for AMD Gluon overlays, and later L0/L1/variant/hybrid tasks must preserve or reference it from the verified anchor: `l0_scope_classification: low_coupling|high_coupling|infeasible`, `l0_coupling_reasons: ...`, `minimum_executable_unit: inline_scoped_helper|separate_gluon_kernel|whole_jit_kernel|infeasible`, `allowed_execution_path: inline_scoped_helper|separate_gluon_kernel|whole_jit_kernel`, and `scope_infeasible_policy: do_not_emit|shrink_or_report|separate_kernel_if_allowed`. Optional tags include `extension_intent: execution_anchor|performance_candidate`, `expected_outcome: correctness_anchor_not_speedup|possible_speedup`, `not_viable_for_l1_if_slower_than_base: true`, `overhead_source_to_record: ...`, `whole_kernel_required_reason: ...`, `Target symbol:`, and `Target component:`.",
-        "- L0 execution path must be exactly one of: `inline_scoped_helper` when the language boundary permits the scoped change; `separate_gluon_kernel` when the task explicitly allows a second launch/temp buffer and marks the task as an execution anchor; `whole_jit_kernel` only when the whole helper/kernel is the minimum executable unit and the task does not forbid whole-kernel rewrite; or `infeasible` as `minimum_executable_unit` only when no required Gluon task should be emitted.",
+        "- Route worker docs by `gluon_doc_profile` plus obvious task signals. Use `task_signals`, `routed_doc_reasons`, `kernel_family_signal`, and `failure_layers` when they are clear; they are routing aids, not a reason to invent a larger task.",
+        "- AMD Gluon overlay prompts should include the core layer/direction/comparison fields from `10_search_policies.md`; do not expand API recipes or full failure maps in the task body.",
+        "- For L0, state the executable boundary when you can infer it. Missing advisory routing fields can be inferred later, but do not emit a required AMD Gluon task if the scope is explicitly infeasible.",
+        "- L0 execution path choices are: `inline_scoped_helper` for a local executable component, `separate_gluon_kernel` when a second launch/temp buffer is accepted as evidence, `whole_jit_kernel` only when the whole helper/kernel is truly the minimum executable unit, or no required Gluon task when the scope is infeasible.",
         "- `inline_scoped_helper` is invalid for high-coupling L0 targets such as online softmax accumulator loops, `tl.dot`/matrix paths, loop-carried reductions, cross-stage ABI changes, or wrapper reroutes. Shrink to a lower-coupling index/mask/load/store smoke path, use a justified `whole_jit_kernel`, or do not emit the Gluon task.",
         "- `whole_jit_kernel` is a compile-risk anchor, not the default L0 shape. If used, the task must include `expected_failure_layers`, `first_patch_compile_goal`, `do_not_optimize_before_compile: true`, and `matrix_lowering_required: true|false`. `patch_0` should aim for a compile anchor before performance tuning.",
-        "- Before submitting a Gluon task, do a concise consistency pass using `10_search_policies.md::overlay_direction_vs_mechanism`, `atomic_component_lattice`, `l0_scope_decision_before_emit`, and `60_real_patterns.md::l0_scope_by_kernel_family`: keep `Optimization direction` as the shared performance goal, pick one primary component for `patch_0`, and put Gluon-specific mechanisms in overlay fields.",
-        "- Final L0 overlay pair validation: every L0 overlay must either bind to an exact same-direction, same-component Base anchor or not be emitted. If the referenced Base task is broad narrative/generic cleanup/whole-loop work, create a scoped Base anchor first or retarget both Base and Gluon to the same whole helper/stage skeleton.",
+        "- Before submitting a Gluon task, run a concise consistency pass: keep `Optimization direction` as the shared performance goal, pick one primary component for `patch_0`, and put Gluon-specific mechanisms in overlay fields.",
+        "- Final L0 overlay pair check: bind to a same-batch plain competitor when one exists at the same direction/component. If the anchor is too broad or unclear, omit the overlay rather than failing the whole plan.",
         "- First-pass L0 branch rule: emit exactly one shape. If the target is local or ambiguous, default to a local single-component smoke/probe with `inline_scoped_helper`; use `whole_jit_kernel` only after retargeting both the target wording and Base/Gluon pair to a whole-helper skeleton with a concrete `whole_kernel_required_reason`.",
         "- Branch A signal partition: `task_signals` should name only the primary patch target component. Put matrix/reduction/wrapper/dot/dispatch context in `Secondary components / blockers`, `failure_layers`, or `expected_failure_layers`, not in the positive patch-target signals.",
         "- Required Gluon worker contract: ask for `Gluon knowledge lookup plan`, `Gluon implementation plan`, `Performance hypothesis:`, `Same ABI comparison:`, and `Patch evolution:` before editing. Keep API-level rewrite and pass/fail patch details in the routed skills/docs, not in the prompt body.",
         "- For an L0 `extension_intent=execution_anchor`, keep `Performance hypothesis:` to execution and attribution: verify the explicit layout/scoped helper can execute and record layout construction or conversion overhead. Do not claim MFMA utilization or broad throughput improvement unless the task is matrix-lowering/L1 or prior evidence supports that mechanism.",
         "- L0 overlay prompts must not ask the worker to convert an entire stage/helper/kernel just to prove Gluon. Scope L0 to one named subpath/component, such as a load/store, layout, mask, or matrix subpath; only use a whole helper as the target when the task explicitly explains why the helper is the smallest viable component.",
         "- `local target + whole_jit_kernel` is invalid unless the task is retargeted as a whole-helper skeleton. Unknown scope should become a local smoke/probe or Base/plain task, not a default whole-kernel rewrite.",
-        "- Round-1 L0 overlays must bind to the same component and same optimization direction as `Plain competitor`, not merely to the same broad `Source Base family`. The referenced plain Triton task and the L0 overlay must use the exact same `Optimization direction:` text and must both include an auditable `Target component:` or `Allowed change:` with the same scoped symbol/stage.",
-        "- Same-family Base tasks are not enough for L0 binding: the `Plain competitor` must target the same stage/helper/component named by the Gluon `Target symbol:` or `Target component:`. If the desired Gluon target lacks a same-batch Base task, emit that Base task first.",
-        "- If the desired Gluon L0 target component does not already have a same-direction plain Base task in this batch, first emit that plain Base competitor, then point `Plain competitor:` at it. Example: if the overlay targets component B's memory/layout path, emit a plain component-B memory/layout Base task; do not bind it to a component-A cleanup, control-flow, or generic same-family task.",
-        "- If you cannot produce a same-direction same-component plain Base competitor with a credible no-regression performance hypothesis for an L0 overlay, do not emit that Gluon overlay in this round; spend the slot on the missing Base competitor or another Base direction instead.",
+        "- Same-family Base tasks are not enough for a local L0 binding when the component differs. If you cannot produce a credible same-direction plain Base competitor, spend the slot on Base/plain Triton instead of emitting the overlay.",
         "- L1 tasks additionally require an executed Gluon/mixed anchor (`Anchor patch`, `Anchor speedup`, `Anchor execution: true`, `Comparison target: anchor_patch`) and stage-specific tasks require target metadata such as `Target symbol` / `Target component` plus top-level `required_patch_target_symbols` when available.",
         "- If a plain Triton candidate wins, accept it as the best result rather than forcing more Gluon work.",
         "- If a Triton strategy wins and maps cleanly to Gluon traits, a later round may create an AMD Gluon variant of that winning strategy only with a concrete performance hypothesis.",
@@ -3465,12 +3460,13 @@ def _required_gluon_soft_diagnostic_errors(task: AgentTask) -> list[str]:
         for diagnostic in _gluon_l0_soft_diagnostics(task)
         if diagnostic in _REQUIRED_GLUON_REPAIR_DIAGNOSTICS
     ]
-    if not diagnostics:
-        return []
-    return [
-        f"{task.label} high-risk Gluon L0 diagnostics require repair before dispatch: "
-        + ", ".join(diagnostics)
-    ]
+    if diagnostics:
+        logger.warning(
+            "High-risk Gluon L0 diagnostics for %s will be handled by worker/selector checks: %s",
+            task.label,
+            ", ".join(diagnostics),
+        )
+    return []
 
 
 def _gluon_l0_execution_boundary_errors(task: AgentTask) -> list[str]:
@@ -3485,29 +3481,19 @@ def _gluon_l0_execution_boundary_errors(task: AgentTask) -> list[str]:
     required_output = str(task.config.get("required_output_dialect") or "").strip().lower()
     errors: list[str] = []
 
-    if not scope_classification:
-        errors.append(f"{task.label} missing L0 execution-boundary field: L0 scope classification")
-    elif scope_classification not in _VALID_L0_SCOPE_CLASSIFICATIONS:
+    if scope_classification and scope_classification not in _VALID_L0_SCOPE_CLASSIFICATIONS:
         errors.append(f"{task.label} has invalid L0 scope classification `{scope_classification}`")
     if scope_classification in {"high_coupling", "infeasible"} and not coupling_reasons:
-        errors.append(f"{task.label} must explain L0 coupling reasons for `{scope_classification}` scope")
-    for key, field in (
-        ("task_signals", "Task signals"),
-        ("routed_doc_reasons", "Routed doc reasons"),
-        ("kernel_family_signal", "Kernel family signal"),
-        ("failure_layers", "Failure layers"),
-    ):
-        if not _task_contract_raw_value(task, key, field):
-            errors.append(f"{task.label} missing L0 planner routing field: {field}")
+        logger.warning(
+            "%s declares %s L0 scope without coupling reasons; worker docs will route from task text.",
+            task.label,
+            scope_classification,
+        )
 
-    if not minimum_unit:
-        errors.append(f"{task.label} missing L0 execution-boundary field: Minimum executable unit")
-    elif minimum_unit not in _VALID_MINIMUM_EXECUTABLE_UNITS:
+    if minimum_unit and minimum_unit not in _VALID_MINIMUM_EXECUTABLE_UNITS:
         errors.append(f"{task.label} has invalid Minimum executable unit `{minimum_unit}`")
 
-    if not allowed_path:
-        errors.append(f"{task.label} missing L0 execution-boundary field: Allowed execution path")
-    elif allowed_path not in _VALID_L0_ALLOWED_EXECUTION_PATHS:
+    if allowed_path and allowed_path not in _VALID_L0_ALLOWED_EXECUTION_PATHS:
         errors.append(f"{task.label} has invalid Allowed execution path `{allowed_path}`")
 
     if infeasible_policy and infeasible_policy not in _VALID_SCOPE_INFEASIBLE_POLICIES:
@@ -3542,7 +3528,11 @@ def _gluon_l0_execution_boundary_errors(task: AgentTask) -> list[str]:
         or ""
     ).strip()
     if minimum_unit == "whole_jit_kernel" and target_component and not whole_reason:
-        errors.append(f"{task.label} uses whole_jit_kernel for a scoped Target component but lacks Whole kernel required reason")
+        logger.warning(
+            "%s uses whole_jit_kernel for a scoped target without Whole kernel required reason; "
+            "worker/selector checks will enforce scope and execution.",
+            task.label,
+        )
     if minimum_unit == "whole_jit_kernel" or allowed_path == "whole_jit_kernel":
         missing_compile_risk = [
             key
@@ -3550,11 +3540,13 @@ def _gluon_l0_execution_boundary_errors(task: AgentTask) -> list[str]:
             if not _task_contract_raw_value(task, key, key.replace("_", " ").title())
         ]
         if missing_compile_risk:
-            errors.append(
-                f"{task.label} whole_jit_kernel compile-risk anchor missing fields: {', '.join(missing_compile_risk)}"
+            logger.warning(
+                "%s whole_jit_kernel compile-risk anchor missing advisory fields: %s",
+                task.label,
+                ", ".join(missing_compile_risk),
             )
         if not _task_truthy_contract_value(task, "do_not_optimize_before_compile", "Do not optimize before compile"):
-            errors.append(f"{task.label} whole_jit_kernel must set do_not_optimize_before_compile: true")
+            logger.warning("%s whole_jit_kernel did not set do_not_optimize_before_compile: true", task.label)
 
     return errors
 
@@ -3675,6 +3667,32 @@ def _gluon_overlay_binding_errors(task: AgentTask, tasks: list[AgentTask]) -> li
     return []
 
 
+def _is_hard_task_generation_extension_error(error: str) -> bool:
+    """Return whether an Extension audit issue should reject the whole batch.
+
+    Planner-time audit should catch structurally invalid work that would waste a
+    dispatch slot. Missing advisory routing fields, over-specific L0 metadata,
+    or weak same-component evidence are left for normalization, warnings, worker
+    doc routing, save_and_test, and selector checks.
+    """
+    text = str(error or "")
+    hard_markers = (
+        "expected at most",
+        "single AMD Gluon Extension task must be an L0",
+        "missing per-task overlay binding field: Plain competitor",
+        "does not match a task label in this batch",
+        "is not a plain Triton competitor task",
+        "cannot require AMD Gluon output when",
+        "has invalid L0 scope classification",
+        "has invalid Minimum executable unit",
+        "has invalid Allowed execution path",
+        "has invalid Scope infeasible policy",
+        "Minimum executable unit `",
+        "allows whole_jit_kernel but forbids whole-kernel rewrite",
+    )
+    return any(marker in text for marker in hard_markers)
+
+
 def _audit_base_family_coverage(
     tasks: list[AgentTask],
     required_families: list[str],
@@ -3706,15 +3724,24 @@ def _audit_base_family_coverage(
         extension_errors.extend(_l1_anchor_contract_errors(task))
         extension_errors.extend(_required_gluon_soft_diagnostic_errors(task))
 
+    hard_extension_errors = [
+        error for error in extension_errors if _is_hard_task_generation_extension_error(error)
+    ]
+    soft_extension_errors = [
+        error for error in extension_errors if not _is_hard_task_generation_extension_error(error)
+    ]
+    for error in soft_extension_errors:
+        logger.warning("Task-generation Extension audit warning: %s", error)
+
     errors = []
     if missing:
         errors.append("missing Base Set mandatory families: " + ", ".join(missing))
-    errors.extend(extension_errors)
+    errors.extend(hard_extension_errors)
     if not errors:
         return
 
     message = "Task-generation coverage audit failed: " + "; ".join(errors)
-    if extension_errors:
+    if hard_extension_errors:
         raise ValueError(message)
     if _strict_base_family_audit_enabled():
         raise ValueError(message)

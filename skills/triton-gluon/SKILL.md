@@ -141,41 +141,20 @@ implementation plan, then edit only the scoped path.
 
 ## Planner Metadata Contract
 
-Planner-generated Triton-family tasks should include these metadata fields for
-audit and result attribution. They are not the primary planning axis; the
-primary axis is the named optimization direction.
+Planner metadata is defined in `docs/10_search_policies.md`, especially
+`dialect_contract_metadata` and `gluon_doc_gate_metadata`. Keep the planning axis
+as the named Triton optimization direction; use metadata only for routing,
+audit, dispatch, and result attribution.
 
-```yaml
-required_output_dialect: plain_triton | amd_gluon | mixed | any
-search_set: base | shared | extension  # optional legacy compatibility bucket
-source_origin: generated_overlay | existing_amd_gluon_operator | nv_gluon_translation | unknown
-gluon_tl_policy: strict_generated | preserve_existing_allowed | production_source_allowed
-layout_construction_policy: host_preferred | constexpr_in_kernel_allowed | source_preserve
-execution_mode: jit | aot | mixed_jit_aot | prebuilt
-gluon_doc_profile: extension_l0_minimal | nv_to_amd_translation | memory_lowering | matrix_lowering | shape_bucketed_dispatch | jit_aot_sensitive | shared_transplant | gluon_variant_from_anchor | hybrid_dispatch | hybrid_dispatch_from_evidence | base_or_shared_gluon
-required_gluon_docs:
-  - gluon_skill_path
-  - gluon_always_read_path
-  - gluon_search_policies_path
-source_base_family: <family_id for the overlaid Triton direction>
-plain_competitor: <same-batch plain Triton task label for Round 1 L0 overlays>
-```
+Minimum reminders:
 
-Add `gluon_component_traits_path`, `gluon_architecture_notes_path`,
-`gluon_api_reference_path`, or `gluon_real_patterns_path` when the task route
-requires them. `save_and_test` gates on these paths.
-
-Use `required_output_dialect=amd_gluon` for required AMD Gluon L0/L1 tasks and
-`required_output_dialect=mixed` only for explicit host-side dispatch between
-verified plain Triton and AMD Gluon paths. `search_set` is optional compatibility
-metadata, not a planning axis.
-Do not classify an executed AMD Gluon path as `mixed` merely because legal
-`tl.range`, `tl.constexpr`, or source-preserved `tl.*` appears inside
-`@gluon.jit`; `gluon_tl_policy` governs internal API validity separately.
-Missing `source_origin` is fail-closed and should be treated as
-`generated_overlay` / `strict_generated`.
-Round 1 L0 overlays must name a same-batch `plain_competitor`; that task's
-`Base family` must match the overlay's `source_base_family`.
+- `required_output_dialect` and `Implementation layer` decide whether the worker
+  must produce plain Triton, real AMD Gluon, or explicit `mixed` dispatch.
+- `search_set` is legacy compatibility metadata, not a task idea.
+- `gluon_doc_profile` / `required_gluon_docs` route worker reading and
+  `save_and_test` doc gates; do not hand-copy the full profile table here.
+- Round 1 L0 overlays should name a same-batch `plain_competitor` when emitted,
+  but the detailed pairing and scope rules live in `10_search_policies.md`.
 
 ## Read Next
 

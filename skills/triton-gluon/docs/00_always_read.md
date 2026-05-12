@@ -267,10 +267,10 @@ is genuinely missing and has been recorded as a missing-doc detail.
 
 Planner task prompts and worker strategy notes have different contracts:
 
-- Planner-audited fields: `Extension layer`, `Optimization direction`,
-  `Source Base family`, `Plain competitor`, `Gluon overlay reason`,
-  `Overlay priority`, `Implementation layer`, `Performance hypothesis`,
-  `Measurement boundary`, `Comparison target`, `Allowed change`, and `Reject if`.
+- Planner-audited fields are defined in `10_search_policies.md`
+  (`optimization_direction_metadata_sets`, `dialect_contract_metadata`, and
+  `gluon_doc_gate_metadata`). Workers should treat task metadata as the contract,
+  but should not copy or extend planner schemas while editing.
 - Worker strategy notes must include `Gluon knowledge lookup plan`,
   `Gluon implementation plan`, `Performance hypothesis`, `Same ABI comparison`,
   and `Patch evolution` before the first edit.
@@ -397,17 +397,10 @@ AMD Gluon task fails, record the actual failure from a real Gluon patch using
 
 ## output_and_fallback_contract
 
-Triton-family task frontmatter may include:
-
-```yaml
-required_output_dialect: plain_triton | amd_gluon | mixed | any
-gluon_doc_profile: extension_l0_minimal | nv_to_amd_translation | memory_lowering | matrix_lowering | shape_bucketed_dispatch | jit_aot_sensitive | shared_transplant | gluon_variant_from_anchor | hybrid_dispatch | hybrid_dispatch_from_evidence | base_or_shared_gluon
-search_set: base | shared | extension  # optional compatibility bucket
-source_origin: generated_overlay | existing_amd_gluon_operator | nv_gluon_translation | unknown
-gluon_tl_policy: strict_generated | preserve_existing_allowed | production_source_allowed
-layout_construction_policy: host_preferred | constexpr_in_kernel_allowed | source_preserve
-execution_mode: jit | aot | mixed_jit_aot | prebuilt
-```
+`10_search_policies.md` is the canonical source for planner metadata values,
+including `required_output_dialect`, `gluon_doc_profile`, `required_gluon_docs`,
+`source_origin`, `gluon_tl_policy`, and `layout_construction_policy`. This
+section records the worker-facing execution meaning of those fields.
 
 Rules:
 

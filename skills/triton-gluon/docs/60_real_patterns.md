@@ -26,6 +26,7 @@ Do not read this whole file by default. Use the routed section(s) below.
 
 | If the task needs... | Read |
 | --- | --- |
+| choosing how to write a class of kernel | `kernel_family_quick_routes`, then one matching family section |
 | product/runtime context beyond `00_always_read.md` | `product_and_runtime_context` |
 | checking whether a guide claim is backed by real samples, backend support, or operator-local evidence | `evidence_inventory_for_guide_authoring` |
 | plain Triton -> Gluon rewrite order and implicit layout recovery | `writing_model` |
@@ -45,6 +46,7 @@ Do not read this whole file by default. Use the routed section(s) below.
 ## Internal Index
 
 - `product_and_runtime_context`
+- `kernel_family_quick_routes`
 - `evidence_inventory_for_guide_authoring`
 - `writing_model`
 - `extension_l0_scope_for_layout_heavy_kernels`
@@ -62,20 +64,27 @@ Do not read this whole file by default. Use the routed section(s) below.
 - `benchmark_aware_rules`
 - `anti_patterns`
 
+## kernel_family_quick_routes
+
+Use this as the worker-side "how to write this family" map. It complements
+`20_component_traits.md`, which tells you how to change one atomic component.
+
+| Kernel family signal | Read next | First patch shape |
+| --- | --- | --- |
+| elementwise / vector / simple memory | `optimization_paths_by_kernel_family`; `20_component_traits.md` `layout_basic`, `memory_generic` | One index/mask/load-store component with generic `gl.load` / `gl.store`. |
+| attention / decode / KV cache | `real_operator_patterns`, `benchmark_boundary_and_integration_costs`, `source_first_triggers` | Preserve stride-rich ABI, masks, and logical Q/K/V shapes before matrix or scheduler work. |
+| GEMM / FP8 / FP4 / scaled dot | `real_operator_patterns`, `optimization_paths_by_kernel_family`; `50_api_reference.md` matrix ladders | Result layout and operand layouts first; scales/epilogue before shared or scheduler tuning. |
+| preshuffled / descriptor / JIT-AOT artifact | `source_first_triggers`, `operator_local_support_matrix`, `repo_local_notes` | Preserve unshuffle/artifact/fallback wiring before changing kernel body details. |
+| wrapper-heavy / multi-stage pipeline | `benchmark_boundary_and_integration_costs` | State measurement boundary and same-ABI comparison before proposing Gluon as a win. |
+| unknown or mixed family | `20_component_traits.md` `worker_atomic_component_routes` | Do not default to whole-kernel Gluon; choose one local atomic component or keep Base/plain Triton. |
+
+Do not read this whole file for every task. Pick one row, then jump to one or
+two routed sections and the matching atomic component doc.
+
 ## product_and_runtime_context
 
-GEAK treats Gluon as a feature extension of Triton:
-
-- keep `kernel_type = triton`;
-- infer `input_dialect` as `plain_triton`, `nv_gluon`, or `amd_gluon`;
-- default Triton runs use `gluon_feature_mode = auto`;
-- use `gluon_feature_mode = off | auto | force` only for ablation or forced
-  debugging;
-- prefer `amd_gluon` when allowed and structurally promising, while keeping
-  plain Triton as a benchmarked fallback;
-- choose the optimization direction from the main Triton strategy first,
-  then decide whether Gluon is a useful implementation layer for that direction;
-- never create a new optimized `nv_gluon` output path.
+The product contract lives in `00_always_read.md`. This file only adds
+operator/runtime evidence that affects real implementation choices.
 
 In Triton, Gluon is not just syntax sugar:
 

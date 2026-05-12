@@ -24,6 +24,7 @@ policy and task allocation live in `10_search_policies.md`.
 
 ## Internal Index
 
+- `worker_atomic_component_routes`
 - `### Trait: layout_basic`
 - `### Trait: layout_slice_broadcast`
 - `### Trait: layout_source_first_required`
@@ -45,6 +46,25 @@ policy and task allocation live in `10_search_policies.md`.
 - `portable_component_compatibility`
 - `api_quick_reference`
 - `common_failures_and_fix_order`
+
+## worker_atomic_component_routes
+
+Use this as the worker-side "how to change one thing" map. Pick one primary
+component for `patch_0`; put every other concern in blockers, failure layers, or
+the next patch.
+
+| Atomic component | Read first | Patch shape |
+| --- | --- | --- |
+| `index_map` / `mask_boundary` | `layout_basic`, `layout_slice_broadcast` | One index, offset, or mask expression with its parent layout. |
+| `load_store` | `memory_generic`; then `memory_amd_buffer` only with dtype/layout evidence | One `gl.load` / `gl.store` value layout before AMD buffer ops. |
+| `layout_broadcast` | `layout_slice_broadcast`, `layout_derivation_and_cost_model` | One parent layout and its slices; do not reuse slices across parents. |
+| `matrix_operand` | `matrix_dot` or scaled/WMMA trait; API details in `50_api_reference.md` | Result layout, operand layouts, one conversion boundary, then epilogue. |
+| `reduction_accumulator` | `layout_derivation_and_cost_model`; reduction API in `50_api_reference.md` | One accumulator layout or reduction axis, not the whole algorithm. |
+| `shape_dispatch` | shape coverage traits | Explicit host bucket or parametric layout; preserve no-regression. |
+| `wrapper_integration` | `60_real_patterns.md` benchmark/source-first sections | Wiring or artifact selection evidence, not kernel-body tuning. |
+
+Stop and shrink the task when the component cannot execute without also
+changing matrix, reduction, wrapper, and layout families at once.
 
 ### Trait: layout_basic
 
@@ -376,50 +396,13 @@ Usually mutually exclusive without a new design:
 
 ## api_quick_reference
 
-Core rewrite surface:
-
-| Plain Triton pattern | First Gluon rewrite | Escalate when |
-| --- | --- | --- |
-| `tl.arange(0, X)` | `gl.arange(0, X, layout=layout)` | always; Gluon needs explicit layout |
-| `tl.load` / `tl.store` | `gl.load` / `gl.store` | switch to AMD buffer ops only when target family or existing AMD code benefits |
-| `tl.zeros(...)` / `tl.full(...)` | `gl.zeros(..., layout=layout)` / `gl.full(..., layout=layout)` | always for distributed tensors |
-| `tl.dot` / `tl.dot_scaled` | result layout -> operand layouts -> `convert_layout` -> target matrix op | always; never direct rename |
-| descriptor / async / shared-memory paths | target-specific family | only after a simpler layout or matrix candidate is correct |
-
-Common API names workers may need: `BlockedLayout`, `SliceLayout`,
-`DotOperandLayout`, `DistributedLinearLayout`, `SwizzledSharedLayout`,
-`PaddedSharedLayout`, `PartitionedSharedLayout`, `AMDMFMALayout`,
-`AMDWMMALayout`, `convert_layout`, `allocate_shared_memory`, `barrier`,
-`to_linear_layout`, and `set_auto_layout`.
+API syntax, rewrite tables, broadcast recipes, matrix ladders, and compatibility
+checks live in `50_api_reference.md`. This trait file only decides which atomic
+component is in scope.
 
 ## common_failures_and_fix_order
 
-Typical symptoms and first checks:
-
-- Layout or IR verification fails: check `BlockedLayout`, `threads_per_warp`,
-  `warps_per_cta`, `order`, `num_warps`, and target arch alignment first.
-- `AMDMFMALayout` construction fails: check Triton minor version and whether
-  `instr_shape` is expected to be 2D or 3D, then check whether the intrinsic
-  shape itself is supported by the AMD layout verifier.
-- `GluonSemantic.arange() missing required positional argument: 'layout'`:
-  a plain Triton `tl.arange` or layout-less arange survived inside the edited
-  Gluon path. Return to the pre-edit layout plan and replace that whole subpath.
-- `Did you forget to add @triton.jit`: a helper or nested function is being
-  called through the wrong JIT/language boundary. Check that Gluon helpers are
-  `@gluon.jit`, host helpers stay on the host, and plain Triton helpers are not
-  called as Gluon device functions.
-- Kernel compiles but targets the wrong path: re-check backend, arch,
-  operator-local guards, and namespace-vs-layout-version assumptions.
-- Correctness passes but performance regresses: keep the plain Triton baseline,
-  then add AMD memory or matrix features incrementally.
-- Preshuffled GEMM gives wrong answers: preserve `DistributedLinearLayout` and
-  `reshape` / `permute` / `trans` unshuffle order before tuning.
-
-Suggested fix order:
-
-1. Confirm runtime version, backend, and arch.
-2. Confirm launcher and layout alignment.
-3. Confirm memory path selection.
-4. Confirm matrix layout and `instr_shape`.
-5. Add shared-memory, async, descriptor, or scheduler features only after the
-   simpler path is correct.
+Canonical failure triage lives in `50_api_reference.md` /
+`common_failures_and_fix_order`. If a failure is tied to real operator wiring,
+benchmark boundary, or source-first behavior, read `60_real_patterns.md` for the
+operator-family route before changing another component.

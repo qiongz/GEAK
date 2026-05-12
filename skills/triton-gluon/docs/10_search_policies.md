@@ -294,6 +294,20 @@ explicitly the minimum executable unit and `whole_kernel_required_reason` is
 provided. A task that declares `inline_scoped_helper` but requires whole-kernel
 conversion is invalid.
 
+Round-1 L0 overlays bind to the same component and same optimization direction
+as `Plain competitor`, not merely to the same broad `Source Base family`. The
+plain task may be a broad Base task, but it is only a valid local L0 anchor when
+it exposes the same scoped `Target component` or `Allowed change` with a
+credible plain Triton performance mechanism. If the only possible anchor would
+be cleanup-only or broader than its own hypothesis justifies, omit the Gluon L0
+overlay and spend the slot on Base/plain Triton work.
+
+The execution-boundary fields above are required for Round-1 L0 AMD Gluon
+overlays. Other routing fields such as `task_signals`,
+`routed_doc_reasons`, `kernel_family_signal`, and `failure_layers` help route
+worker docs, but they should be inferred or warned on when possible rather than
+turning otherwise useful task batches into planner failures.
+
 Round progression:
 
 - Prior Gluon compile failed, did not execute, or hit scope escalation: do not
@@ -519,71 +533,6 @@ Keep output dialect separate from internal API policy:
 
 Do not include `gluon_examples_doc_path` unless the task explicitly needs a
 schematic example. Examples are not common context.
-
-## l0_scope_classification
-
-Before emitting a Round-1 L0 overlay, classify the proposed scope:
-
-- Is this the smallest executable, attributable, low-coupling subpath?
-- Does it contain layout-heavy risk such as complex element transforms, online
-  reductions, multiple matrix paths, multiple 2D layout parents, nested
-  `SliceLayout`, boundary-specific logic, or split-boundary control flow?
-- Can the candidate execute and feed measured output without translating the
-  whole algorithm?
-- Is the expected outcome `execution_anchor` or `performance_candidate`?
-
-L0 scope ladder:
-
-1. scalar or 1D stage;
-2. one load/store subpath;
-3. one index/mask layout smoke path;
-4. one source-first layout contract extraction;
-5. one matrix subpath only after an executed anchor, or when that matrix subpath
-   is explicitly the smallest viable component.
-
-Round-1 L0 overlays must bind to the same component and same optimization
-direction as `Plain competitor`, not merely the same broad `Source Base family`.
-The referenced plain Triton competitor and the L0 overlay must use the exact
-same `Optimization direction:` text and must both include an auditable
-`Target component:` or `Allowed change:` with the same scoped symbol/stage. Use
-`Target component:` / `Target symbol:` when the component is narrower than a
-whole helper.
-Base tasks that might be referenced as `Plain competitor` by an L0 overlay must
-write those scoped fields up front. Broad cleanup, register-pressure, tiling, or
-memory tasks without an auditable component can still run as Base tasks, but
-they are not valid L0 competitors.
-The referenced Base task must also be a plausible plain Triton improvement, not
-a bookkeeping anchor for Gluon. If the scoped Base anchor would be cleanup-only,
-performance-neutral, or would need to widen into a helper/stage rewrite just to
-match the Gluon target, keep it as Base work and do not emit the L0 overlay in
-that round.
-If the intended Gluon component is new to the batch, first create a plain Triton
-Base competitor for that exact component and direction. For example, an overlay
-for component B's memory/layout path needs a component-B memory/layout plain
-competitor; it must not bind to a component-A cleanup/control-flow task just
-because both share a broad Base family.
-
-Optional metadata:
-
-```yaml
-extension_intent: execution_anchor | performance_candidate
-expected_outcome: correctness_anchor_not_speedup | possible_speedup
-not_viable_for_l1_if_slower_than_base: true
-overhead_source_to_record: launch_layout_overhead | conversion_overhead | memory_path_overhead
-minimum_executable_unit: inline_scoped_helper | separate_gluon_kernel | whole_jit_kernel | infeasible
-allowed_execution_path: inline_scoped_helper | separate_gluon_kernel | whole_jit_kernel
-scope_infeasible_policy: do_not_emit | shrink_or_report | separate_kernel_if_allowed
-whole_kernel_required_reason: <required when a scoped component needs whole_jit_kernel>
-target_symbol: <symbol or helper>
-target_component: <scoped component description>
-```
-
-The execution-boundary fields are mandatory for Round-1 L0 AMD Gluon overlays.
-`scope_infeasible_policy` describes what to do if the scoped component proves
-infeasible; it is not itself an infeasibility declaration when
-`minimum_executable_unit` names an executable path.
-Do not add them to plain Triton tasks or to Gluon tasks where they would be
-noise.
 
 ## round_progression
 

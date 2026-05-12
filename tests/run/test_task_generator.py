@@ -275,41 +275,30 @@ def test_search_space_allocation_for_two_gpus_preserves_base_without_weak_gluon(
     assert "Performance hypothesis:" in guidance
     assert "Comparison target:" in guidance
     assert "Allowed change:" in guidance
-    assert "minimum_executable_unit: inline_scoped_helper|separate_gluon_kernel|whole_jit_kernel|infeasible" in guidance
-    assert "allowed_execution_path: inline_scoped_helper|separate_gluon_kernel|whole_jit_kernel" in guidance
-    assert "L0 execution path must be exactly one of" in guidance
+    assert "L0 execution path choices are" in guidance
     assert "layout/broadcast micro-anchor" in guidance
     assert "attention-like composite path" in guidance
     assert "do_not_optimize_before_compile: true" in guidance
-    assert "overlay_direction_vs_mechanism" in guidance
-    assert "atomic_component_lattice" in guidance
-    assert "l0_scope_decision_before_emit" in guidance
+    assert "one primary component" in guidance
     assert "First-pass L0 branch rule" in guidance
     assert "default to a local single-component smoke/probe" in guidance
-    assert "Final L0 overlay pair validation" in guidance
-    assert "exact same-direction, same-component Base anchor" in guidance
+    assert "Final L0 overlay pair check" in guidance
     assert "Branch A signal partition" in guidance
     assert "Base/plain Triton tasks are no-regression performance candidates" in guidance
-    assert "credible no-regression performance hypothesis" in guidance
-    assert "l0_scope_by_kernel_family" in guidance
+    assert "same direction has a plausible plain competitor" in guidance
+    assert "Route worker docs by `gluon_doc_profile`" in guidance
     assert "Keep API-level rewrite and pass/fail patch details in the routed skills/docs" in guidance
     assert "patch_evolution_strategy" not in guidance
 
 
 def test_taskgen_system_prompt_has_l0_final_submit_checklist() -> None:
-    assert "Before calling `submit`, run a final Round-1 L0 overlay pair check" in _SYSTEM_PROMPT
-    assert "referenced `Plain competitor` `Optimization" in _SYSTEM_PROMPT
-    assert "direction:` text exactly" in _SYSTEM_PROMPT
-    assert "exact same-direction, same-component Base anchor" in _SYSTEM_PROMPT
-    assert "new Base anchor first" in _SYSTEM_PROMPT
-    assert "do not set `whole_jit_kernel`" in _SYSTEM_PROMPT
-    assert "`whole_kernel_required_reason` and compile-risk fields" in _SYSTEM_PROMPT
-    assert "`task_signals` limited to the primary patch target component" in _SYSTEM_PROMPT
-    assert "This stricter anchor requirement applies only to Base" in _SYSTEM_PROMPT
-    assert "Plain Triton Base tasks are real no-regression optimization candidates" in _SYSTEM_PROMPT
+    assert "Gluon contract source of truth" in _SYSTEM_PROMPT
+    assert "injected policy blocks" in _SYSTEM_PROMPT
+    assert "Keep L0 overlays" in _SYSTEM_PROMPT
+    assert "omit or downgrade the overlay" in _SYSTEM_PROMPT
+    assert "Documentation routing" in _SYSTEM_PROMPT
+    assert "Plain Triton Base tasks are real no-regression" in _SYSTEM_PROMPT
     assert "synthetic anchors for Gluon" in _SYSTEM_PROMPT
-    assert "Gluon L0" in _SYSTEM_PROMPT
-    assert "overlay for this round" in _SYSTEM_PROMPT
 
 
 def test_search_space_allocation_for_large_budget_keeps_full_base() -> None:
@@ -328,9 +317,9 @@ def test_search_space_allocation_for_large_budget_keeps_full_base() -> None:
     assert "local target + whole_jit_kernel" in guidance
     assert "default whole-kernel rewrite" in guidance
     assert "Target component" in guidance
-    assert "same component and same optimization direction" in guidance
+    assert "same direction/component" in guidance
     assert "overlay_priority_routing" in guidance
-    assert "60_real_patterns.md" in guidance
+    assert "gluon_doc_profile" in guidance
     assert "slots 2+ may be L1" not in guidance
 
 
@@ -606,8 +595,8 @@ def test_audit_rejects_l0_overlay_missing_execution_boundary() -> None:
         ]
     )
 
-    with pytest.raises(ValueError, match="Minimum executable unit"):
-        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+    tasks = _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+    assert [task.label for task in tasks][-1] == "amd-gluon-l0-viability"
 
 
 def test_audit_failure_writes_raw_and_parsed_task_diagnostics(tmp_path: Path) -> None:
@@ -642,7 +631,7 @@ def test_audit_failure_writes_raw_and_parsed_task_diagnostics(tmp_path: Path) ->
         ]
     )
 
-    with pytest.raises(ValueError, match="Minimum executable unit"):
+    with pytest.raises(ValueError, match="not a plain Triton competitor task"):
         _parse_llm_response(
             payload,
             FakeAgentClass,
@@ -656,7 +645,6 @@ def test_audit_failure_writes_raw_and_parsed_task_diagnostics(tmp_path: Path) ->
     assert "gluon-l0-load-store-layout" in data["raw_submitted_json"]
     assert "Plain competitor `shared-paired-1d-acc-and-mask` is not a plain Triton competitor task" in data["error"]
     assert any("required_output_dialect=plain_triton" in hint for hint in data["repair_hints"])
-    assert any("title-case fields are preferred" in hint for hint in data["repair_hints"])
     summaries = {item["label"]: item for item in data["parsed_task_summaries"]}
     assert summaries["gluon-l0-load-store-layout"]["plain_competitor"] == "shared-paired-1d-acc-and-mask"
     assert summaries["gluon-l0-load-store-layout"]["minimum_executable_unit"] == ""
@@ -859,7 +847,7 @@ def test_parse_l0_metadata_from_snake_case_prompt_fields() -> None:
     assert cfg["scope_infeasible_policy"] == "shrink_or_report"
 
 
-def test_audit_rejects_l0_overlay_when_plain_competitor_lacks_auditable_component(tmp_path: Path) -> None:
+def test_audit_warns_l0_overlay_when_plain_competitor_lacks_auditable_component(tmp_path: Path) -> None:
     prompt = (
         _gluon_overlay_prompt(
             plain_competitor="precompute-kv-pointers",
@@ -888,17 +876,12 @@ def test_audit_rejects_l0_overlay_when_plain_competitor_lacks_auditable_componen
         ]
     )
 
-    with pytest.raises(ValueError, match="lacks auditable Target component or Allowed change"):
-        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1, audit_diagnostics_dir=tmp_path)
-
-    data = json.loads(next(tmp_path.glob("task_generation_audit_failed_*.json")).read_text())
-    hint = "\n".join(data["repair_hints"])
-    assert "too broad to audit as an L0 plain competitor" in hint
-    assert "create a new same-batch plain Base task" in hint
-    assert "_fwd_kernel_stage2" in hint
+    tasks = _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1, audit_diagnostics_dir=tmp_path)
+    assert [task.label for task in tasks][-1] == "gluon-l0-load-store-layout"
+    assert not list(tmp_path.glob("task_generation_audit_failed_*.json"))
 
 
-def test_audit_rejects_l0_overlay_when_optimization_direction_differs_from_plain_competitor() -> None:
+def test_audit_warns_l0_overlay_when_optimization_direction_differs_from_plain_competitor() -> None:
     prompt = _gluon_overlay_prompt(plain_competitor="triton-stage2-load-store-layout", target_component="_fwd_kernel_stage2")
     payload = json.dumps(
         [
@@ -919,11 +902,11 @@ def test_audit_rejects_l0_overlay_when_optimization_direction_differs_from_plain
         ]
     )
 
-    with pytest.raises(ValueError, match="Optimization direction"):
-        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+    tasks = _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+    assert [task.label for task in tasks][-1] == "gluon-l0-load-store-layout"
 
 
-def test_audit_failure_hint_suggests_same_direction_plain_competitor(tmp_path: Path) -> None:
+def test_audit_warning_allows_direction_mismatch_without_dump(tmp_path: Path) -> None:
     prompt = _gluon_overlay_prompt(
         plain_competitor="precompute-rope-outside-loop",
         target_component="_fwd_kernel_stage2",
@@ -958,25 +941,17 @@ def test_audit_failure_hint_suggests_same_direction_plain_competitor(tmp_path: P
         ]
     )
 
-    with pytest.raises(ValueError, match="Optimization direction"):
-        _parse_llm_response(
-            payload,
-            FakeAgentClass,
-            expected_extension_slots=1,
-            audit_diagnostics_dir=tmp_path,
-        )
-
-    data = json.loads(next(tmp_path.glob("task_generation_audit_failed_*.json")).read_text())
-    hint = "\n".join(data["repair_hints"])
-    assert "same-batch plain Triton Base competitor" in hint
-    assert "Explicit layout control for stage2 reduction kernel memory access" in hint
-    assert "Gluon mechanisms such as explicit layouts" in hint
-    assert "Gluon overlay reason" in hint
-    assert "_fwd_kernel_stage2" in hint
-    assert "precompute-rope-outside-loop" in hint
+    tasks = _parse_llm_response(
+        payload,
+        FakeAgentClass,
+        expected_extension_slots=1,
+        audit_diagnostics_dir=tmp_path,
+    )
+    assert [task.label for task in tasks][-1] == "gluon-l0-stage2-layout-overlay"
+    assert not list(tmp_path.glob("task_generation_audit_failed_*.json"))
 
 
-def test_audit_failure_hint_combines_direction_mismatch_with_l0_branch_choice(tmp_path: Path) -> None:
+def test_audit_warning_combines_direction_mismatch_with_l0_branch_choice(tmp_path: Path) -> None:
     payload = json.dumps(
         [
             {
@@ -1050,27 +1025,17 @@ def test_audit_failure_hint_combines_direction_mismatch_with_l0_branch_choice(tm
         ]
     )
 
-    with pytest.raises(ValueError, match="Optimization direction"):
-        _parse_llm_response(
-            payload,
-            FakeAgentClass,
-            expected_extension_slots=1,
-            audit_diagnostics_dir=tmp_path,
-        )
-
-    data = json.loads(next(tmp_path.glob("task_generation_audit_failed_*.json")).read_text())
-    hint = "\n".join(data["repair_hints"])
-    assert "neither exact local Branch A nor retargeted Branch B" in hint
-    assert "exact same-component Base competitor" in hint
-    assert "Optimization direction: reduce K_Buffer memory transactions in stage1 inner loop" in hint
-    assert "Branch A" in hint
-    assert "inline_scoped_helper" in hint
-    assert "whole helper/stage skeleton" in hint
-    assert "whole_kernel_required_reason" in hint
-    assert "inner-loop-memory-reorder" in hint
+    tasks = _parse_llm_response(
+        payload,
+        FakeAgentClass,
+        expected_extension_slots=1,
+        audit_diagnostics_dir=tmp_path,
+    )
+    assert [task.label for task in tasks][-1] == "gluon-l0-stage1-load-layout"
+    assert not list(tmp_path.glob("task_generation_audit_failed_*.json"))
 
 
-def test_audit_failure_hint_combines_missing_anchor_with_l0_branch_choice(tmp_path: Path) -> None:
+def test_audit_warning_combines_missing_anchor_with_l0_branch_choice(tmp_path: Path) -> None:
     payload = json.dumps(
         [
             {
@@ -1145,23 +1110,15 @@ def test_audit_failure_hint_combines_missing_anchor_with_l0_branch_choice(tmp_pa
         ]
     )
 
-    with pytest.raises(ValueError, match="lacks auditable Target component"):
-        _parse_llm_response(
-            payload,
-            FakeAgentClass,
-            expected_extension_slots=1,
-            audit_diagnostics_dir=tmp_path,
-        )
-
-    data = json.loads(next(tmp_path.glob("task_generation_audit_failed_*.json")).read_text())
-    hint = "\n".join(data["repair_hints"])
-    assert "neither an exact local Branch A Base anchor nor a retargeted Branch B whole-helper skeleton" in hint
-    assert "same-batch plain Base anchor" in hint
-    assert "minimum_executable_unit: inline_scoped_helper" in hint
-    assert "retarget both the Base anchor and Gluon overlay to the same whole helper/stage skeleton" in hint
-    assert "too broad to audit as an L0 plain competitor" in hint
-    summaries = {item["label"]: item for item in data["parsed_task_summaries"]}
-    assert "local_target_promoted_to_whole_kernel" in summaries["gluon-l0-local-load-layout"]["soft_audit_diagnostics"]
+    tasks = _parse_llm_response(
+        payload,
+        FakeAgentClass,
+        expected_extension_slots=1,
+        audit_diagnostics_dir=tmp_path,
+    )
+    summary = {task.label: _task_audit_summary(task) for task in tasks}
+    assert "local_target_promoted_to_whole_kernel" in summary["gluon-l0-local-load-layout"]["soft_audit_diagnostics"]
+    assert not list(tmp_path.glob("task_generation_audit_failed_*.json"))
 
 
 def test_audit_failure_hint_combines_missing_anchor_with_high_coupling_inline(tmp_path: Path) -> None:
@@ -1231,22 +1188,14 @@ def test_audit_failure_hint_combines_missing_anchor_with_high_coupling_inline(tm
         ]
     )
 
-    with pytest.raises(ValueError, match="cannot use inline_scoped_helper"):
-        _parse_llm_response(
-            payload,
-            FakeAgentClass,
-            expected_extension_slots=1,
-            audit_diagnostics_dir=tmp_path,
-        )
-
-    data = json.loads(next(tmp_path.glob("task_generation_audit_failed_*.json")).read_text())
-    hint = "\n".join(data["repair_hints"])
-    assert "`inline_scoped_helper` was rejected because the declared L0 target is high-coupling" in hint
-    assert "neither an exact local Branch A Base anchor nor a retargeted Branch B whole-helper skeleton" in hint
-    assert "same-batch plain Base anchor" in hint
-    assert "only when the target is low-coupling" in hint
-    assert "credible plain Triton no-regression performance hypothesis" in hint
-    assert "Do not create a Base anchor solely for Gluon" in hint
+    tasks = _parse_llm_response(
+        payload,
+        FakeAgentClass,
+        expected_extension_slots=1,
+        audit_diagnostics_dir=tmp_path,
+    )
+    assert [task.label for task in tasks][-1] == "gluon-l0-kbuffer-load-layout"
+    assert not list(tmp_path.glob("task_generation_audit_failed_*.json"))
 
 
 def test_l0_soft_audit_diagnostics_cover_atomic_component_scope() -> None:
@@ -1359,7 +1308,7 @@ def test_l0_soft_audit_detects_multiple_patch_target_components() -> None:
     assert "component_bundle_too_broad" in summary["soft_audit_diagnostics"]
 
 
-def test_required_gluon_high_risk_soft_diagnostics_fail_before_dispatch() -> None:
+def test_required_gluon_high_risk_soft_diagnostics_warn_before_dispatch() -> None:
     payload = json.dumps(
         [
             {
@@ -1431,8 +1380,9 @@ def test_required_gluon_high_risk_soft_diagnostics_fail_before_dispatch() -> Non
         ]
     )
 
-    with pytest.raises(ValueError, match="high-risk Gluon L0 diagnostics require repair before dispatch"):
-        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+    tasks = _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+    summary = {task.label: _task_audit_summary(task) for task in tasks}
+    assert "local_target_promoted_to_whole_kernel" in summary["gluon-paged-load"]["soft_audit_diagnostics"]
 
 
 def test_audit_rejects_l0_overlay_without_same_batch_plain_competitor() -> None:
@@ -1459,7 +1409,7 @@ def test_audit_rejects_l0_overlay_without_same_batch_plain_competitor() -> None:
         _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
 
 
-def test_audit_rejects_l0_overlay_when_plain_competitor_family_mismatches() -> None:
+def test_audit_warns_l0_overlay_when_plain_competitor_family_mismatches() -> None:
     payload = json.dumps(
         [
             {
@@ -1479,8 +1429,8 @@ def test_audit_rejects_l0_overlay_when_plain_competitor_family_mismatches() -> N
         ]
     )
 
-    with pytest.raises(ValueError, match="does not match Plain competitor"):
-        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+    tasks = _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+    assert [task.label for task in tasks][-1] == "amd-gluon-l0-viability"
 
 
 def test_audit_drops_l0_overlay_with_low_priority_bucket() -> None:
@@ -1618,7 +1568,7 @@ def test_audit_treats_body_only_l0_overlay_as_l0_for_priority_and_binding() -> N
     assert [task.label for task in tasks] == ["triton-eliminate-redundant-ops-streamline"]
 
 
-def test_l0_overlay_binding_rejects_mismatched_target_component() -> None:
+def test_l0_overlay_binding_warns_mismatched_target_component() -> None:
     payload = json.dumps(
         [
             {
@@ -1655,11 +1605,11 @@ def test_l0_overlay_binding_rejects_mismatched_target_component() -> None:
         ]
     )
 
-    with pytest.raises(ValueError, match="does not match Plain competitor"):
-        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+    tasks = _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+    assert [task.label for task in tasks][-1] == "gluon-l0-stage2-anchor"
 
 
-def test_l0_overlay_binding_rejects_same_family_different_target_scope() -> None:
+def test_l0_overlay_binding_warns_same_family_different_target_scope() -> None:
     payload = json.dumps(
         [
             {
@@ -1701,11 +1651,11 @@ def test_l0_overlay_binding_rejects_same_family_different_target_scope() -> None
         ]
     )
 
-    with pytest.raises(ValueError, match="Target scope"):
-        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+    tasks = _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+    assert [task.label for task in tasks][-1] == "gluon-l0-stage2-reduction"
 
 
-def test_l0_audit_requires_planner_doc_routing_metadata() -> None:
+def test_l0_audit_allows_missing_planner_doc_routing_metadata() -> None:
     prompt = _gluon_overlay_prompt()
     for line in (
         "Task signals: layout, memory, l0",
@@ -1735,11 +1685,11 @@ def test_l0_audit_requires_planner_doc_routing_metadata() -> None:
         ]
     )
 
-    with pytest.raises(ValueError, match="missing L0 planner routing field"):
-        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+    tasks = _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+    assert [task.label for task in tasks][-1] == "gluon-l0-missing-routing"
 
 
-def test_l0_audit_rejects_high_coupling_inline_scoped_helper() -> None:
+def test_l0_audit_warns_high_coupling_inline_scoped_helper() -> None:
     payload = json.dumps(
         [
             {
@@ -1779,11 +1729,12 @@ def test_l0_audit_rejects_high_coupling_inline_scoped_helper() -> None:
         ]
     )
 
-    with pytest.raises(ValueError, match="cannot use inline_scoped_helper for high-coupling L0 target"):
-        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+    tasks = _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+    summary = {task.label: _task_audit_summary(task) for task in tasks}
+    assert "matrix_metadata_inconsistent" in summary["gluon-l0-softmax-accumulator"]["soft_audit_diagnostics"]
 
 
-def test_l0_audit_rejects_whole_jit_without_compile_risk_fields() -> None:
+def test_l0_audit_warns_whole_jit_without_compile_risk_fields() -> None:
     payload = json.dumps(
         [
             {
@@ -1824,11 +1775,11 @@ def test_l0_audit_rejects_whole_jit_without_compile_risk_fields() -> None:
         ]
     )
 
-    with pytest.raises(ValueError, match="whole_jit_kernel compile-risk anchor missing fields"):
-        _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+    tasks = _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=1)
+    assert [task.label for task in tasks][-1] == "gluon-l0-composite-whole"
 
 
-def test_audit_rejects_l1_without_anchor_contract() -> None:
+def test_audit_warns_l1_without_anchor_contract() -> None:
     payload = json.dumps(
         [
             {
@@ -1841,12 +1792,12 @@ def test_audit_rejects_l1_without_anchor_contract() -> None:
         ]
     )
 
-    with pytest.raises(ValueError, match="missing L1 anchor contract fields"):
-        _parse_llm_response(
-            payload,
-            FakeAgentClass,
-            expected_extension_slots=2,
-        )
+    tasks = _parse_llm_response(
+        payload,
+        FakeAgentClass,
+        expected_extension_slots=2,
+    )
+    assert [task.label for task in tasks] == ["ext-l1-gluon-mfma"]
 
 
 def test_audit_accepts_l1_with_anchor_contract() -> None:
@@ -2423,28 +2374,17 @@ def test_run_task_agent_plain_triton_auto_prefers_amd_gluon_first(
     assert "`dialect_plain_triton`" in run_kwargs["gluon_planning_traits_guidance"]
     assert "Plain Triton competitors: at least 3 task(s)" in run_kwargs["search_space_allocation_guidance"]
     assert "AMD Gluon overlay: 1 task(s)" in run_kwargs["search_space_allocation_guidance"]
-    assert "Required Gluon docs for priority" in run_kwargs["search_space_allocation_guidance"]
+    assert "Route worker docs by `gluon_doc_profile`" in run_kwargs["search_space_allocation_guidance"]
     assert "Round 1 may include at most one L0 minimal AMD Gluon overlay" in run_kwargs["gluon_planning_traits_guidance"]
     system_prompt = mock_default_agent.call_args.kwargs["system_template"]
-    assert "knowledge lookup plan" in system_prompt
-    assert "Gluon implementation plan" in system_prompt
-    assert "Performance hypothesis" in system_prompt
-    assert "Patch evolution" in system_prompt
-    assert "overlay_direction_vs_mechanism" in system_prompt
+    assert "Gluon contract source of truth" in system_prompt
+    assert "injected policy blocks" in system_prompt
     assert "after a passing patch, the next patch" not in system_prompt
     assert "Do not create extra patch-evolution metadata fields" not in system_prompt
-    assert "Optimization direction:" in system_prompt
-    assert "Measurement boundary:" in system_prompt
-    assert "Comparison target:" in system_prompt
-    assert "Allowed change:" in system_prompt
-    assert "non-executed Gluon" in system_prompt
-    assert "API-level Gluon rewrite details" in system_prompt
+    assert "Required AMD Gluon tasks must attempt a real" in system_prompt
+    assert "API-level rewrite details belong in routed skill docs" in system_prompt
     assert "tl.sigmoid" not in system_prompt
     assert "gl.sum" not in system_prompt
-    assert "required_patch_target_symbols" in system_prompt
-    assert "skills/triton-gluon/docs/00_always_read.md" in system_prompt
-    assert "20_component_traits.md" in system_prompt
-    assert "60_real_patterns.md" in system_prompt
 
 
 @patch("minisweagent.tools.tools_runtime.get_tools_list", return_value=[{"name": "str_replace_editor"}, {"name": "submit"}])
@@ -3119,8 +3059,9 @@ def test_system_prompt_deprioritizes_dispatch_path_work():
     assert "- 0: Novel algorithmic kernel rewrites" in _SYSTEM_PROMPT
     assert "- 15: Wrapper/launch-config/dispatch-only changes (lowest priority)" in _SYSTEM_PROMPT
     assert 'Generate at least 3 tasks from the "Prefer First" families' in _SYSTEM_PROMPT
-    assert 'If an "Output Dialect Planning Policy" block is present' in _SYSTEM_PROMPT
-    assert 'If an "Evidence-Anchored Composition" block is present' in _SYSTEM_PROMPT
-    assert "Composition type: base_refine | shared_transplant | gluon_variant | hybrid_dispatch" in _SYSTEM_PROMPT
+    assert "If feature-specific planning blocks are present" in _SYSTEM_PROMPT
+    assert "Evidence-Anchored" in _SYSTEM_PROMPT
+    assert "Composition" in _SYSTEM_PROMPT
+    assert "Gluon contract source of truth" in _SYSTEM_PROMPT
     assert "leave some gpus idle" in _SYSTEM_PROMPT.lower()
     assert "Generate at least one priority-0 task that specifically checks the dispatch path" not in _SYSTEM_PROMPT
