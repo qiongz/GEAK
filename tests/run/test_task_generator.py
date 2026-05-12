@@ -283,18 +283,24 @@ def test_search_space_allocation_for_two_gpus_preserves_base_without_weak_gluon(
     assert "l0_scope_decision_before_emit" in guidance
     assert "First-pass L0 branch rule" in guidance
     assert "default to a local single-component smoke/probe" in guidance
+    assert "Final L0 overlay pair validation" in guidance
+    assert "exact same-direction, same-component Base anchor" in guidance
+    assert "Branch A signal partition" in guidance
     assert "l0_scope_by_kernel_family" in guidance
     assert "Keep API-level rewrite and pass/fail patch details in the routed skills/docs" in guidance
     assert "patch_evolution_strategy" not in guidance
 
 
 def test_taskgen_system_prompt_has_l0_final_submit_checklist() -> None:
-    assert "Before calling `submit`, run a final Round-1 L0 overlay check" in _SYSTEM_PROMPT
-    assert "copy the" in _SYSTEM_PROMPT
-    assert "referenced `Plain competitor` `Optimization direction:` text exactly" in _SYSTEM_PROMPT
-    assert "new same-component Base task first" in _SYSTEM_PROMPT
+    assert "Before calling `submit`, run a final Round-1 L0 overlay pair check" in _SYSTEM_PROMPT
+    assert "referenced `Plain competitor` `Optimization" in _SYSTEM_PROMPT
+    assert "direction:` text exactly" in _SYSTEM_PROMPT
+    assert "exact same-direction, same-component Base anchor" in _SYSTEM_PROMPT
+    assert "new Base anchor first" in _SYSTEM_PROMPT
     assert "do not set `whole_jit_kernel`" in _SYSTEM_PROMPT
     assert "`whole_kernel_required_reason` and compile-risk fields" in _SYSTEM_PROMPT
+    assert "`task_signals` limited to the primary patch target component" in _SYSTEM_PROMPT
+    assert "This stricter anchor requirement applies only to Base" in _SYSTEM_PROMPT
 
 
 def test_search_space_allocation_for_large_budget_keeps_full_base() -> None:
@@ -1053,6 +1059,100 @@ def test_audit_failure_hint_combines_direction_mismatch_with_l0_branch_choice(tm
     assert "whole helper/stage skeleton" in hint
     assert "whole_kernel_required_reason" in hint
     assert "inner-loop-memory-reorder" in hint
+
+
+def test_audit_failure_hint_combines_missing_anchor_with_l0_branch_choice(tmp_path: Path) -> None:
+    payload = json.dumps(
+        [
+            {
+                "label": "broad-memory-cleanup",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "plain_triton",
+                "task_prompt": "\n".join(
+                    [
+                        "Base Set task",
+                        "Base family: base_hot_path_streamline",
+                        "Implementation layer: plain_triton",
+                        "Optimization direction: reduce repeated memory transactions on the hot path",
+                        "This broad Base task discusses a whole-loop memory cleanup but omits an auditable target.",
+                    ]
+                ),
+            },
+            {
+                "label": "gluon-l0-local-load-layout",
+                "priority": 8,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "amd_gluon",
+                "implementation_layer": "amd_gluon overlay",
+                "extension_layer": "L0",
+                "source_base_family": "base_hot_path_streamline",
+                "plain_competitor": "broad-memory-cleanup",
+                "minimum_executable_unit": "whole_jit_kernel",
+                "allowed_execution_path": "whole_jit_kernel",
+                "scope_infeasible_policy": "shrink_or_report",
+                "task_signals": "load_store, matrix_operand",
+                "failure_layers": "layout_construction",
+                "expected_failure_layers": "layout_construction",
+                "kernel_family_signal": "generic_memory_layout",
+                "whole_kernel_required_reason": "the local load path feeds a matrix-like downstream operation",
+                "first_patch_compile_goal": "compile and execute layout skeleton",
+                "do_not_optimize_before_compile": True,
+                "matrix_lowering_required": False,
+                "task_prompt": "\n".join(
+                    [
+                        "Extension Set task",
+                        "Extension layer: L0",
+                        "Optimization direction: reduce repeated memory transactions on the hot path",
+                        "Source Base family: base_hot_path_streamline",
+                        "Plain competitor: broad-memory-cleanup",
+                        "Gluon overlay reason: explicit_layout",
+                        "Overlay priority: high-confidence Consider",
+                        "Implementation layer: amd_gluon overlay",
+                        "Performance hypothesis: explicit layout may reduce local memory transactions",
+                        "Measurement boundary: kernel_only",
+                        "Comparison target: true_baseline",
+                        "Target component: local load path",
+                        "Allowed change: convert one local load path only",
+                        "Reject if: non-executed Gluon or whole-kernel rewrite",
+                        "L0 scope classification: high_coupling",
+                        "L0 coupling reasons: local load path feeds a matrix-like downstream operation",
+                        "Minimum executable unit: whole_jit_kernel",
+                        "Allowed execution path: whole_jit_kernel",
+                        "Scope infeasible policy: shrink_or_report",
+                        "Whole kernel required reason: the local load path feeds a matrix-like downstream operation",
+                        "Task signals: load_store, matrix_operand",
+                        "Failure layers: layout_construction",
+                        "Expected failure layers: layout_construction",
+                        "Kernel family signal: generic_memory_layout",
+                        "First patch compile goal: compile and execute layout skeleton",
+                        "Do not optimize before compile: true",
+                        "Matrix lowering required: false",
+                    ]
+                ),
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="lacks auditable Target component"):
+        _parse_llm_response(
+            payload,
+            FakeAgentClass,
+            expected_extension_slots=1,
+            audit_diagnostics_dir=tmp_path,
+        )
+
+    data = json.loads(next(tmp_path.glob("task_generation_audit_failed_*.json")).read_text())
+    hint = "\n".join(data["repair_hints"])
+    assert "neither an exact local Branch A Base anchor nor a retargeted Branch B whole-helper skeleton" in hint
+    assert "same-batch plain Base anchor" in hint
+    assert "minimum_executable_unit: inline_scoped_helper" in hint
+    assert "retarget both the Base anchor and Gluon overlay to the same whole helper/stage skeleton" in hint
+    assert "too broad to audit as an L0 plain competitor" in hint
+    summaries = {item["label"]: item for item in data["parsed_task_summaries"]}
+    assert "local_target_promoted_to_whole_kernel" in summaries["gluon-l0-local-load-layout"]["soft_audit_diagnostics"]
 
 
 def test_l0_soft_audit_diagnostics_cover_atomic_component_scope() -> None:
@@ -1879,6 +1979,65 @@ def test_parse_llm_response_omits_gluon_doc_metadata_for_plain_base_task() -> No
     assert cfg["required_output_dialect"] == "plain_triton"
     assert "gluon_doc_profile" not in cfg
     assert "required_gluon_docs" not in cfg
+
+
+def test_unreferenced_broad_base_task_remains_valid_with_l0_overlay_anchor() -> None:
+    tasks = _parse_llm_response(
+        json.dumps(
+            [
+                {
+                    "label": "broad-whole-loop-cleanup",
+                    "priority": 0,
+                    "agent_type": "strategy_agent",
+                    "kernel_language": "python",
+                    "required_output_dialect": "plain_triton",
+                    "task_prompt": "\n".join(
+                        [
+                            "Base Set task",
+                            "Base family: base_hot_path_streamline",
+                            "Implementation layer: plain_triton",
+                            "Optimization direction: broad whole-loop cleanup",
+                            "Rewrite a broad loop-level plain Triton strategy without naming a local L0 anchor.",
+                        ]
+                    ),
+                },
+                {
+                    "label": "exact-local-base",
+                    "priority": 0,
+                    "agent_type": "strategy_agent",
+                    "kernel_language": "python",
+                    "required_output_dialect": "plain_triton",
+                    "task_prompt": "\n".join(
+                        [
+                            "Base Set task",
+                            "Base family: base_hot_path_streamline",
+                            "Implementation layer: plain_triton",
+                            "Optimization direction: memory/layout cleanup",
+                            "Target component: streamline_component",
+                            "Allowed change: simplify `streamline_component` in plain Triton.",
+                        ]
+                    ),
+                },
+                {
+                    "label": "ext-l0-local-layout",
+                    "priority": 8,
+                    "agent_type": "strategy_agent",
+                    "kernel_language": "python",
+                    "task_prompt": _gluon_overlay_prompt(plain_competitor="exact-local-base"),
+                },
+            ]
+        ),
+        FakeAgentClass,
+        expected_extension_slots=1,
+    )
+
+    broad_cfg = tasks[0].config
+    assert broad_cfg["search_set"] == "base"
+    assert broad_cfg["required_output_dialect"] == "plain_triton"
+    assert "gluon_doc_profile" not in broad_cfg
+    assert "required_gluon_docs" not in broad_cfg
+    assert "minimum_executable_unit" not in broad_cfg
+    assert tasks[-1].config["search_set"] == "extension"
 
 
 def test_parse_llm_response_infers_gluon_variant_from_anchor_profile() -> None:

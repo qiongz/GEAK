@@ -351,21 +351,29 @@ task whose `required_output_dialect` is `plain_triton`; do not use `Shared`,
 plain competitor for an L0 overlay.
 Base tasks that might serve as a Gluon L0 `Plain competitor` MUST include both
 the same `Optimization direction:` and an auditable `Target component:` or
-scoped `Allowed change:`. A broad register-pressure, cleanup, or memory task
-without a scoped component may still be a valid Base task, but it is not a valid
-L0 plain competitor.
+scoped `Allowed change:`. This stricter anchor requirement applies only to Base
+tasks referenced by an L0 overlay. A broad register-pressure, cleanup, fusion,
+schedule/config, persistent-kernel, or whole-loop Base task may still be valid
+Base work, but it is not a valid local L0 plain competitor unless the Gluon
+overlay is retargeted to the same broad whole helper/stage skeleton.
 If the Gluon target component does not already have such a plain Base task, emit
 that Base task first and bind the overlay to it. For example, an overlay for
 component B's memory/layout path must bind to a component-B memory/layout plain
 Triton competitor, not to a component-A cleanup/control-flow task or a generic
 same-family task.
-Before calling `submit`, run a final Round-1 L0 overlay check: copy the
-referenced `Plain competitor` `Optimization direction:` text exactly, or emit a
-new same-component Base task first and bind to that task. If `Target component:`
-or `Allowed change:` names a local load/store/index/mask/path, keep
-`minimum_executable_unit: inline_scoped_helper`; do not set `whole_jit_kernel`
-unless the task is retargeted to a whole helper/stage skeleton with
-`whole_kernel_required_reason` and compile-risk fields.
+Before calling `submit`, run a final Round-1 L0 overlay pair check: every L0
+overlay must either bind to an exact same-direction, same-component Base anchor
+or not be emitted. Copy the referenced `Plain competitor` `Optimization
+direction:` text exactly, verify that both tasks name the same scoped target,
+and emit a new Base anchor first when the candidate Base task is too broad. If
+`Target component:` or `Allowed change:` names a local load/store/index/mask/path
+or other single primary atomic component, keep `minimum_executable_unit:
+inline_scoped_helper`; do not set `whole_jit_kernel` unless both the Base anchor
+and Gluon overlay are retargeted to the same whole helper/stage skeleton with
+`whole_kernel_required_reason` and compile-risk fields. For Branch A, keep
+`task_signals` limited to the primary patch target component and put matrix,
+reduction, wrapper, dot, dispatch, or other surrounding context in secondary
+components, blockers, or failure layers.
 
 **Dialect contract metadata**: Use `required_output_dialect=amd_gluon` only
 when plain Triton fallback is not a valid success. Required AMD Gluon tasks must

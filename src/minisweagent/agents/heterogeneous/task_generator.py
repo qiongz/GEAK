@@ -2053,7 +2053,7 @@ def _build_search_space_allocation_guidance(
         "- Set `source_origin` when known: `generated_overlay` for new plain->Gluon overlays, `existing_amd_gluon_operator` only when the measured baseline already executes a production AMD Gluon operator, and `nv_gluon_translation` for NVIDIA-facing Gluon translation.",
         "- Generated overlays default to `gluon_tl_policy: strict_generated` and `layout_construction_policy: host_preferred`; production Gluon source may use `production_source_allowed` and `source_preserve` only when source evidence supports it.",
         "- Keep a plain Triton competitor for every high-value direction unless AMD Gluon is explicitly required. Layering order: plain Triton -> optional L0/paired mapping -> L1 from viable/local-win evidence -> later Hybrid/Mixed.",
-        "- Any Base task that may be referenced by a Gluon L0 overlay must include auditable scoped fields: `Target component:` naming the exact helper/stage/local subpath and `Allowed change:` naming the same component in plain Triton. Broad Base tasks without those fields are valid Base work but must not be used as `Plain competitor` for L0.",
+        "- Any Base task that may be referenced by a Gluon L0 overlay must include auditable scoped fields: `Target component:` naming the exact helper/stage/local subpath and `Allowed change:` naming the same component in plain Triton. This stricter anchor contract applies only to Base tasks referenced as L0 `Plain competitor`; broad Base tasks without those fields remain valid Base work but must not be used as local L0 anchors.",
         "- Round 1 plain Triton input may have at most one L0 overlay. Generate it only when `overlay_priority_routing` is Prefer/high-confidence Consider; otherwise spend the slot on another plain Triton direction.",
         "- Before emitting any L0 overlay or later task derived from L0 evidence, perform `Gluon L0 scope classification`: is the candidate layout-heavy, does it include loop-carried state, online reductions, dot/matrix paths, multiple 2D parents, nested layouts, wrapper reroute, cross-stage ABI changes, boundary-specific branches, or other high-coupling logic; can one exact subpath execute without translating the whole algorithm; and is the expected outcome `execution_anchor` or `performance_candidate`?",
         "- L0 scope ladder is generic across kernels: prefer the smallest executable, attributable, low-coupling subpath (scalar/1D stage, one load/store, one index/mask layout smoke path). Consider matrix/MFMA subpaths only after an executed anchor or when the task explicitly proves the matrix subpath is the smallest viable component.",
@@ -2068,7 +2068,9 @@ def _build_search_space_allocation_guidance(
         "- `inline_scoped_helper` is invalid for high-coupling L0 targets such as online softmax accumulator loops, `tl.dot`/matrix paths, loop-carried reductions, cross-stage ABI changes, or wrapper reroutes. Shrink to a lower-coupling index/mask/load/store smoke path, use a justified `whole_jit_kernel`, or do not emit the Gluon task.",
         "- `whole_jit_kernel` is a compile-risk anchor, not the default L0 shape. If used, the task must include `expected_failure_layers`, `first_patch_compile_goal`, `do_not_optimize_before_compile: true`, and `matrix_lowering_required: true|false`. `patch_0` should aim for a compile anchor before performance tuning.",
         "- Before submitting a Gluon task, do a concise consistency pass using `10_search_policies.md::overlay_direction_vs_mechanism`, `atomic_component_lattice`, `l0_scope_decision_before_emit`, and `60_real_patterns.md::l0_scope_by_kernel_family`: keep `Optimization direction` as the shared performance goal, pick one primary component for `patch_0`, and put Gluon-specific mechanisms in overlay fields.",
-        "- First-pass L0 branch rule: emit exactly one shape. If the target is local or ambiguous, default to a local single-component smoke/probe with `inline_scoped_helper`; use `whole_jit_kernel` only after retargeting to a whole-helper skeleton with a concrete `whole_kernel_required_reason`.",
+        "- Final L0 overlay pair validation: every L0 overlay must either bind to an exact same-direction, same-component Base anchor or not be emitted. If the referenced Base task is broad narrative/generic cleanup/whole-loop work, create a scoped Base anchor first or retarget both Base and Gluon to the same whole helper/stage skeleton.",
+        "- First-pass L0 branch rule: emit exactly one shape. If the target is local or ambiguous, default to a local single-component smoke/probe with `inline_scoped_helper`; use `whole_jit_kernel` only after retargeting both the target wording and Base/Gluon pair to a whole-helper skeleton with a concrete `whole_kernel_required_reason`.",
+        "- Branch A signal partition: `task_signals` should name only the primary patch target component. Put matrix/reduction/wrapper/dot/dispatch context in `Secondary components / blockers`, `failure_layers`, or `expected_failure_layers`, not in the positive patch-target signals.",
         "- Required Gluon worker contract: ask for `Gluon knowledge lookup plan`, `Gluon implementation plan`, `Performance hypothesis:`, `Same ABI comparison:`, and `Patch evolution:` before editing. Keep API-level rewrite and pass/fail patch details in the routed skills/docs, not in the prompt body.",
         "- For an L0 `extension_intent=execution_anchor`, keep `Performance hypothesis:` to execution and attribution: verify the explicit layout/scoped helper can execute and record layout construction or conversion overhead. Do not claim MFMA utilization or broad throughput improvement unless the task is matrix-lowering/L1 or prior evidence supports that mechanism.",
         "- L0 overlay prompts must not ask the worker to convert an entire stage/helper/kernel just to prove Gluon. Scope L0 to one named subpath/component, such as a load/store, layout, mask, or matrix subpath; only use a whole helper as the target when the task explicitly explains why the helper is the smallest viable component.",
@@ -3771,8 +3773,8 @@ def _audit_repair_hints(errors: list[str], tasks: list[AgentTask]) -> list[str]:
             hints.append(
                 f"{label}: local target appears promoted to `whole_jit_kernel`. Choose exactly one L0 branch: "
                 "Branch A local smoke/probe with `inline_scoped_helper`, or Branch B retargeted to a whole-helper "
-                "layout skeleton with `whole_kernel_required_reason` and compile-risk fields. Do not keep `one load` "
-                "wording while declaring `whole_jit_kernel`."
+                "layout skeleton with `whole_kernel_required_reason` and compile-risk fields. Do not keep local "
+                "load/store/index/mask/path wording while declaring `whole_jit_kernel`."
             )
         if "matrix_metadata_inconsistent" in diagnostics:
             hints.append(
@@ -3883,6 +3885,16 @@ def _audit_repair_hints(errors: list[str], tasks: list[AgentTask]) -> list[str]:
             direction = summary.get("optimization_direction") or "<same optimization direction as the Gluon L0>"
             source_family = summary.get("source_base_family") or "matching Base family"
             target_component = summary.get("target_component") or "<Gluon target component>"
+            diagnostics = summary.get("soft_audit_diagnostics") or []
+            if "local_target_promoted_to_whole_kernel" in diagnostics:
+                hints.append(
+                    f"{label}: current L0 overlay has neither an exact local Branch A Base anchor nor a "
+                    "retargeted Branch B whole-helper skeleton. Either create/fix a same-batch plain Base "
+                    f"anchor for target `{target_component}` with `Optimization direction: {direction}` and "
+                    "keep the Gluon task local with `minimum_executable_unit: inline_scoped_helper`, or retarget "
+                    "both the Base anchor and Gluon overlay to the same whole helper/stage skeleton before using "
+                    "`whole_jit_kernel`."
+                )
             hints.append(
                 f"{label}: `{plain}` is too broad to audit as an L0 plain competitor. "
                 f"Either update it to include `Target component: {target_component}` and a scoped `Allowed change:` "
