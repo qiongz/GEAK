@@ -288,6 +288,15 @@ def test_search_space_allocation_for_two_gpus_preserves_base_without_weak_gluon(
     assert "patch_evolution_strategy" not in guidance
 
 
+def test_taskgen_system_prompt_has_l0_final_submit_checklist() -> None:
+    assert "Before calling `submit`, run a final Round-1 L0 overlay check" in _SYSTEM_PROMPT
+    assert "copy the" in _SYSTEM_PROMPT
+    assert "referenced `Plain competitor` `Optimization direction:` text exactly" in _SYSTEM_PROMPT
+    assert "new same-component Base task first" in _SYSTEM_PROMPT
+    assert "do not set `whole_jit_kernel`" in _SYSTEM_PROMPT
+    assert "`whole_kernel_required_reason` and compile-risk fields" in _SYSTEM_PROMPT
+
+
 def test_search_space_allocation_for_large_budget_keeps_full_base() -> None:
     guidance = _build_search_space_allocation_guidance(
         _gluon_feature_meta("plain_triton"),
@@ -950,6 +959,100 @@ def test_audit_failure_hint_suggests_same_direction_plain_competitor(tmp_path: P
     assert "Gluon overlay reason" in hint
     assert "_fwd_kernel_stage2" in hint
     assert "precompute-rope-outside-loop" in hint
+
+
+def test_audit_failure_hint_combines_direction_mismatch_with_l0_branch_choice(tmp_path: Path) -> None:
+    payload = json.dumps(
+        [
+            {
+                "label": "inner-loop-memory-reorder",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "plain_triton",
+                "task_prompt": "\n".join(
+                    [
+                        "Base Set task",
+                        "Base family: base_hot_path_streamline",
+                        "Implementation layer: plain_triton",
+                        "Optimization direction: restructure inner loop memory access pattern to improve data reuse and reduce global memory transactions",
+                        "Target component: stage1 inner loop",
+                        "Allowed change: restructure `stage1 inner loop` memory access in plain Triton.",
+                    ]
+                ),
+            },
+            {
+                "label": "gluon-l0-stage1-load-layout",
+                "priority": 8,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "amd_gluon",
+                "implementation_layer": "amd_gluon overlay",
+                "extension_layer": "L0",
+                "source_base_family": "base_hot_path_streamline",
+                "plain_competitor": "inner-loop-memory-reorder",
+                "minimum_executable_unit": "whole_jit_kernel",
+                "allowed_execution_path": "whole_jit_kernel",
+                "scope_infeasible_policy": "shrink_or_report",
+                "task_signals": "load_store, layout_broadcast",
+                "failure_layers": "layout_construction, load_store",
+                "expected_failure_layers": "layout_construction, load_store",
+                "kernel_family_signal": "attention_decode",
+                "first_patch_compile_goal": "compile and execute layout skeleton",
+                "do_not_optimize_before_compile": True,
+                "matrix_lowering_required": False,
+                "task_prompt": "\n".join(
+                    [
+                        "Extension Set task",
+                        "Extension layer: L0",
+                        "Optimization direction: reduce K_Buffer memory transactions in stage1 inner loop",
+                        "Source Base family: base_hot_path_streamline",
+                        "Plain competitor: inner-loop-memory-reorder",
+                        "Gluon overlay reason: explicit_layout",
+                        "Overlay priority: high-confidence Consider",
+                        "Implementation layer: amd_gluon overlay",
+                        "Performance hypothesis: explicit layout may reduce K_Buffer memory transactions",
+                        "Measurement boundary: kernel_only",
+                        "Comparison target: true_baseline",
+                        "Target component: K_Buffer load path",
+                        "Allowed change: convert one `K_Buffer` load path only",
+                        "Reject if: non-executed Gluon or whole-kernel rewrite",
+                        "L0 scope classification: high_coupling",
+                        "L0 coupling reasons: stage1 K_Buffer load path may need whole helper wiring",
+                        "Minimum executable unit: whole_jit_kernel",
+                        "Allowed execution path: whole_jit_kernel",
+                        "Scope infeasible policy: shrink_or_report",
+                        "Task signals: load_store, layout_broadcast",
+                        "Failure layers: layout_construction, load_store",
+                        "Expected failure layers: layout_construction, load_store",
+                        "Kernel family signal: attention_decode",
+                        "First patch compile goal: compile and execute layout skeleton",
+                        "Do not optimize before compile: true",
+                        "Matrix lowering required: false",
+                    ]
+                ),
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Optimization direction"):
+        _parse_llm_response(
+            payload,
+            FakeAgentClass,
+            expected_extension_slots=1,
+            audit_diagnostics_dir=tmp_path,
+        )
+
+    data = json.loads(next(tmp_path.glob("task_generation_audit_failed_*.json")).read_text())
+    hint = "\n".join(data["repair_hints"])
+    assert "neither exact local Branch A nor retargeted Branch B" in hint
+    assert "exact same-component Base competitor" in hint
+    assert "Optimization direction: reduce K_Buffer memory transactions in stage1 inner loop" in hint
+    assert "Branch A" in hint
+    assert "inline_scoped_helper" in hint
+    assert "whole helper/stage skeleton" in hint
+    assert "whole_kernel_required_reason" in hint
+    assert "inner-loop-memory-reorder" in hint
 
 
 def test_l0_soft_audit_diagnostics_cover_atomic_component_scope() -> None:
