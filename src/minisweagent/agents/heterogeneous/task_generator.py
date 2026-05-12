@@ -3813,6 +3813,17 @@ def _audit_repair_hints(errors: list[str], tasks: list[AgentTask]) -> list[str]:
             summary = summaries.get(label, {})
             target_component = summary.get("target_component") or "<same target component as the Gluon L0>"
             source_family = summary.get("source_base_family") or "matching Base family"
+            diagnostics = summary.get("soft_audit_diagnostics") or []
+            if "local_target_promoted_to_whole_kernel" in diagnostics:
+                hints.append(
+                    f"{label}: current L0 overlay is neither exact local Branch A nor retargeted Branch B. "
+                    f"Either create an exact same-component Base competitor for `{target_component}` with "
+                    f"`Optimization direction: {gluon_direction}` and keep the Gluon task as Branch A "
+                    "(`minimum_executable_unit: inline_scoped_helper`), or retarget the Gluon task to a "
+                    "whole helper/stage skeleton with `whole_kernel_required_reason` and compile-risk fields. "
+                    f"Do not bind the narrow local target to broad competitor `{plain}` while declaring "
+                    "`whole_jit_kernel`."
+                )
             hints.append(
                 f"{label}: create a same-batch plain Triton Base competitor for optimization direction "
                 f"`{gluon_direction}` and target component `{target_component}`, then set `Plain competitor` "

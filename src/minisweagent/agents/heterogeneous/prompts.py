@@ -359,6 +359,13 @@ that Base task first and bind the overlay to it. For example, an overlay for
 component B's memory/layout path must bind to a component-B memory/layout plain
 Triton competitor, not to a component-A cleanup/control-flow task or a generic
 same-family task.
+Before calling `submit`, run a final Round-1 L0 overlay check: copy the
+referenced `Plain competitor` `Optimization direction:` text exactly, or emit a
+new same-component Base task first and bind to that task. If `Target component:`
+or `Allowed change:` names a local load/store/index/mask/path, keep
+`minimum_executable_unit: inline_scoped_helper`; do not set `whole_jit_kernel`
+unless the task is retargeted to a whole helper/stage skeleton with
+`whole_kernel_required_reason` and compile-risk fields.
 
 **Dialect contract metadata**: Use `required_output_dialect=amd_gluon` only
 when plain Triton fallback is not a valid success. Required AMD Gluon tasks must
