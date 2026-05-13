@@ -64,6 +64,7 @@ class AgentConfig:
     gluon_doc_gate_required_paths: list[str] | None = None
     required_output_dialect: str | None = None
     required_patch_target_symbols: list[str] | None = None
+    executed_route_symbols: list[str] | None = None
     forbidden_patch_target_symbols: list[str] | None = None
     required_amd_gluon_contract_tags: list[str] | None = None
     source_origin: str | None = None
@@ -72,6 +73,11 @@ class AgentConfig:
     forbidden_tl_symbols: list[str] | None = None
     layout_construction_policy: str | None = None
     execution_mode: str | None = None
+    gluon_route_proof_required: bool = False
+    gluon_strategy_artifacts_required: bool = False
+    gluon_route_priority_override: bool = False
+    gluon_failure_layers: str = ""
+    suppress_cross_session_memory: bool = False
 
 
 # Unified observation truncation for both bash output and tool call results (head + tail).
@@ -261,6 +267,7 @@ class DefaultAgent:
             gluon_doc_gate_required_paths=self.config.gluon_doc_gate_required_paths,
             required_output_dialect=self.config.required_output_dialect,
             required_patch_target_symbols=self.config.required_patch_target_symbols,
+            executed_route_symbols=self.config.executed_route_symbols,
             forbidden_patch_target_symbols=self.config.forbidden_patch_target_symbols,
             required_amd_gluon_contract_tags=self.config.required_amd_gluon_contract_tags,
             source_origin=self.config.source_origin,
@@ -269,6 +276,8 @@ class DefaultAgent:
             forbidden_tl_symbols=self.config.forbidden_tl_symbols,
             layout_construction_policy=self.config.layout_construction_policy,
             execution_mode=self.config.execution_mode,
+            gluon_route_proof_required=self.config.gluon_route_proof_required,
+            gluon_strategy_artifacts_required=self.config.gluon_strategy_artifacts_required,
         )
 
         save_and_test_tool = self.toolruntime._tool_table.get("save_and_test")

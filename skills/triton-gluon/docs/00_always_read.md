@@ -11,6 +11,7 @@ split-doc routing. It is not an API cookbook.
 - `self_check`
 - `product_contract`
 - `stable_split_doc_index`
+- `task_first_route_proof_protocol`
 - `pre_edit_gluon_patch_contract`
 - `semantic_contract`
 - `dialect_contract`
@@ -119,6 +120,43 @@ the required docs have been viewed.
 Use `gluon_doc_profile`, `required_gluon_docs`, and task signals to select the
 exact heading in those docs. Do not replace this gate with the ROCm Gluon
 knowledge base; that page is background/RAG, not an execution contract.
+
+## task_first_route_proof_protocol
+
+Worker reading order is hard:
+
+1. Task file / clean task packet.
+2. `COMMANDMENT`.
+3. Required docs and only the task-relevant headings.
+4. Operator-local source.
+5. Harness / manifest / benchmark cases.
+6. `Required execution route proof`.
+7. Edit.
+
+Before editing or calling `save_and_test`, persist a strategy artifact such as
+`strategy_notes.md` containing:
+
+- `Task objective extraction`: objective, target symbols, allowed change,
+  recommended route, and reject conditions.
+- `Required execution route proof`: current wrapper/kernel path, target
+  wrapper/kernel path, guard conditions, output feeding, reduce/temporary path
+  skip-or-preserve behavior, same ABI proof, and measurement boundary
+  reconciliation.
+- `Patch evolution ledger`: `Changed component`, `Expected effect`,
+  `Observed effect`, `Keep/Revert`, and `Next patch allowed scope` for each
+  patch.
+
+Failure-layer lock:
+
+- `helper_not_executed` or `target_not_touched` -> next patch may only fix
+  wrapper wiring, launch, target association, or measured output feeding.
+- `scope_violation` -> revert the forbidden scope before doing anything else.
+- `slow_correct` -> change one named removable overhead only.
+- `compile/layout` -> fix only that compile/layout layer.
+
+For `full_operator` wrapper/reduction or one-shot/output-feeding tasks, the
+first patch is wrapper dispatch/output feeding only unless the task explicitly
+permits kernel-body, MFMA, or reduce-algorithm rewriting.
 
 ## pre_edit_knowledge_lookup_contract
 

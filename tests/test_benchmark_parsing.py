@@ -60,6 +60,50 @@ def test_parse_shape_latencies_ms_extracts_each_shape() -> None:
     }
 
 
+def test_benchmark_parsing_infers_trailing_backticked_allowed_change_target() -> None:
+    body = "\n".join(
+        [
+            "Task type: amd_gluon_in_dialect_refine",
+            "Target component: load_store_buffer",
+            "Allowed change: Reorder value cache loading to overlap with QK MFMA computation in `paged_attention_decode_v2_gluon_dot_kernel`",
+        ]
+    )
+
+    expected = ["paged_attention_decode_v2_gluon_dot_kernel"]
+    assert _infer_required_patch_target_symbols(body, {}) == expected
+    assert preprocess_benchmark_parsing._infer_required_patch_target_symbols(body, {}) == expected
+
+
+def test_benchmark_parsing_infers_existing_refinement_action_prose_targets() -> None:
+    body = "\n".join(
+        [
+            "Task type: amd_gluon_in_dialect_refine",
+            "Target component: wrapper_shape_dispatch",
+            "Allowed change: Adjust context partition and waves per EU in the wrapper",
+            "The wrapper function `_paged_attention_decode_v2_with_dot_kernel_reshape_wrapper` controls these parameters.",
+        ]
+    )
+
+    expected = ["_paged_attention_decode_v2_with_dot_kernel_reshape_wrapper"]
+    assert _infer_required_patch_target_symbols(body, {}) == expected
+    assert preprocess_benchmark_parsing._infer_required_patch_target_symbols(body, {}) == expected
+
+
+def test_benchmark_parsing_infers_focus_on_function_targets() -> None:
+    body = "\n".join(
+        [
+            "Task type: amd_gluon_in_dialect_refine",
+            "Target component: state_update_softmax",
+            "Allowed change: Optimize the online softmax computation by restructuring reductions",
+            "Focus on the `paged_attention_decode_v2_gluon_dot_kernel` function, specifically the softmax section.",
+        ]
+    )
+
+    expected = ["paged_attention_decode_v2_gluon_dot_kernel"]
+    assert _infer_required_patch_target_symbols(body, {}) == expected
+    assert preprocess_benchmark_parsing._infer_required_patch_target_symbols(body, {}) == expected
+
+
 def test_named_case_latencies_are_totaled_for_baseline_objective() -> None:
     output = "case_small: 0.0566 ms\ncase_medium: 0.0558 ms\n"
 
@@ -68,6 +112,135 @@ def test_named_case_latencies_are_totaled_for_baseline_objective() -> None:
         "case_medium": 0.0558,
     }
     assert extract_latency_ms(output) == pytest.approx(0.1124)
+
+
+def test_rewrite_best_results_marks_no_viable_without_real_patch_artifacts(tmp_path: Path) -> None:
+    root = tmp_path / "generic_kernel"
+    patch_dir = root / "results" / "round_1" / "gluon-oneshot-fusion"
+    patch_dir.mkdir(parents=True)
+    tasks_dir = root / "tasks" / "round_1"
+    tasks_dir.mkdir(parents=True)
+
+    from minisweagent.run.task_file import write_task_file
+
+    write_task_file(
+        tasks_dir / "00_gluon-oneshot-fusion.md",
+        {
+            "label": "gluon-oneshot-fusion",
+            "required_output_dialect": "amd_gluon",
+            "required_patch_target_symbols": ["pa_decode_gluon"],
+        },
+        "Implementation layer: amd_gluon in-dialect refinement\n",
+    )
+    (root / "benchmark_baseline.txt").write_text("case_a: 1.0 ms\n")
+    (patch_dir / "best_results.json").write_text(
+        '{"best_patch_id": "patch_0", "best_patch_file": null, "best_patch_speedup": 1.0}'
+    )
+
+    post = rewrite_best_results(patch_dir)
+    pre = preprocess_benchmark_parsing.rewrite_best_results(patch_dir)
+
+    for result in (post, pre):
+        assert result is not None
+        assert result["status"] == "no_viable_patch"
+        assert result["no_viable_patch"] is True
+        assert result["best_patch_id"] is None
+        assert result["best_patch_speedup"] == 0.0
+
+
+def test_rewrite_best_results_treats_budget_forced_placeholder_as_no_viable(tmp_path: Path) -> None:
+    root = tmp_path / "generic_kernel"
+    patch_dir = root / "results" / "round_1" / "gluon-oneshot-fusion"
+    patch_dir.mkdir(parents=True)
+    tasks_dir = root / "tasks" / "round_1"
+    tasks_dir.mkdir(parents=True)
+
+    from minisweagent.run.task_file import write_task_file
+
+    write_task_file(
+        tasks_dir / "00_gluon-oneshot-fusion.md",
+        {"label": "gluon-oneshot-fusion", "required_output_dialect": "amd_gluon"},
+        "Implementation layer: amd_gluon in-dialect refinement\n",
+    )
+    (root / "benchmark_baseline.txt").write_text("case_a: 1.0 ms\n")
+    (patch_dir / "patch_0.patch").write_text("no generated patch artifacts were present in this run directory\n")
+    (patch_dir / "patch_0_test.txt").write_text("Budget-forced immediate submission\ncase_a: 1.0 ms\n")
+
+    result = rewrite_best_results(patch_dir)
+
+    assert result is not None
+    assert result["status"] == "no_viable_patch"
+    assert result["no_viable_patch"] is True
+
+
+def test_existing_amd_gluon_source_preserve_patch_satisfies_dialect_contract(tmp_path: Path) -> None:
+    root = tmp_path / "generic_kernel"
+    patch_dir = root / "results" / "round_1" / "gluon-wrapper-tuning"
+    patch_dir.mkdir(parents=True)
+    tasks_dir = root / "tasks" / "round_1"
+    tasks_dir.mkdir(parents=True)
+
+    from minisweagent.run.task_file import write_task_file
+
+    write_task_file(
+        tasks_dir / "00_gluon-wrapper-tuning.md",
+        {
+            "label": "gluon-wrapper-tuning",
+            "required_output_dialect": "amd_gluon",
+            "source_origin": "existing_amd_gluon_operator",
+            "implementation_layer": "amd_gluon in-dialect refinement",
+            "required_patch_target_symbols": ["_paged_attention_decode_v2_with_dot_kernel_reshape_wrapper"],
+        },
+        "Task type: amd_gluon_shape_dispatch_refine\n",
+    )
+    (root / "benchmark_baseline.txt").write_text("case_a: 1.0 ms\ncase_b: 1.0 ms\n")
+    (patch_dir / "patch_1.patch").write_text(
+        "\n".join(
+            [
+                "diff --git a/aiter/ops/triton/gluon/pa_decode_gluon.py b/aiter/ops/triton/gluon/pa_decode_gluon.py",
+                "@@ def _paged_attention_decode_v2_with_dot_kernel_reshape_wrapper():",
+                    " def _paged_attention_decode_v2_with_dot_kernel_reshape_wrapper():",
+                "-            waves_per_eu = 4",
+                "+            waves_per_eu = 3",
+            ]
+        )
+    )
+    (patch_dir / "patch_1_test.txt").write_text("case_a: 0.9 ms\ncase_b: 0.9 ms\n")
+
+    post = compute_best_patch(patch_dir)
+    pre = preprocess_benchmark_parsing.compute_best_patch(patch_dir)
+
+    for result in (post, pre):
+        assert result is not None
+        assert result["actual_output_dialect"] == "amd_gluon"
+        assert result["dialect_contract_satisfied"] is True
+
+
+def test_rewrite_best_results_writes_per_shape_selection_summary(tmp_path: Path) -> None:
+    root = tmp_path / "generic_kernel"
+    patch_dir = root / "results" / "round_1" / "gluon-wrapper-tuning"
+    patch_dir.mkdir(parents=True)
+    tasks_dir = root / "tasks" / "round_1"
+    tasks_dir.mkdir(parents=True)
+
+    from minisweagent.run.task_file import write_task_file
+
+    write_task_file(
+        tasks_dir / "00_gluon-wrapper-tuning.md",
+        {"label": "gluon-wrapper-tuning", "required_output_dialect": "plain_triton"},
+        "Wrapper tuning\n",
+    )
+    (root / "benchmark_baseline.txt").write_text("case_a: 1.0 ms\ncase_b: 1.0 ms\n")
+    (patch_dir / "patch_1.patch").write_text("diff --git a/kernel.py b/kernel.py\n+x=1\n")
+    (patch_dir / "patch_1_test.txt").write_text("case_a: 0.9 ms\ncase_b: 0.8 ms\n")
+
+    result = rewrite_best_results(patch_dir)
+
+    assert result is not None
+    summary = (patch_dir / "selection_summary.md").read_text()
+    assert "case_a" in summary
+    assert "case_b" in summary
+    assert "keep" in summary
 
 
 def test_multi_shape_json_marker_overrides_single_latency_for_best_patch(tmp_path: Path) -> None:

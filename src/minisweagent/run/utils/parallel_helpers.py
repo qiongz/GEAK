@@ -44,6 +44,48 @@ _original_stdout = None
 _original_stderr = None
 
 
+def _sync_worker_strategy_artifacts(worktree: Path, patch_dir: Path) -> None:
+    artifact_names = ("strategy_notes.md", "route_proof.md", "patch_evolution_ledger.md")
+    try:
+        patch_dir.mkdir(parents=True, exist_ok=True)
+        for name in artifact_names:
+            src = worktree / name
+            if not src.is_file() or src.stat().st_size <= 0:
+                continue
+            dest = patch_dir / name
+            text = src.read_text(encoding="utf-8", errors="replace")
+            existing = dest.read_text(encoding="utf-8", errors="replace") if dest.exists() else ""
+            if "Status: incomplete" in existing or len(text) >= len(existing):
+                dest.write_text(text, encoding="utf-8")
+    except OSError:
+        logger.debug("Could not sync worker strategy artifacts", exc_info=True)
+
+
+def _write_manual_benchmark_diagnostic(log_file: Path, patch_dir: Path) -> None:
+    try:
+        log_text = log_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    if "GEAK_BENCHMARK_RESULTS_MS=" not in log_text and "GEAK_RESULT_LATENCY_MS=" not in log_text:
+        return
+    if any(path.stat().st_size > 0 for path in patch_dir.glob("patch_*.patch")) and any(
+        path.stat().st_size > 0 for path in patch_dir.glob("patch_*_test.txt")
+    ):
+        return
+    payload = {
+        "status": "manual_benchmark_not_ranked",
+        "no_viable_patch": True,
+        "reason": "benchmark output appeared in raw bash log without save_and_test patch/test artifacts",
+    }
+    try:
+        (patch_dir / "manual_benchmark_diagnostic.json").write_text(json.dumps(payload, indent=2))
+        no_viable_path = patch_dir / "no_viable_patch.json"
+        if not no_viable_path.exists():
+            no_viable_path.write_text(json.dumps(payload, indent=2))
+    except OSError:
+        logger.debug("Could not write manual benchmark diagnostic", exc_info=True)
+
+
 def _get_thread_log():
     return getattr(_thread_log_file, "file", None)
 
@@ -738,6 +780,8 @@ def run_pool(
                         max_steps=cfg.get("step_limit", int(os.environ.get("GEAK_AGENT_STEP_LIMIT", "100"))),
                         notebook_dir=_wm_notebook_dir,
                         notebook_writer_id=f"{task.label or f'task_{task_id}'}-slot-{slot_idx}",
+                        gluon_route_priority_override=bool(cfg.get("gluon_route_priority_override")),
+                        gluon_failure_layers=str(cfg.get("gluon_failure_layers") or ""),
                     )
                     _wm.load_baseline_from_artifacts(
                         baseline_metrics_path=_wm_bm_path,
@@ -805,12 +849,23 @@ def run_pool(
                         )
             _agent_elapsed = time.monotonic() - _agent_t0
             logger.info("Sub-agent %d (%s) finished in %.0fs (exit=%s)", task_id, label, _agent_elapsed, exit_status)
+            _sync_worker_strategy_artifacts(wt_path, task_patch_dir)
+            _write_manual_benchmark_diagnostic(log_file, task_patch_dir)
 
             # Auto-extract final patch from worktree if agent didn't save any
             if not list(task_patch_dir.glob("patch_*.patch")) and wt_path.exists():
                 try:
                     _diff = subprocess.run(
-                        ["git", "diff", "HEAD"],
+                        [
+                            "git",
+                            "-c",
+                            "submodule.recurse=false",
+                            "diff",
+                            "--no-ext-diff",
+                            "--ignore-submodules=all",
+                            "--binary",
+                            "HEAD",
+                        ],
                         cwd=str(wt_path),
                         capture_output=True,
                         text=True,

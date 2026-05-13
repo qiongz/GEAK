@@ -56,6 +56,7 @@ class str_replace_editor:
         # prints a startup banner to stdout unless silenced.
         subprocess_env = os.environ.copy()
         subprocess_env["MSWEA_SILENT_STARTUP"] = "1"
+        subprocess_env.setdefault("SWE_AGENT_ENV_FILE", "/tmp/geak_swe_agent_env.json")
 
         try:
             result = subprocess.run(

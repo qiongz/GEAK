@@ -13,6 +13,32 @@ _STAGE_SCOPE_RE = re.compile(
     re.IGNORECASE,
 )
 _DO_NOT_RE = re.compile(r"^\s*(?:do\s+not|don't)\s+(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
+_ACTION_TARGET_LINE_MARKERS = (
+    "allowed change",
+    "concrete changes needed",
+    "apply the same",
+    "apply this",
+    "also apply",
+    "in `",
+    "replace",
+    "rewrite",
+    "the wrapper function",
+    "wrapper function",
+    "find `",
+    "focus on",
+    "specifically the",
+)
+_REFERENCE_TARGET_LINE_MARKERS = (
+    "look at",
+    "reference pattern",
+    "for the reference",
+    "study the existing",
+    "docs",
+    "read ",
+)
+_BARE_ACTION_SYMBOL_RE = re.compile(
+    r"\b(_?[A-Za-z][A-Za-z0-9_]*(?:kernel|wrapper|dispatch|gluon|decode)[A-Za-z0-9_]*)\b"
+)
 _ABSTRACT_ATOMIC_COMPONENT_SYMBOLS = frozenset(
     {
         "wrapper_shape_dispatch",
@@ -75,6 +101,31 @@ def target_symbols_from_scoped_text(value: str | None) -> list[str]:
     return symbols
 
 
+def target_symbols_from_actionable_prose(value: str | None) -> list[str]:
+    """Infer concrete target symbols from action-oriented task prose.
+
+    This is narrower than scanning every backticked identifier in a task body:
+    it only accepts lines that describe what to edit and skips lines that name
+    reference implementations or docs to read.
+    """
+    symbols: list[str] = []
+    for line in str(value or "").splitlines():
+        lowered = line.lower()
+        if any(marker in lowered for marker in _REFERENCE_TARGET_LINE_MARKERS):
+            continue
+        if not any(marker in lowered for marker in _ACTION_TARGET_LINE_MARKERS):
+            continue
+        for symbol in target_symbols_from_scoped_text(line):
+            normalized = symbol.strip()
+            if normalized and normalized not in symbols:
+                symbols.append(normalized)
+        for symbol in _BARE_ACTION_SYMBOL_RE.findall(line):
+            normalized = symbol.strip()
+            if normalized and normalized.lower() not in _ABSTRACT_ATOMIC_COMPONENT_SYMBOLS and normalized not in symbols:
+                symbols.append(normalized)
+    return symbols
+
+
 def filter_abstract_target_symbols(symbols: list[str]) -> list[str]:
     """Drop abstract component labels from concrete patch target symbols."""
     filtered: list[str] = []
@@ -87,6 +138,34 @@ def filter_abstract_target_symbols(symbols: list[str]) -> list[str]:
         if normalized not in filtered:
             filtered.append(normalized)
     return filtered
+
+
+def split_patch_and_route_symbols(
+    symbols: list[str],
+    *,
+    target_component: str | None = None,
+) -> tuple[list[str], list[str]]:
+    """Split concrete patch targets from execution-route proof symbols.
+
+    Wrapper/shape-dispatch tasks often mention both the wrapper that should be
+    edited and the Gluon kernel that proves the measured route. In that case the
+    wrapper-like symbol is the patch target and the kernel-like symbol is route
+    evidence, not a requirement to edit the kernel body.
+    """
+    unique = filter_abstract_target_symbols(symbols)
+    component = str(target_component or "").strip().lower()
+    if "wrapper" not in component and "shape_dispatch" not in component and "dispatch" not in component:
+        return unique, []
+
+    patch_targets = [
+        symbol
+        for symbol in unique
+        if any(marker in symbol.lower() for marker in ("wrapper", "dispatch"))
+    ]
+    if not patch_targets:
+        return unique, []
+    route_symbols = [symbol for symbol in unique if symbol not in patch_targets]
+    return patch_targets, route_symbols
 
 
 def forbidden_symbols_from_scoped_text(value: str | None) -> list[str]:

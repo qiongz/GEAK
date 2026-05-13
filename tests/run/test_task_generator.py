@@ -21,6 +21,7 @@ from minisweagent.agents.heterogeneous.task_generator import (
     _build_workload_guidance,
     _gluon_extension_strength,
     _extract_kernel_meta,
+    _infer_executed_route_symbols,
     _infer_gluon_planning_traits,
     _infer_required_patch_target_symbols,
     _is_gluon_extension_task,
@@ -351,6 +352,78 @@ def test_infer_required_patch_target_symbols_keeps_concrete_target_symbol() -> N
     ]
 
 
+def test_infer_required_patch_target_symbols_keeps_backticked_symbol_at_end_of_allowed_change() -> None:
+    prompt = "\n".join(
+        [
+            "Task type: amd_gluon_in_dialect_refine",
+            "Kernel family signal: attention_decode_kv_cache",
+            "Target component: load_store_buffer",
+            "Allowed change: Reorder value cache loading to overlap with QK MFMA computation in `paged_attention_decode_v2_gluon_dot_kernel`",
+            "source_origin: existing_amd_gluon_operator",
+            "required_output_dialect: amd_gluon",
+        ]
+    )
+
+    assert _infer_required_patch_target_symbols(prompt) == [
+        "paged_attention_decode_v2_gluon_dot_kernel",
+    ]
+
+
+def test_infer_required_patch_target_symbols_from_existing_refinement_action_prose() -> None:
+    prompt = "\n".join(
+        [
+            "Task type: amd_gluon_in_dialect_refine",
+            "Target component: reduction_accumulator",
+            "Allowed change: Fuse PV MFMA accumulation directly into the scaled attention accumulator",
+            "Look at `paged_attention_decode_sliding_window` for the reference pattern.",
+            "Concrete changes needed in `paged_attention_decode_v2_gluon_dot_kernel`: remove the temporary accumulator.",
+            "Also apply the same optimization to `paged_attention_decode_v2_gluon_large_block_dot_kernel`.",
+        ]
+    )
+
+    assert _infer_required_patch_target_symbols(prompt) == [
+        "paged_attention_decode_v2_gluon_dot_kernel",
+        "paged_attention_decode_v2_gluon_large_block_dot_kernel",
+    ]
+
+
+def test_infer_required_patch_target_symbols_from_focus_on_function_instruction() -> None:
+    prompt = "\n".join(
+        [
+            "source_origin: existing_amd_gluon_operator",
+            "Task type: amd_gluon_in_dialect_refine",
+            "Implementation layer: amd_gluon in-dialect refinement",
+            "Target component: reduction_accumulator",
+            "Allowed change: Fuse the PV MFMA zero-accumulator + add pattern.",
+            "Focus on the `paged_attention_decode_v2_gluon_dot_kernel` function, specifically the PV MFMA section.",
+        ]
+    )
+
+    assert _infer_required_patch_target_symbols(prompt) == [
+        "paged_attention_decode_v2_gluon_dot_kernel",
+    ]
+
+
+def test_wrapper_shape_dispatch_splits_route_symbol_from_patch_target() -> None:
+    prompt = "\n".join(
+        [
+            "Task type: amd_gluon_shape_dispatch_refine",
+            "Target component: wrapper_shape_dispatch",
+            "Target symbol: paged_attention_decode_v2_gluon_dot_kernel",
+            "required_patch_target_symbols: paged_attention_decode_v2_gluon_dot_kernel, _paged_attention_decode_v2_with_dot_kernel_reshape_wrapper",
+            "Allowed change: Tune KV_COMPUTE_BLOCK_SIZE and waves_per_eu in `_paged_attention_decode_v2_with_dot_kernel_reshape_wrapper`.",
+        ]
+    )
+
+    assert _infer_required_patch_target_symbols(prompt) == [
+        "_paged_attention_decode_v2_with_dot_kernel_reshape_wrapper",
+    ]
+    assert _infer_executed_route_symbols(
+        prompt,
+        required_patch_target_symbols=["_paged_attention_decode_v2_with_dot_kernel_reshape_wrapper"],
+    ) == ["paged_attention_decode_v2_gluon_dot_kernel"]
+
+
 def test_build_gluon_planning_traits_guidance_includes_candidate_slots(tmp_path: Path) -> None:
     kernel = tmp_path / "kernel.py"
     kernel.write_text(
@@ -557,6 +630,9 @@ def test_search_space_allocation_for_existing_amd_gluon_uses_refinement_taxonomy
     assert "This recommendation is prompt guidance only" in guidance
     assert "do not add new task metadata such as `gluon_depth`" in guidance
     assert "Larger GPU budget does not imply maximum width" in guidance
+    assert "Gluon-first portfolio" in guidance
+    assert "prefer fewer tasks" in guidance
+    assert "do not emit generic plain/Base tasks to fill budget" in guidance
 
 
 def test_search_space_allocation_lists_base_family_checklist() -> None:
@@ -876,7 +952,7 @@ def test_existing_amd_gluon_refinement_requires_concrete_patch_target() -> None:
         )
 
 
-def test_existing_amd_gluon_portfolio_rejects_plain_dominated_force_l0_anchor() -> None:
+def test_existing_amd_gluon_portfolio_drops_generic_plain_overflow_force_l0_anchor() -> None:
     feature_meta = {
         **_gluon_feature_meta("amd_gluon"),
         "source_origin": "existing_amd_gluon_operator",
@@ -913,14 +989,146 @@ def test_existing_amd_gluon_portfolio_rejects_plain_dominated_force_l0_anchor() 
         ]
     )
 
-    with pytest.raises(ValueError, match="dominated by plain/shared"):
-        _parse_llm_response(
-            payload,
-            FakeAgentClass,
-            expected_extension_slots=0,
-            gluon_feature_mode="force_l0_anchor",
-            feature_meta=feature_meta,
-        )
+    tasks = _parse_llm_response(
+        payload,
+        FakeAgentClass,
+        expected_extension_slots=0,
+        gluon_feature_mode="force_l0_anchor",
+        feature_meta=feature_meta,
+    )
+
+    assert [task.label for task in tasks] == ["gluon-refine-load-store"]
+    diagnostics = get_last_gluon_task_generation_diagnostics()
+    dropped = diagnostics["dropped_existing_amd_plain_overflow"]
+    assert len(dropped) == 4
+    assert {item["label"] for item in dropped} == {f"triton-plain-{idx}" for idx in range(4)}
+
+
+def test_existing_amd_gluon_portfolio_accepts_gluon_first_with_typed_optional_plain() -> None:
+    feature_meta = {
+        **_gluon_feature_meta("amd_gluon"),
+        "source_origin": "existing_amd_gluon_operator",
+    }
+    payload = json.dumps(
+        [
+            {
+                "label": "gluon-refine-load",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": _existing_amd_gluon_refinement_prompt(target_symbol="value_load_path"),
+            },
+            {
+                "label": "gluon-refine-store",
+                "priority": 1,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": _existing_amd_gluon_refinement_prompt(
+                    target_component="epilogue_output_store",
+                    target_symbol="output_store_path",
+                    allowed_change="optimize one epilogue_output_store path only",
+                ),
+            },
+            {
+                "label": "plain-reduce-subkernel",
+                "priority": 2,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "\n".join(
+                    [
+                        "Task type: plain_subkernel_refine",
+                        "required_output_dialect: plain_triton",
+                        "Implementation layer: plain_triton",
+                        "Base family: base_split_k_or_multipass_reduce",
+                        "Optimization direction: refine a plain reduction helper inside the production operator",
+                        "Target component: reduction_accumulator",
+                        "Target symbol: reduce_kernel",
+                        "Allowed change: optimize `reduce_kernel` only",
+                    ]
+                ),
+            },
+            {
+                "label": "shared-safe-anchor-comparison",
+                "priority": 3,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "\n".join(
+                    [
+                        "Task type: shared_or_plain_comparison",
+                        "required_output_dialect: plain_triton",
+                        "Implementation layer: plain_triton",
+                        "Shared source family: base_hot_path_streamline",
+                        "Optimization direction: portable safe-anchor comparison for the existing AMD Gluon path",
+                        "Target component: source_contract_integration",
+                        "Target symbol: safe_anchor_path",
+                        "Allowed change: compare `safe_anchor_path` only",
+                    ]
+                ),
+            },
+        ]
+    )
+
+    tasks = _parse_llm_response(
+        payload,
+        FakeAgentClass,
+        expected_extension_slots=0,
+        gluon_feature_mode="force_l0_anchor",
+        feature_meta=feature_meta,
+    )
+
+    assert [task.label for task in tasks] == [
+        "gluon-refine-load",
+        "gluon-refine-store",
+        "plain-reduce-subkernel",
+        "shared-safe-anchor-comparison",
+    ]
+    assert get_last_gluon_task_generation_diagnostics() == {}
+
+
+def test_existing_amd_gluon_allows_single_refinement_with_typed_plain_subkernel() -> None:
+    feature_meta = {
+        **_gluon_feature_meta("amd_gluon"),
+        "source_origin": "existing_amd_gluon_operator",
+    }
+    payload = json.dumps(
+        [
+            {
+                "label": "gluon-refine-load",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": _existing_amd_gluon_refinement_prompt(target_symbol="value_load_path"),
+            },
+            {
+                "label": "plain-reduce-subkernel",
+                "priority": 1,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "\n".join(
+                    [
+                        "Task type: plain_subkernel_refine",
+                        "required_output_dialect: plain_triton",
+                        "Implementation layer: plain_triton",
+                        "Base family: base_split_k_or_multipass_reduce",
+                        "Optimization direction: refine a plain reduction helper inside the production operator",
+                        "Target component: reduction_accumulator",
+                        "Target symbol: reduce_kernel",
+                        "Allowed change: optimize `reduce_kernel` only",
+                    ]
+                ),
+            },
+        ]
+    )
+
+    tasks = _parse_llm_response(
+        payload,
+        FakeAgentClass,
+        expected_extension_slots=0,
+        gluon_feature_mode="force_l0_anchor",
+        feature_meta=feature_meta,
+    )
+
+    assert [task.label for task in tasks] == ["gluon-refine-load", "plain-reduce-subkernel"]
 
 
 def test_existing_amd_gluon_portfolio_rules_do_not_affect_plain_triton_tasks() -> None:
@@ -3167,7 +3375,7 @@ def test_write_task_files_separates_plain_and_gluon_knowledge_paths(tmp_path: Pa
     assert ext_meta["gluon_kb_path"].endswith(
         "knowledge-base/amd-knowledge-base/layer-3-libraries/compilers/triton-gluon-on-rocm.md"
     )
-    assert ext_meta["use_skills"] is True
+    assert ext_meta["use_skills"] is False
     assert ext_meta["required_output_dialect"] == "amd_gluon"
     assert "gluon_always_read_path" in ext_meta
     assert "required_gluon_docs" in ext_meta

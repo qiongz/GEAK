@@ -30,7 +30,7 @@ from minisweagent.run.gluon_doc_profiles import (
     task_requires_gluon_worker_docs,
 )
 from minisweagent.run.resource_paths import resolve_project_resource
-from minisweagent.run.target_contracts import target_symbols_from_scoped_text
+from minisweagent.run.target_contracts import split_patch_and_route_symbols, target_symbols_from_scoped_text
 from minisweagent.run.target_contracts import do_not_clauses, forbidden_symbols_from_scoped_text
 
 _GLUON_GATE_FALLBACK_RELS = {
@@ -199,7 +199,7 @@ def _task_required_patch_target_symbols(meta: dict[str, Any], task_body: str = "
         symbols = []
 
     for match in re.finditer(
-        r"^\s*(?:Target symbol|Target component|Required patch target symbols?)\s*:\s*(.+?)\s*$",
+        r"^\s*(?:Target symbol|Target component|Required patch target symbols?|required_patch_target_symbols)\s*:\s*(.+?)\s*$",
         task_body or "",
         re.IGNORECASE | re.MULTILINE,
     ):
@@ -213,6 +213,34 @@ def _task_required_patch_target_symbols(meta: dict[str, Any], task_body: str = "
 
     unique: list[str] = []
     for symbol in symbols:
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", symbol) and symbol not in unique:
+            unique.append(symbol)
+    target_component = str(meta.get("target_component") or _task_body_field(task_body, "Target component") or "")
+    patch_targets, _route_symbols = split_patch_and_route_symbols(unique, target_component=target_component)
+    return patch_targets
+
+
+def _task_executed_route_symbols(meta: dict[str, Any], task_body: str = "") -> list[str]:
+    raw = meta.get("executed_route_symbols")
+    if isinstance(raw, str):
+        symbols = [part.strip().strip("`") for part in raw.split(",")]
+    elif isinstance(raw, list):
+        symbols = [str(part).strip().strip("`") for part in raw]
+    else:
+        symbols = []
+    required = _task_required_patch_target_symbols(meta, task_body)
+    for match in re.finditer(
+        r"^\s*(?:Target symbol|Executed route symbols?|executed_route_symbols|required_patch_target_symbols)\s*:\s*(.+?)\s*$",
+        task_body or "",
+        re.IGNORECASE | re.MULTILINE,
+    ):
+        value = match.group(1)
+        symbols.extend(part.strip().strip("`") for part in value.split(","))
+        symbols.extend(target_symbols_from_scoped_text(value))
+    target_component = str(meta.get("target_component") or _task_body_field(task_body, "Target component") or "")
+    _patch_targets, route_symbols = split_patch_and_route_symbols([*symbols, *required], target_component=target_component)
+    unique: list[str] = []
+    for symbol in route_symbols:
         if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", symbol) and symbol not in unique:
             unique.append(symbol)
     return unique
@@ -305,12 +333,15 @@ def _task_uses_skills(meta: dict[str, Any], task_body: str = "") -> bool:
     """Return whether a task should enable the skill runtime."""
     if str(meta.get("kernel_type", "")).strip().lower() != "triton":
         return False
+    # Required Gluon tasks receive the triton-gluon docs through the clean task
+    # packet and doc gate. Avoid invoking the generic skill selector by default;
+    # it tends to spend early budget guessing skill/doc ranges.
     if _task_requires_amd_gluon(meta, task_body):
-        return True
+        return False
     if _task_required_output_dialect(meta, task_body) == "mixed":
-        return True
+        return False
     if _task_requires_gluon_worker_docs(meta, task_body):
-        return True
+        return False
     if "use_skills" in meta:
         raw = meta.get("use_skills")
         if isinstance(raw, str):
@@ -450,12 +481,20 @@ def _task_feature_metadata(meta: dict[str, Any], task_body: str = "") -> dict[st
         "kernel_family_signal",
         "failure_layers",
         "minimum_executable_unit",
+        "executed_route_symbols",
         "target_symbol",
         "target_component",
         "forbidden_change",
         "allowed_execution_path",
         "scope_infeasible_policy",
         "whole_kernel_required_reason",
+        "measurement_boundary",
+        "objective",
+        "optimization_direction",
+        "allowed_change",
+        "reject_if",
+        "recommended_option",
+        "recommended_path",
     ):
         if key in meta and meta.get(key) not in (None, ""):
             feature_meta[key] = meta.get(key)
@@ -752,6 +791,9 @@ def task_file_to_agent_task(task_file: Path):
     required_patch_target_symbols = _task_required_patch_target_symbols(meta, body)
     if required_patch_target_symbols:
         cfg["required_patch_target_symbols"] = required_patch_target_symbols
+    executed_route_symbols = _task_executed_route_symbols(meta, body)
+    if executed_route_symbols:
+        cfg["executed_route_symbols"] = executed_route_symbols
     forbidden_patch_target_symbols = _task_forbidden_patch_target_symbols(meta, body)
     if forbidden_patch_target_symbols:
         cfg["forbidden_patch_target_symbols"] = forbidden_patch_target_symbols
@@ -815,6 +857,10 @@ def task_file_to_agent_task(task_file: Path):
     body, cfg = inject_pipeline_context(
         body,
         cfg,
+        task_file_path=str(task_file),
+        commandment_path=meta.get("commandment"),
+        baseline_metrics_path=meta.get("baseline_metrics"),
+        benchmark_baseline_path=meta.get("benchmark_baseline"),
         commandment_text=commandment_text,
         baseline_metrics=baseline_metrics,
         profiling_path=meta.get("profiling"),
@@ -848,9 +894,11 @@ def task_file_to_agent_task(task_file: Path):
             bottleneck_type=_bm.get("bottleneck", ""),
             profiling_metrics=_bm,
         )
-        if _mem_ctx and len(_mem_ctx) > 50:
+        if _mem_ctx and len(_mem_ctx) > 50 and not cfg.get("suppress_cross_session_memory"):
             body += "\n\n## Optimization Patterns from Similar Kernels (cross-session memory)\n" + _mem_ctx
             logger.info("Cross-session memory injected into sub-agent task (%d chars)", len(_mem_ctx))
+        elif _mem_ctx and cfg.get("suppress_cross_session_memory"):
+            logger.info("Cross-session memory suppressed for clean Gluon task packet")
     except Exception as _mem_exc:
         logger.warning("Cross-session memory injection failed in dispatch: %s", _mem_exc)
 

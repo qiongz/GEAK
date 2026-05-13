@@ -207,6 +207,18 @@ class TestBottleneckHintKeys:
                 f"Hyphenated key '{bad_key}' should NOT produce a hint"
             )
 
+    def test_gluon_route_priority_override_puts_dispatch_first(self):
+        wm = WorkingMemory(
+            gluon_route_priority_override=True,
+            gluon_failure_layers="wrapper/reduction",
+        )
+
+        text = wm.format_for_injection()
+
+        assert "Route proof + wrapper dispatch/output feeding" in text
+        assert "wrapper/reduction" in text
+        assert "Dispatch-path optimization (last resort)" not in text
+
 
 # ---------------------------------------------------------------------------
 # extract_insight_from_tool_result

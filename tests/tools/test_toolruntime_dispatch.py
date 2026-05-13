@@ -153,6 +153,22 @@ class TestDispatch:
         # Should fail gracefully
         assert result["returncode"] == 1 or "error" in result["output"].lower()
 
+    def test_str_replace_editor_view_range_clamps_to_eof(self, tmp_path):
+        path = tmp_path / "doc.md"
+        path.write_text("a\nb\nc\n")
+        rt = ToolRuntime()
+
+        result = rt.dispatch(
+            {
+                "name": "str_replace_editor",
+                "arguments": {"command": "view", "path": str(path), "view_range": [1, 240]},
+            }
+        )
+
+        assert result["returncode"] == 0
+        assert "clamped to EOF" in result["output"]
+        assert "a" in result["output"]
+
 
 # ---------------------------------------------------------------------------
 # Tests: tools_list API

@@ -96,6 +96,8 @@ from minisweagent.run.target_contracts import (
     do_not_clauses,
     filter_abstract_target_symbols,
     forbidden_symbols_from_scoped_text,
+    split_patch_and_route_symbols,
+    target_symbols_from_actionable_prose,
     target_symbols_from_scoped_text,
 )
 
@@ -245,6 +247,7 @@ _OPTIONAL_GLUON_TASK_METADATA_FIELDS: tuple[tuple[str, str], ...] = (
     ("kernel_family_signal", "Kernel family signal"),
     ("failure_layers", "Failure layers"),
     ("minimum_executable_unit", "Minimum executable unit"),
+    ("executed_route_symbols", "Executed route symbols"),
     ("target_symbol", "Target symbol"),
     ("target_component", "Target component"),
     ("forbidden_change", "Forbidden change"),
@@ -935,6 +938,8 @@ def write_task_files(
                 metadata["extension_layer"] = t.config["extension_layer"]
             if t.config.get("required_patch_target_symbols"):
                 metadata["required_patch_target_symbols"] = list(t.config["required_patch_target_symbols"])
+            if t.config.get("executed_route_symbols"):
+                metadata["executed_route_symbols"] = list(t.config["executed_route_symbols"])
             for key, _tag in _OPTIONAL_GLUON_TASK_METADATA_FIELDS:
                 if key in t.config and t.config.get(key) not in (None, ""):
                     metadata[key] = t.config[key]
@@ -1284,11 +1289,18 @@ def _parse_tagged_value(text: str, tag: str) -> str | None:
     return match.group(1).strip().lower() if match else None
 
 
+def _strip_enclosing_backticks(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value.startswith("`") and value.endswith("`"):
+        return value[1:-1].strip()
+    return value
+
+
 def _parse_prompt_field_value(text: str, field: str) -> str | None:
     match = re.search(rf"^\s*{re.escape(field)}\s*:\s*(.+?)\s*$", text, re.IGNORECASE | re.MULTILINE)
     if not match:
         return None
-    value = match.group(1).strip().strip("`")
+    value = _strip_enclosing_backticks(match.group(1))
     return value or None
 
 
@@ -1297,7 +1309,7 @@ def _parse_prompt_key_value(text: str, key: str) -> str | None:
     match = re.search(rf"^\s*{re.escape(key)}\s*:\s*(.+?)\s*$", text, re.IGNORECASE | re.MULTILINE)
     if not match:
         return None
-    value = match.group(1).strip().strip("`")
+    value = _strip_enclosing_backticks(match.group(1))
     return value or None
 
 
@@ -1387,7 +1399,7 @@ def _infer_required_patch_target_symbols(task_prompt: str, item: dict[str, Any] 
             symbols.extend(target_symbols_from_scoped_text(item_value))
 
     for match in re.finditer(
-        r"^\s*(?:Target symbol|Target component|Required patch target symbols?)\s*:\s*(.+?)\s*$",
+        r"^\s*(?:Target symbol|Target component|Required patch target symbols?|required_patch_target_symbols)\s*:\s*(.+?)\s*$",
         task_prompt,
         re.IGNORECASE | re.MULTILINE,
     ):
@@ -1398,12 +1410,60 @@ def _infer_required_patch_target_symbols(task_prompt: str, item: dict[str, Any] 
         tagged = _parse_prompt_field_value(task_prompt, field)
         if tagged:
             symbols.extend(target_symbols_from_scoped_text(tagged))
+    if not filter_abstract_target_symbols(
+        [symbol for symbol in symbols if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", symbol)]
+    ):
+        symbols.extend(target_symbols_from_actionable_prose(task_prompt))
 
     unique: list[str] = []
     for symbol in symbols:
         if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", symbol) and symbol not in unique:
             unique.append(symbol)
-    return filter_abstract_target_symbols(unique)
+    target_component = str(
+        item.get("target_component")
+        or _parse_prompt_field_value(task_prompt, "Target component")
+        or ""
+    )
+    patch_targets, _route_symbols = split_patch_and_route_symbols(unique, target_component=target_component)
+    return patch_targets
+
+
+def _infer_executed_route_symbols(
+    task_prompt: str,
+    item: dict[str, Any] | None = None,
+    *,
+    required_patch_target_symbols: list[str] | None = None,
+) -> list[str]:
+    item = item or {}
+    raw = item.get("executed_route_symbols")
+    if isinstance(raw, str):
+        symbols = [part.strip().strip("`") for part in raw.split(",")]
+    elif isinstance(raw, list):
+        symbols = [str(part).strip().strip("`") for part in raw]
+    else:
+        symbols = []
+    for match in re.finditer(
+        r"^\s*(?:Executed route symbols?|executed_route_symbols|Target symbol|required_patch_target_symbols|Required patch target symbols?)\s*:\s*(.+?)\s*$",
+        task_prompt,
+        re.IGNORECASE | re.MULTILINE,
+    ):
+        value = match.group(1)
+        symbols.extend(part.strip().strip("`") for part in value.split(","))
+        symbols.extend(target_symbols_from_scoped_text(value))
+    target_component = str(
+        item.get("target_component")
+        or _parse_prompt_field_value(task_prompt, "Target component")
+        or ""
+    )
+    _patch_targets, route_symbols = split_patch_and_route_symbols(
+        [*symbols, *(required_patch_target_symbols or [])],
+        target_component=target_component,
+    )
+    unique: list[str] = []
+    for symbol in route_symbols:
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", symbol) and symbol not in unique:
+            unique.append(symbol)
+    return unique
 
 
 def _infer_search_set_and_required_output(label: str, task_prompt: str, item: dict[str, Any] | None = None) -> tuple[str, str]:
@@ -1985,8 +2045,9 @@ def _dialect_interleave_strategy(
             [
                 "Scheduling mode: `parallel_existing_amd_gluon_refinement`",
                 f"- {budget} GPU(s) are available; generate a component-first portfolio ({total} task(s) recommended).",
-                "- Pick strategy directions from the standard Triton taxonomy, then map each to one AMD Gluon atomic component.",
-                "- Keep optional plain/shared comparisons only for fallback evidence, portable components, mixed dispatch, or source subkernels that are still plain Triton.",
+                "- This is a Gluon-first portfolio: prefer fewer tasks over filling unused GPU slots with generic plain Triton work.",
+                "- Pick strategy directions from the standard Triton taxonomy, then map each dispatchable task to one AMD Gluon atomic component.",
+                "- Keep optional plain/shared comparisons only for fallback evidence, portable components, mixed dispatch, or source subkernels that are still plain Triton; they must be typed as `plain_subkernel_refine` or `shared_or_plain_comparison`.",
                 f"- Shape profile for scheduling: `{shape_profile}`.",
             ]
         )
@@ -2137,7 +2198,7 @@ def _build_search_space_allocation_guidance(
     )
     if existing_amd_gluon:
         extension_allocation = (
-            "- Existing AMD Gluon in-dialect refinements: 1-3 narrow task(s) recommended. "
+            "- Existing AMD Gluon in-dialect refinements: 2-3 narrow task(s) recommended for round 1 when distinct atomic components are viable; 1 high-confidence refinement is acceptable if no second safe component exists. "
             "These are not generated overlays and do not require `Plain competitor`; each must name one primary atomic component and compare against `true_baseline` or `safe_anchor`."
         )
     elif extension_slots <= 0:
@@ -2176,7 +2237,8 @@ def _build_search_space_allocation_guidance(
             else f"- Plain Triton competitors: at least {base_slots} task(s) across distinct Triton optimization directions. Include `Base family: <family_id>` for compatibility audit."
         ),
         (
-            f"- Optional plain/shared comparisons: {shared_slots} task(s) for fallback evidence, portable component transplant, mixed/hybrid dispatch, or source subkernels that are still plain Triton."
+            f"- Optional plain/shared comparisons: at most {shared_slots} task(s) for fallback evidence, portable component transplant, mixed/hybrid dispatch, or source subkernels that are still plain Triton. "
+            "Use explicit `Task type: plain_subkernel_refine` or `Task type: shared_or_plain_comparison`; do not emit generic plain/Base tasks to fill budget."
             if existing_amd_gluon
             else f"- Paired same-direction mappings: {shared_slots} task(s) when budget allows. Use `plain_triton variant`, `amd_gluon variant`, or paired comparison; include `Shared source family: <base_family_id>` when mapping a plain Triton strategy."
         ),
@@ -2192,7 +2254,7 @@ def _build_search_space_allocation_guidance(
             else "- Keep a plain Triton competitor for every high-value direction unless AMD Gluon is explicitly required. Layering order: plain Triton -> optional L0/paired mapping -> L1 from viable/local-win evidence -> later Hybrid/Mixed."
         ),
         (
-            "- Plain/shared tasks in this path are optional no-regression evidence, not synthetic anchors for existing Gluon refinements."
+            "- Plain/shared tasks in this path are optional no-regression evidence, not synthetic anchors for existing Gluon refinements. If only one reliable Gluon refinement exists, emit fewer total tasks rather than padding the batch with untyped plain/Base tasks."
             if existing_amd_gluon
             else "- Base/plain Triton tasks are no-regression performance candidates, not synthetic Gluon anchors. Emit a Gluon L0 overlay only when the same direction has a plausible plain competitor and a concrete Gluon mechanism."
         ),
@@ -2399,6 +2461,9 @@ def _build_gluon_task_generation_guidance(feature_meta: dict[str, Any]) -> str:
             "  3. Preserve source contract before editing: public ABI, measured route, target/JIT/AOT guards, fallback/artifact, layouts, and output feeding.",
             "  4. Generate 1-3 narrow in-dialect refinements, plus optional plain/shared comparison only when it is real fallback, portable-component, mixed-dispatch, or plain-subkernel work.",
             "  5. Defer high-coupling component combinations until evidence shows which pieces compose safely.",
+            "- This path is Gluon-first. For a multi-GPU first round, prefer 2-3 `amd_gluon_*_refine` tasks across distinct atomic components; if only one safe refinement exists, emit fewer tasks rather than padding with generic plain Triton/Base work.",
+            "- Plain/shared tasks are capped optional evidence. They must declare `Task type: plain_subkernel_refine` or `Task type: shared_or_plain_comparison`; otherwise they are treated as generic plain overflow and may be dropped before dispatch.",
+            "- Do not assign generic plain/Base tasks a better priority than the only existing AMD Gluon refinement in a Gluon-priority run.",
             "- Favor early tasks that keep the original algorithm recognizable, make layout decisions explicit, and preserve correctness with the smallest possible semantic delta.",
             "- Treat the first passing AMD Gluon candidate as a platform for later aggressive optimizations, not as a final answer.",
             "- For low-latency kernels or tiny stages, record overhead evidence and stop launch-constant sweeps unless the next task names a specific overhead to remove.",
@@ -2451,6 +2516,7 @@ def _build_gluon_task_generation_guidance(feature_meta: dict[str, Any]) -> str:
                 "- Use plain Triton family names as performance taxonomy labels only; they do not require mandatory plain Base task coverage for existing production Gluon input.",
                 "- Each existing refinement task must choose one primary atomic component, preserve source contracts, include `Comparison target: true_baseline|safe_anchor`, and reject correctness failure or per-shape regression.",
                 "- Each dispatchable existing refinement task must provide exactly one `Allowed change` and one concrete patch target via `Target symbol`, backticked local names, or `components(...)` / `expressions(...)`; abstract atomic components are routing labels, not target symbols.",
+                "- If the planner cannot produce multiple safe in-dialect refinements, it should submit the smaller Gluon-first portfolio instead of filling the batch with untyped plain Triton tasks.",
                 "- Combined tasks that touch wrapper dispatch, matrix layout, softmax/reduction state, and partition/scheduler policy together should be emitted only as `Task type: defer_composition` or postponed to a later evidence-based round.",
             ]
         )
@@ -2701,7 +2767,7 @@ def _task_config_uses_skills(
         return False
     required_output = str(cfg.get("required_output_dialect") or "").strip().lower()
     if required_output in {"amd_gluon", "mixed"}:
-        return True
+        return False
     if requires_gluon_docs is None:
         requires_gluon_docs = _task_config_requires_gluon_worker_docs(
             kernel_type=kernel_type,
@@ -2710,7 +2776,7 @@ def _task_config_uses_skills(
             label=label,
         )
     if requires_gluon_docs:
-        return True
+        return False
     if "use_skills" in cfg:
         raw = cfg.get("use_skills")
         if isinstance(raw, str):
@@ -3212,6 +3278,10 @@ _NON_REFINEMENT_TASK_TYPES = {
     "plain_subkernel_refine",
     "shared_or_plain_comparison",
     "defer_composition",
+}
+_TYPED_EXISTING_AMD_GLUON_PLAIN_TASK_TYPES = {
+    "plain_subkernel_refine",
+    "shared_or_plain_comparison",
 }
 
 
@@ -3912,14 +3982,18 @@ def _write_task_generation_gluon_diagnostics(
     *,
     diagnostics_dir: Path | None,
     dropped_gluon_overlays: list[dict[str, Any]],
+    dropped_existing_amd_plain_overflow: list[dict[str, Any]] | None = None,
     no_viable_gluon_task: dict[str, Any] | None = None,
 ) -> None:
-    if not dropped_gluon_overlays and not no_viable_gluon_task:
+    dropped_existing_amd_plain_overflow = list(dropped_existing_amd_plain_overflow or [])
+    if not dropped_gluon_overlays and not dropped_existing_amd_plain_overflow and not no_viable_gluon_task:
         _set_last_gluon_task_generation_diagnostics({})
         return
     payload: dict[str, Any] = {
         "dropped_gluon_overlays": list(dropped_gluon_overlays),
     }
+    if dropped_existing_amd_plain_overflow:
+        payload["dropped_existing_amd_plain_overflow"] = dropped_existing_amd_plain_overflow
     if no_viable_gluon_task:
         payload["no_viable_gluon_task"] = dict(no_viable_gluon_task)
     _set_last_gluon_task_generation_diagnostics(payload)
@@ -4161,6 +4235,65 @@ def _is_existing_amd_gluon_plain_or_shared_task(task: AgentTask) -> bool:
     )
 
 
+def _is_typed_existing_amd_gluon_plain_or_shared_task(task: AgentTask) -> bool:
+    return (
+        _is_existing_amd_gluon_plain_or_shared_task(task)
+        and _task_type(task) in _TYPED_EXISTING_AMD_GLUON_PLAIN_TASK_TYPES
+    )
+
+
+def _existing_amd_gluon_plain_overflow_summary(task: AgentTask, reason: str) -> dict[str, Any]:
+    return {
+        "label": task.label,
+        "priority": task.priority,
+        "drop_reason": reason,
+        "task_type": _task_type(task),
+        "required_output_dialect": task.config.get("required_output_dialect"),
+        "search_set": task.config.get("search_set"),
+        "optimization_direction": _parse_prompt_field_value(task.task, "Optimization direction") or "",
+        "target_component": task.config.get("target_component") or _parse_prompt_field_value(task.task, "Target component") or "",
+    }
+
+
+def _filter_existing_amd_gluon_plain_overflow(
+    tasks: list[AgentTask],
+    *,
+    feature_meta: dict[str, Any] | None,
+    gluon_feature_mode: str | None,
+) -> tuple[list[AgentTask], list[dict[str, Any]]]:
+    if not _is_existing_amd_gluon_feature_meta(feature_meta):
+        return tasks, []
+    if not _strict_existing_amd_gluon_portfolio_enabled(gluon_feature_mode):
+        return tasks, []
+
+    refinement_tasks = [task for task in tasks if _is_existing_amd_gluon_refinement_task(task)]
+    if not refinement_tasks:
+        return tasks, []
+
+    plain_or_shared_tasks = [task for task in tasks if _is_existing_amd_gluon_plain_or_shared_task(task)]
+    generic_plain_tasks = [
+        task
+        for task in plain_or_shared_tasks
+        if not _is_typed_existing_amd_gluon_plain_or_shared_task(task)
+    ]
+    if not generic_plain_tasks:
+        return tasks, []
+    if len(refinement_tasks) > 1 and len(plain_or_shared_tasks) <= 2:
+        return tasks, []
+
+    reason = (
+        "existing AMD Gluon Gluon-first portfolio dropped generic plain/shared overflow; "
+        "plain/shared tasks must be typed as `plain_subkernel_refine` or `shared_or_plain_comparison`, "
+        "and the planner should emit fewer tasks instead of padding with generic plain/Base work"
+    )
+    dropped_labels = {task.label for task in generic_plain_tasks}
+    filtered = [task for task in tasks if task.label not in dropped_labels]
+    dropped = [_existing_amd_gluon_plain_overflow_summary(task, reason) for task in generic_plain_tasks]
+    for task in generic_plain_tasks:
+        logger.warning("Dropping existing AMD Gluon generic plain/shared overflow task %s: %s", task.label, reason)
+    return filtered, dropped
+
+
 def _strict_existing_amd_gluon_portfolio_enabled(gluon_feature_mode: str | None) -> bool:
     mode = str(gluon_feature_mode or "").strip().lower()
     return mode in {
@@ -4181,6 +4314,16 @@ def _existing_amd_gluon_portfolio_issues(
 
     refinement_tasks = [task for task in tasks if _is_existing_amd_gluon_refinement_task(task)]
     plain_or_shared_tasks = [task for task in tasks if _is_existing_amd_gluon_plain_or_shared_task(task)]
+    typed_plain_tasks = [
+        task
+        for task in plain_or_shared_tasks
+        if _is_typed_existing_amd_gluon_plain_or_shared_task(task)
+    ]
+    generic_plain_tasks = [
+        task
+        for task in plain_or_shared_tasks
+        if not _is_typed_existing_amd_gluon_plain_or_shared_task(task)
+    ]
     warnings: list[str] = []
 
     if not refinement_tasks:
@@ -4188,17 +4331,25 @@ def _existing_amd_gluon_portfolio_issues(
             "existing AMD Gluon portfolio has no in-dialect refinement task; "
             "generate at least one `amd_gluon_*_refine` task or report no viable Gluon task"
         )
-    if len(plain_or_shared_tasks) > 2 and len(refinement_tasks) <= 1:
+    if generic_plain_tasks and len(plain_or_shared_tasks) > 2 and len(refinement_tasks) <= 1:
         warnings.append(
-            "existing AMD Gluon portfolio is dominated by plain/shared work: "
-            f"{len(plain_or_shared_tasks)} plain/shared task(s) and {len(refinement_tasks)} refinement task(s); "
-            "keep plain/shared only for fallback, plain subkernel, portable comparison, mixed evidence, or safe-anchor comparison"
+            "existing AMD Gluon portfolio contains generic plain/shared overflow: "
+            f"{len(generic_plain_tasks)} generic plain/shared task(s), "
+            f"{len(typed_plain_tasks)} typed optional plain/shared task(s), and "
+            f"{len(refinement_tasks)} refinement task(s); "
+            "drop untyped plain/Base padding or convert real fallback/plain subkernel work to "
+            "`Task type: plain_subkernel_refine|shared_or_plain_comparison`"
+        )
+    elif len(plain_or_shared_tasks) > 2 and len(refinement_tasks) <= 1:
+        warnings.append(
+            "existing AMD Gluon portfolio has more optional plain/shared tasks than recommended: "
+            f"{len(plain_or_shared_tasks)} typed optional plain/shared task(s) and {len(refinement_tasks)} refinement task(s); "
+            "prefer fewer tasks or more in-dialect refinements for Gluon-priority runs"
         )
 
     untyped_plain = [
         task.label
-        for task in plain_or_shared_tasks
-        if _task_type(task) not in {"plain_subkernel_refine", "shared_or_plain_comparison"}
+        for task in generic_plain_tasks
     ]
     if untyped_plain:
         warnings.append(
@@ -4212,7 +4363,7 @@ def _existing_amd_gluon_portfolio_issues(
     hard_errors = [
         warning
         for warning in warnings
-        if "no in-dialect refinement" in warning or "dominated by plain/shared" in warning
+        if "no in-dialect refinement" in warning or "generic plain/shared overflow" in warning
     ]
     return hard_errors, warnings
 
@@ -4762,6 +4913,13 @@ def _parse_llm_response(
         required_patch_target_symbols = _infer_required_patch_target_symbols(task_prompt, item)
         if required_patch_target_symbols:
             cfg["required_patch_target_symbols"] = required_patch_target_symbols
+        executed_route_symbols = _infer_executed_route_symbols(
+            task_prompt,
+            item,
+            required_patch_target_symbols=required_patch_target_symbols,
+        )
+        if executed_route_symbols:
+            cfg["executed_route_symbols"] = executed_route_symbols
         for key, tag in _OPTIONAL_GLUON_TASK_METADATA_FIELDS:
             value = _optional_task_metadata_from_item_or_prompt(item, task_prompt, key, tag)
             if value not in (None, ""):
@@ -4791,6 +4949,11 @@ def _parse_llm_response(
         tasks,
         gluon_feature_mode=gluon_feature_mode,
     )
+    tasks, dropped_existing_amd_plain_overflow = _filter_existing_amd_gluon_plain_overflow(
+        tasks,
+        feature_meta=feature_meta,
+        gluon_feature_mode=gluon_feature_mode,
+    )
     extension_tasks_after_filter = [
         task
         for task in tasks
@@ -4800,6 +4963,7 @@ def _parse_llm_response(
         _write_task_generation_gluon_diagnostics(
             diagnostics_dir=audit_diagnostics_dir,
             dropped_gluon_overlays=dropped_gluon_overlays,
+            dropped_existing_amd_plain_overflow=dropped_existing_amd_plain_overflow,
             no_viable_gluon_task={
                 "reason": "require_viable_gluon mode found no dispatchable AMD Gluon task",
                 "dropped_gluon_overlay_count": len(dropped_gluon_overlays),
@@ -4809,6 +4973,7 @@ def _parse_llm_response(
     _write_task_generation_gluon_diagnostics(
         diagnostics_dir=audit_diagnostics_dir,
         dropped_gluon_overlays=dropped_gluon_overlays,
+        dropped_existing_amd_plain_overflow=dropped_existing_amd_plain_overflow,
     )
     tasks = _ensure_mandatory_plain_families(
         tasks,

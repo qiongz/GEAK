@@ -26,11 +26,13 @@ from minisweagent.run.target_contracts import (
     filter_abstract_target_symbols,
     forbidden_symbols_from_scoped_text,
     patch_touches_forbidden_target_symbol,
+    target_symbols_from_actionable_prose,
     target_symbols_from_scoped_text,
 )
 from minisweagent.run.postprocess.benchmark_parsing import (
     _gluon_evidence_summary,
     _legacy_classify_patch_output_dialect,
+    _patch_touches_any_target_symbol as _postprocess_patch_touches_any_target_symbol,
     _required_amd_gluon_static_contract_error as _postprocess_required_amd_gluon_static_contract_error,
     _scope_escalation_violation,
     classify_gluon_api_contract,
@@ -633,7 +635,10 @@ def _contains_identifier(text: str, symbol: str) -> bool:
 
 def _patch_touches_any_target_symbol(patch_text: str, required_symbols: list[str]) -> bool:
     code_text = "\n".join(_added_lines(patch_text))
-    return any(_contains_identifier(code_text, symbol) for symbol in required_symbols)
+    return any(_contains_identifier(code_text, symbol) for symbol in required_symbols) or _postprocess_patch_touches_any_target_symbol(
+        patch_text,
+        required_symbols,
+    )
 
 
 def _patch_touches_forbidden_target_symbol(patch_text: str, forbidden_symbols: list[str]) -> str | None:
@@ -749,6 +754,21 @@ def classify_patch_output_dialect(patch_text: str) -> str:
     return _postprocess_classify_patch_output_dialect(patch_text)
 
 
+def _classify_patch_output_dialect_for_task(
+    patch_text: str,
+    task_meta: dict[str, Any],
+    required_patch_target_symbols: list[str],
+) -> str:
+    actual = classify_patch_output_dialect(patch_text)
+    if actual != "unknown":
+        return actual
+    if str(task_meta.get("source_origin") or "").strip().lower() != "existing_amd_gluon_operator":
+        return actual
+    if required_patch_target_symbols and _patch_touches_any_target_symbol(patch_text, required_patch_target_symbols):
+        return "amd_gluon"
+    return actual
+
+
 def _find_task_metadata_for_patch_dir(patch_dir: Path) -> dict[str, Any]:
     """Best-effort lookup of the task frontmatter associated with a result dir."""
     label = patch_dir.name
@@ -839,16 +859,23 @@ def _dialect_contract_satisfied(required: str, actual: str) -> bool:
     return actual == required
 
 
+def _strip_enclosing_backticks(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value.startswith("`") and value.endswith("`"):
+        return value[1:-1].strip()
+    return value
+
+
 def _parse_tagged_task_value(task_body: str, tag: str) -> str | None:
     match = re.search(rf"^\s*{re.escape(tag)}\s*:\s*(.+?)\s*$", task_body, re.IGNORECASE | re.MULTILINE)
     if not match:
         return None
-    return match.group(1).strip().strip("`")
+    return _strip_enclosing_backticks(match.group(1))
 
 
 def _parse_tagged_task_values(task_body: str, tag: str) -> list[str]:
     return [
-        match.group(1).strip().strip("`")
+        _strip_enclosing_backticks(match.group(1))
         for match in re.finditer(rf"^\s*{re.escape(tag)}\s*:\s*(.+?)\s*$", task_body, re.IGNORECASE | re.MULTILINE)
     ]
 
@@ -880,6 +907,10 @@ def _infer_required_patch_target_symbols(task_body: str, task_meta: dict[str, An
         value = _parse_tagged_task_value(task_body, field)
         if value:
             symbols.extend(target_symbols_from_scoped_text(value))
+    if not filter_abstract_target_symbols(
+        [symbol for symbol in symbols if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", symbol)]
+    ):
+        symbols.extend(target_symbols_from_actionable_prose(task_body))
 
     unique: list[str] = []
     for symbol in symbols:
@@ -1171,7 +1202,11 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         if candidate_ms is None or candidate_ms <= 0:
             continue
         candidate_shape_latencies = parse_shape_latencies_ms(candidate_text)
-        actual_output_dialect = classify_patch_output_dialect(patch_text)
+        actual_output_dialect = _classify_patch_output_dialect_for_task(
+            patch_text,
+            task_meta,
+            required_patch_target_symbols,
+        )
         if not _dialect_contract_satisfied(required_output_dialect, actual_output_dialect):
             logger.info(
                 "Skipping %s because required_output_dialect=%s but patch classified as %s",
@@ -1349,6 +1384,91 @@ def _invalidate_existing_best_result(
     return existing
 
 
+def _has_real_patch_test_artifact(patch_dir: Path) -> bool:
+    for patch_file in sorted(patch_dir.glob("patch_*.patch")):
+        if patch_file.stat().st_size <= 0:
+            continue
+        patch_text = patch_file.read_text(errors="replace").lower()
+        if (
+            "no generated patch artifacts" in patch_text
+            or "baseline-equivalent" in patch_text
+            or "budget-forced immediate submission" in patch_text
+        ):
+            continue
+        test_file = patch_dir / f"{patch_file.stem}_test.txt"
+        if test_file.exists() and test_file.stat().st_size > 0:
+            return True
+    return False
+
+
+def _no_viable_patch_result(
+    patch_dir: Path,
+    *,
+    reason: str,
+    task_meta: dict[str, Any] | None = None,
+    original_bl: float | None = None,
+) -> dict[str, Any]:
+    task_meta = task_meta or _find_task_metadata_for_patch_dir(patch_dir)
+    required_output_dialect = _required_output_dialect(task_meta, label=patch_dir.name)
+    required_patch_target_symbols = _metadata_list(task_meta.get("required_patch_target_symbols"))
+    forbidden_patch_target_symbols = _metadata_list(task_meta.get("forbidden_patch_target_symbols"))
+    result: dict[str, Any] = {
+        "status": "no_viable_patch",
+        "no_viable_patch": True,
+        "invalidated": True,
+        "invalid_reason": reason,
+        "best_patch_id": None,
+        "best_patch_file": None,
+        "best_patch_test_output": None,
+        "best_patch_speedup": 0.0,
+        "best_patch_size_bytes": 0,
+        "baseline_latency_ms": round(original_bl, 6) if original_bl else None,
+        "baseline_source": "benchmark_baseline.txt" if original_bl else None,
+        "candidate_latency_ms": None,
+        "required_output_dialect": required_output_dialect,
+        "actual_output_dialect": "none",
+        "dialect_contract_satisfied": False,
+        "gluon_execution_contract_satisfied": False,
+        "fallback_used": required_output_dialect == "amd_gluon",
+        "scope_compliant": False,
+        "required_patch_target_symbols": required_patch_target_symbols,
+        "forbidden_patch_target_symbols": forbidden_patch_target_symbols,
+        "gluon_evidence_summary": "no_viable_patch",
+        "llm_selection_analysis": f"Deterministic: no viable patch artifact ({reason}).",
+    }
+    for key, _tag in _OPTIONAL_GLUON_RESULT_METADATA:
+        if task_meta.get(key) not in (None, ""):
+            result[key] = task_meta.get(key)
+    return result
+
+
+def _write_selection_summary(patch_dir: Path, result: dict[str, Any]) -> None:
+    lines = [
+        "# Selection Summary",
+        "",
+        "## Status",
+        f"- status: `{result.get('status') or 'selected'}`",
+        f"- best_patch_id: `{result.get('best_patch_id')}`",
+        f"- best_patch_speedup: `{result.get('best_patch_speedup')}`",
+        "",
+        "## Per-Shape Decision",
+    ]
+    per_shape = result.get("per_shape_speedups")
+    if isinstance(per_shape, dict) and per_shape:
+        for shape, metrics in per_shape.items():
+            speedup = float(metrics.get("speedup") or 0.0) if isinstance(metrics, dict) else 0.0
+            decision = "keep" if speedup >= 1.0 else "reject"
+            lines.append(f"- `{shape}`: {speedup:.6f}x -> {decision}")
+    else:
+        lines.append("- no per-shape evidence")
+    if result.get("has_significant_shape_regression"):
+        lines.append("- decision: reject candidate with shape regression")
+    try:
+        (patch_dir / "selection_summary.md").write_text("\n".join(lines) + "\n")
+    except OSError:
+        logger.debug("Could not write selection_summary.md", exc_info=True)
+
+
 def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
     """Overwrite ``best_results.json`` with deterministic selection if possible.
 
@@ -1359,9 +1479,11 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
     det = compute_best_patch(patch_dir)
     existing_path = patch_dir / "best_results.json"
     original_bl = _find_original_baseline_ms(patch_dir)
+    task_meta = _find_task_metadata_for_patch_dir(patch_dir)
 
     if det is not None:
         existing_path.write_text(json.dumps(det, indent=2))
+        _write_selection_summary(patch_dir, det)
         logger.info(
             "Deterministic best_results for %s: %s (%.4fx)",
             patch_dir.name,
@@ -1370,11 +1492,21 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
         )
         return det
 
+    if not _has_real_patch_test_artifact(patch_dir):
+        no_viable = _no_viable_patch_result(
+            patch_dir,
+            reason="no real patch/test artifact",
+            task_meta=task_meta,
+            original_bl=original_bl,
+        )
+        existing_path.write_text(json.dumps(no_viable, indent=2))
+        _write_selection_summary(patch_dir, no_viable)
+        return no_viable
+
     if existing_path.exists():
         try:
             existing = json.loads(existing_path.read_text())
             pf = existing.get("best_patch_file")
-            task_meta = _find_task_metadata_for_patch_dir(patch_dir)
             required_output_dialect = _required_output_dialect(task_meta, label=patch_dir.name)
             required_patch_target_symbols = _metadata_list(task_meta.get("required_patch_target_symbols"))
             forbidden_patch_target_symbols = _metadata_list(task_meta.get("forbidden_patch_target_symbols"))
@@ -1439,7 +1571,11 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
                 return invalid
 
             patch_text = patch_path.read_text(errors="replace")
-            actual_output_dialect = classify_patch_output_dialect(patch_text)
+            actual_output_dialect = _classify_patch_output_dialect_for_task(
+                patch_text,
+                task_meta,
+                required_patch_target_symbols,
+            )
             scope_escalation = _scope_escalation_violation(patch_text, task_meta)
             if scope_escalation:
                 invalid = _invalidate_existing_best_result(

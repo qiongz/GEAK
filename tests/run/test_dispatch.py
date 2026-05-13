@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+
 import pytest
 
 from minisweagent.agents.heterogeneous.tools import _group_task_files_by_dispatch_stage, _required_gluon_tasks_completed
@@ -216,7 +219,7 @@ def test_task_file_to_agent_task_keeps_general_skill_tiers_for_raw_profile(tmp_p
     assert task.config["allowed_skill_tiers"] == ["general"]
 
 
-def test_required_gluon_task_forces_skill_context_even_if_disabled(tmp_path) -> None:
+def test_required_gluon_task_uses_clean_packet_without_skill_selector(tmp_path) -> None:
     task_path = tmp_path / "required_gluon.md"
     write_task_file(
         task_path,
@@ -238,13 +241,21 @@ def test_required_gluon_task_forces_skill_context_even_if_disabled(tmp_path) -> 
 
     task = task_file_to_agent_task(task_path)
 
-    assert task.config["use_skills"] is True
-    assert "## Forced Triton-Gluon Skill Context" in task.task
+    assert task.config["use_skills"] is False
+    assert task.config["gluon_route_proof_required"] is True
+    assert task.config["gluon_strategy_artifacts_required"] is True
+    assert task.config["suppress_cross_session_memory"] is True
+    assert task.task.index("## Clean Gluon Task Packet") < task.task.index("## Pipeline Context")
+    assert "### Original Task Body" in task.task
+    assert "## Required AMD Gluon Contract" in task.task
+    assert "## Forced Triton-Gluon Skill Context" not in task.task
     assert "from triton.experimental import gluon" in task.task
     assert "from triton import gluon" in task.task
     assert "not the supported import path" in task.task
     assert "Gluon knowledge lookup plan" in task.task
-    assert "Gluon implementation plan" in task.task
+    assert "Required execution route proof" in task.task
+    assert "Patch evolution ledger" in task.task
+    assert "strategy_notes.md" in task.task
     assert "Task compat_search_set: extension" in task.task
     assert "Task required_output_dialect: amd_gluon" in task.task
     assert "viewed=no" in task.task
@@ -579,11 +590,51 @@ def test_worker_context_infers_required_gluon_from_body_layer_contract(tmp_path)
 
     task = task_file_to_agent_task(task_path)
 
-    assert task.config["use_skills"] is True
+    assert task.config["use_skills"] is False
+    assert task.config["gluon_route_proof_required"] is True
     assert task.config["required_output_dialect"] == "amd_gluon"
     assert "Task required_output_dialect: amd_gluon" in task.task
     assert "Task implementation_layer: amd_gluon overlay" in task.task
     assert "Task extension_layer: L0" in task.task
+
+
+def test_route_priority_gluon_task_suppresses_generic_bottleneck_guidance(tmp_path) -> None:
+    baseline_metrics = tmp_path / "baseline_metrics.json"
+    baseline_metrics.write_text(json.dumps({"duration_us": 123.0, "bottleneck": "balanced"}))
+    benchmark_baseline = tmp_path / "benchmark_baseline.txt"
+    benchmark_baseline.write_text("pa-decode-s512: 0.167 ms\npa-decode-s1024: 0.166 ms\n")
+    task_path = tmp_path / "route_priority.md"
+    write_task_file(
+        task_path,
+        {
+            "label": "gluon-oneshot-fusion",
+            "priority": 0,
+            "kernel_type": "triton",
+            "kernel_path": str(tmp_path / "kernel.py"),
+            "repo_root": str(tmp_path),
+            "input_dialect": "amd_gluon",
+            "required_output_dialect": "amd_gluon",
+            "implementation_layer": "amd_gluon in-dialect refinement",
+            "measurement_boundary": "full_operator",
+            "failure_layers": "wrapper/reduction",
+            "target_component": "wrapper_shape_dispatch",
+            "baseline_metrics": str(baseline_metrics),
+            "benchmark_baseline": str(benchmark_baseline),
+            "benchmark_shape_count": 2,
+            "benchmark_test_cases": [
+                {"case_id": "s512", "params": {"context_len": 512, "context_partition_size": 256}},
+                {"case_id": "s1024", "params": {"context_len": 1024, "context_partition_size": 256}},
+            ],
+        },
+        "Allowed change: route small partitions through one-shot output feeding.\n",
+    )
+
+    task = task_file_to_agent_task(task_path)
+
+    assert "Optimization Guidance (Gluon route-priority task)" in task.task
+    assert "INCREASE ARITHMETIC INTENSITY" not in task.task
+    assert "s512: max_context_partition_num=ceil(512/256)=2" in task.task
+    assert "s1024: max_context_partition_num=ceil(1024/256)=4" in task.task
 
 
 def test_required_gluon_docs_metadata_augments_heuristic_gate(tmp_path) -> None:
@@ -912,6 +963,178 @@ def test_save_and_test_allows_after_required_gluon_doc_views(tmp_path) -> None:
 
     assert result["returncode"] == 0
     assert "GLUON_DOC_GATE_FAILED" not in result["output"]
+
+
+def test_save_and_test_rejects_missing_gluon_route_proof(tmp_path) -> None:
+    patch_dir = tmp_path / "patches"
+    tool = SaveAndTestTool()
+    tool.set_context(
+        SaveAndTestContext(
+            cwd=str(tmp_path),
+            test_command="true",
+            timeout=5,
+            patch_output_dir=str(patch_dir),
+            required_output_dialect="amd_gluon",
+            gluon_route_proof_required=True,
+            gluon_strategy_artifacts_required=True,
+        )
+    )
+
+    result = tool(description="missing route proof")
+
+    assert result["returncode"] == 1
+    assert "ROUTE_PROOF_CONTRACT_FAILED" in result["output"]
+    assert "NEXT_PATCH_SCOPE=route_proof_only" in result["output"]
+    assert (patch_dir / "strategy_notes.md").is_file()
+    assert (patch_dir / "no_viable_patch.json").is_file()
+
+
+def test_save_and_test_allows_complete_gluon_route_proof(tmp_path) -> None:
+    patch_dir = tmp_path / "patches"
+    (tmp_path / "strategy_notes.md").write_text(
+        "\n".join(
+            [
+                "## Required execution route proof",
+                "- current wrapper path: pa_decode_gluon -> current kernel dot+reduce",
+                "- target wrapper path: pa_decode_gluon -> target kernel sliding_window",
+                "- guard conditions: query_length == 1",
+                "- output feeding: output_for_kernel points at final output",
+                "- temporary/reduce path: reduce skipped and temporary preserved otherwise",
+                "- same ABI proof: wrapper ABI unchanged",
+                "- measurement boundary reconciliation: full_operator benchmark",
+            ]
+        )
+    )
+    tool = SaveAndTestTool()
+    tool._get_patch_content = lambda: "\n".join(  # type: ignore[method-assign]
+        [
+            "diff --git a/kernel.py b/kernel.py",
+            "+from triton.experimental import gluon",
+            "+@gluon.jit",
+            "+def target_kernel(x):",
+            "+    return x",
+            "+target_kernel[grid](x)",
+        ]
+    )
+    tool.set_context(
+        SaveAndTestContext(
+            cwd=str(tmp_path),
+            test_command="true",
+            timeout=5,
+            patch_output_dir=str(patch_dir),
+            required_output_dialect="amd_gluon",
+            gluon_route_proof_required=True,
+        )
+    )
+
+    result = tool(description="complete route proof")
+
+    assert result["returncode"] == 0
+    assert "ROUTE_PROOF_CONTRACT_FAILED" not in result["output"]
+    assert (patch_dir / "strategy_notes.md").is_file()
+    assert "Required execution route proof" in (patch_dir / "strategy_notes.md").read_text()
+
+
+def test_save_and_test_syncs_complete_strategy_notes_over_diagnostic(tmp_path) -> None:
+    patch_dir = tmp_path / "patches"
+    patch_dir.mkdir()
+    (patch_dir / "strategy_notes.md").write_text(
+        "# Strategy Notes\n\n## Required execution route proof\n- Status: incomplete\n"
+    )
+    (tmp_path / "strategy_notes.md").write_text(
+        "\n".join(
+            [
+                "# Strategy Notes",
+                "## Required execution route proof",
+                "- current wrapper path: pa_decode_gluon",
+                "- target wrapper path: pa_decode_gluon",
+                "- guard conditions: query_length == 1",
+                "- output feeding: output_for_kernel",
+                "- temporary/reduce path: preserve",
+                "- same ABI proof: unchanged",
+                "- measurement boundary reconciliation: full_operator",
+            ]
+        )
+    )
+    tool = SaveAndTestTool()
+    tool.set_context(
+        SaveAndTestContext(
+            cwd=str(tmp_path),
+            test_command="true",
+            timeout=5,
+            patch_output_dir=str(patch_dir),
+        )
+    )
+
+    tool._sync_strategy_artifacts_to_output()
+
+    text = (patch_dir / "strategy_notes.md").read_text()
+    assert "Status: incomplete" not in text
+    assert "current wrapper path" in text
+
+
+def test_save_and_test_git_patch_capture_ignores_broken_submodules(tmp_path, monkeypatch) -> None:
+    tool = SaveAndTestTool()
+    tool.set_context(
+        SaveAndTestContext(
+            cwd=str(tmp_path),
+            test_command="true",
+            timeout=5,
+            patch_output_dir=None,
+        )
+    )
+    tool._is_git_repo = lambda _path: True  # type: ignore[method-assign]
+    tool._generated_helper_excludes = lambda: []  # type: ignore[method-assign]
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        assert kwargs["cwd"] == str(tmp_path)
+        calls.append(cmd)
+        if cmd[3] == "add":
+            return subprocess.CompletedProcess(cmd, 128, "", "fatal: not a git repository: submodule")
+        if cmd[3] == "diff":
+            assert "--ignore-submodules=all" in cmd
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                "diff --git a/kernel.py b/kernel.py\n+print('changed')\n",
+                "",
+            )
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    patch = tool._get_patch_content()
+
+    assert "print('changed')" in patch
+    assert calls[0][0:4] == ["git", "-c", "submodule.recurse=false", "add"]
+    assert calls[1][0:4] == ["git", "-c", "submodule.recurse=false", "diff"]
+
+
+def test_save_and_test_git_patch_capture_reports_diff_failure(tmp_path, monkeypatch) -> None:
+    tool = SaveAndTestTool()
+    tool.set_context(
+        SaveAndTestContext(
+            cwd=str(tmp_path),
+            test_command="true",
+            timeout=5,
+            patch_output_dir=None,
+        )
+    )
+    tool._is_git_repo = lambda _path: True  # type: ignore[method-assign]
+    tool._generated_helper_excludes = lambda: []  # type: ignore[method-assign]
+
+    def fake_run(cmd, **kwargs):
+        if cmd[3] == "add":
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        if cmd[3] == "diff":
+            return subprocess.CompletedProcess(cmd, 128, "", "fatal: broken gitdir")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="PATCH_CAPTURE_FAILED"):
+        tool._get_patch_content()
 
 
 def test_save_and_test_accepts_worktree_view_for_base_repo_required_doc(tmp_path) -> None:

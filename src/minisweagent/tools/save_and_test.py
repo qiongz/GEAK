@@ -140,6 +140,7 @@ class SaveAndTestContext:
     gluon_doc_gate_required_paths: list[str] | None = None
     required_output_dialect: str | None = None
     required_patch_target_symbols: list[str] | None = None
+    executed_route_symbols: list[str] | None = None
     forbidden_patch_target_symbols: list[str] | None = None
     required_amd_gluon_contract_tags: list[str] | None = None
     source_origin: str | None = None
@@ -148,6 +149,8 @@ class SaveAndTestContext:
     forbidden_tl_symbols: list[str] | None = None
     layout_construction_policy: str | None = None
     execution_mode: str | None = None
+    gluon_route_proof_required: bool = False
+    gluon_strategy_artifacts_required: bool = False
 
 
 def _tracked_subprocess_run(
@@ -217,7 +220,17 @@ class SaveAndTestTool:
         gate_error = self._check_gluon_doc_gate()
         if gate_error:
             self._log(f"\n[SaveAndTest] Gluon documentation gate failed:\n{gate_error}")
+            self._write_strategy_diagnostic_artifact("doc_gate_incomplete_before_patch", gate_error)
+            self._write_no_viable_patch_metadata("doc_gate_incomplete_before_patch", gate_error)
+            self._sync_strategy_artifacts_to_output()
             return {"output": gate_error, "returncode": 1}
+        route_proof_error = self._check_gluon_route_proof_gate()
+        if route_proof_error:
+            self._log(f"\n[SaveAndTest] Gluon route proof gate failed:\n{route_proof_error}")
+            self._write_strategy_diagnostic_artifact("route_proof_missing_before_patch", route_proof_error)
+            self._write_no_viable_patch_metadata("route_proof_missing_before_patch", route_proof_error)
+            self._sync_strategy_artifacts_to_output()
+            return {"output": route_proof_error, "returncode": 1}
 
         patch_name = f"patch_{ctx.patch_counter}"
         ctx.patch_counter += 1
@@ -243,6 +256,12 @@ class SaveAndTestTool:
                     if ctx.patch_output_dir:
                         self._save_patch_file(patch_name, patch_content)
                         self._save_test_output(patch_name, contract_error)
+                        self._write_no_viable_patch_metadata(
+                            "no_viable_patch",
+                            contract_error,
+                            patch_name=patch_name,
+                        )
+                        self._sync_strategy_artifacts_to_output()
                     return {"output": contract_error, "returncode": 1}
             else:
                 contract_error = self._check_patch_contract(patch_content)
@@ -251,6 +270,12 @@ class SaveAndTestTool:
                     if ctx.patch_output_dir:
                         self._save_patch_file(patch_name, patch_content)
                         self._save_test_output(patch_name, contract_error)
+                        self._write_no_viable_patch_metadata(
+                            self._status_from_contract_error(contract_error),
+                            contract_error,
+                            patch_name=patch_name,
+                        )
+                        self._sync_strategy_artifacts_to_output()
                     return {"output": contract_error, "returncode": 1}
                 self._log(f"[SaveAndTest] Patch {patch_name} captured, running test...")
 
@@ -265,6 +290,7 @@ class SaveAndTestTool:
             if ctx.patch_output_dir:
                 self._save_patch_file(patch_name, patch_content)
                 self._save_test_output(patch_name, test_output)
+                self._sync_strategy_artifacts_to_output()
 
             output = self._format_output(
                 patch_name,
@@ -305,6 +331,9 @@ class SaveAndTestTool:
         except subprocess.TimeoutExpired:
             return self._handle_error(patch_name, patch_content, "Test command timed out", "TIMEOUT")
         except Exception as e:
+            if str(e).startswith("PATCH_CAPTURE_FAILED"):
+                self._write_no_viable_patch_metadata("patch_capture_failed", str(e), patch_name=patch_name)
+                self._sync_strategy_artifacts_to_output()
             return self._handle_error(patch_name, "", str(e), f"ERROR - {e}")
 
     def _log(self, message: str):
@@ -324,6 +353,9 @@ class SaveAndTestTool:
 
         required_output = str(ctx.required_output_dialect or "").strip().lower()
         required_symbols = [str(symbol).strip() for symbol in (ctx.required_patch_target_symbols or []) if str(symbol).strip()]
+        executed_route_symbols = [
+            str(symbol).strip() for symbol in (ctx.executed_route_symbols or []) if str(symbol).strip()
+        ]
         forbidden_symbols = [
             str(symbol).strip() for symbol in (ctx.forbidden_patch_target_symbols or []) if str(symbol).strip()
         ]
@@ -338,6 +370,8 @@ class SaveAndTestTool:
             "forbidden_tl_symbols": ctx.forbidden_tl_symbols,
             "layout_construction_policy": ctx.layout_construction_policy,
             "execution_mode": ctx.execution_mode,
+            "required_patch_target_symbols": required_symbols,
+            "executed_route_symbols": executed_route_symbols,
         }
         static_contract_error = _required_amd_gluon_static_contract_error(
             patch_content,
@@ -363,7 +397,7 @@ class SaveAndTestTool:
                 "or move generated layout factories to host code."
             )
 
-        actual_output = classify_patch_output_dialect(patch_content)
+        actual_output = self._classify_patch_output_dialect_for_task(patch_content, task_meta, required_symbols)
         if required_output and not _dialect_contract_satisfied(required_output, actual_output):
             if required_output == "amd_gluon":
                 reason = (
@@ -392,6 +426,8 @@ class SaveAndTestTool:
             return (
                 "PATCH_CONTRACT_FAILED: patch does not touch any required target symbol: "
                 + ", ".join(required_symbols)
+                + ". FAILURE_LAYER=target_not_touched; NEXT_PATCH_SCOPE=wiring_or_output_feeding_only. "
+                "Do not expand into MFMA/reduce kernel-body rewrites."
             )
 
         forbidden_target = _patch_touches_forbidden_target_symbol(patch_content, forbidden_symbols)
@@ -401,7 +437,8 @@ class SaveAndTestTool:
                 + forbidden_target
                 + ". Do not fix this by converting more of the kernel to Gluon. "
                 "Revert the forbidden change, then shrink or split the scoped Gluon path. "
-                "If the implementation requires whole-kernel/MFMA scope, create a new task with that scope."
+                "If the implementation requires whole-kernel/MFMA scope, create a new task with that scope. "
+                "FAILURE_LAYER=scope_violation; NEXT_PATCH_SCOPE=revert_forbidden_scope_only."
             )
 
         if not _gluon_execution_contract_satisfied(
@@ -417,6 +454,21 @@ class SaveAndTestTool:
                 "or upgrade a local smoke/probe into a whole-kernel rewrite."
             )
         return None
+
+    @staticmethod
+    def _classify_patch_output_dialect_for_task(
+        patch_content: str,
+        task_meta: dict[str, Any],
+        required_symbols: list[str],
+    ) -> str:
+        actual_output = classify_patch_output_dialect(patch_content)
+        if actual_output != "unknown":
+            return actual_output
+        if str(task_meta.get("source_origin") or "").strip().lower() != "existing_amd_gluon_operator":
+            return actual_output
+        if required_symbols and _patch_touches_any_target_symbol(patch_content, required_symbols):
+            return "amd_gluon"
+        return actual_output
 
     @staticmethod
     def _normalize_gate_path(path: str) -> str:
@@ -477,6 +529,182 @@ class SaveAndTestTool:
             "Do not guess Gluon APIs or proceed from memory. After viewing the required docs, retry save_and_test."
         )
         return "\n".join(lines)
+
+    def _strategy_artifact_candidates(self) -> list[Path]:
+        ctx = self.context
+        if not ctx:
+            return []
+        roots: list[Path] = []
+        if ctx.patch_output_dir:
+            roots.append(Path(ctx.patch_output_dir))
+        roots.append(Path(ctx.cwd))
+        names = (
+            "strategy_notes.md",
+            "route_proof.md",
+            "patch_evolution_ledger.md",
+            ".optimization_strategies.md",
+        )
+        candidates: list[Path] = []
+        for root in roots:
+            for name in names:
+                path = root / name
+                if path not in candidates:
+                    candidates.append(path)
+        return candidates
+
+    def _read_strategy_artifacts(self) -> str:
+        chunks: list[str] = []
+        for path in self._strategy_artifact_candidates():
+            if not path.is_file():
+                continue
+            try:
+                chunks.append(f"\n# {path.name}\n" + path.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                continue
+        return "\n".join(chunks)
+
+    @staticmethod
+    def _route_proof_missing_fields(text: str) -> list[str]:
+        lowered = text.lower()
+        required: list[tuple[str, tuple[str, ...]]] = [
+            ("Required execution route proof block", ("required execution route proof", "route proof")),
+            ("current wrapper/kernel path", ("current wrapper", "current kernel", "current route", "current path")),
+            ("target wrapper/kernel path", ("target wrapper", "target kernel", "target route", "target path")),
+            ("guard conditions", ("guard", "condition")),
+            ("output feeding", ("output feeding", "output_for_kernel", "measured output", "final output")),
+            ("reduce/temporary skip-or-preserve", ("reduce", "temporary", "skip", "preserve")),
+            ("same ABI proof", ("same abi", "abi proof", "wrapper abi")),
+            ("measurement boundary reconciliation", ("measurement boundary", "full_operator", "full-operator")),
+        ]
+        missing = [label for label, options in required if not any(option in lowered for option in options)]
+        return missing
+
+    def _check_gluon_route_proof_gate(self) -> str | None:
+        ctx = self.context
+        if not ctx or not ctx.gluon_route_proof_required:
+            return None
+        text = self._read_strategy_artifacts()
+        missing = self._route_proof_missing_fields(text)
+        if not missing:
+            return None
+        lines = [
+            "ROUTE_PROOF_CONTRACT_FAILED: required AMD Gluon task must persist a `Required execution route proof` before save_and_test.",
+            "Create or update `strategy_notes.md` / `route_proof.md` with these missing fields:",
+        ]
+        lines.extend(f"- {field}" for field in missing)
+        lines.append(
+            "NEXT_PATCH_SCOPE=route_proof_only: read task, COMMANDMENT, source, and harness; do not benchmark until the route proof is complete."
+        )
+        return "\n".join(lines)
+
+    def _write_strategy_diagnostic_artifact(self, status: str, details: str) -> None:
+        ctx = self.context
+        if not ctx or not (ctx.patch_output_dir or ctx.gluon_strategy_artifacts_required):
+            return
+        root = Path(ctx.patch_output_dir) if ctx.patch_output_dir else Path(ctx.cwd)
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            path = root / "strategy_notes.md"
+            if path.exists() and path.stat().st_size > 0:
+                return
+            path.write_text(
+                "\n".join(
+                    [
+                        "# Strategy Notes",
+                        "",
+                        "## Task objective extraction",
+                        f"- Status: `{status}`",
+                        "",
+                        "## Required execution route proof",
+                        "- Status: incomplete",
+                        "",
+                        "## Measurement boundary reconciliation",
+                        "- Status: incomplete",
+                        "",
+                        "## Patch evolution ledger",
+                        f"- Changed component: none",
+                        f"- Expected effect: none",
+                        f"- Observed effect: {status}",
+                        f"- Keep/Revert: stop",
+                        f"- Next patch allowed scope: route_proof_only",
+                        "",
+                        "## Diagnostic",
+                        details.strip(),
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            logger.debug("Could not write strategy diagnostic artifact", exc_info=True)
+
+    def _sync_strategy_artifacts_to_output(self) -> None:
+        ctx = self.context
+        if not ctx or not ctx.patch_output_dir:
+            return
+        output_dir = Path(ctx.patch_output_dir)
+        cwd = Path(ctx.cwd)
+        artifact_names = ("strategy_notes.md", "route_proof.md", "patch_evolution_ledger.md")
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            for name in artifact_names:
+                src = cwd / name
+                if not src.is_file() or src.stat().st_size <= 0:
+                    continue
+                dest = output_dir / name
+                if src.resolve() == dest.resolve():
+                    continue
+                text = src.read_text(encoding="utf-8", errors="replace")
+                existing = dest.read_text(encoding="utf-8", errors="replace") if dest.exists() else ""
+                if "Status: incomplete" in existing and "Required execution route proof" in text:
+                    dest.write_text(text, encoding="utf-8")
+                elif len(text) >= len(existing):
+                    dest.write_text(text, encoding="utf-8")
+        except OSError:
+            logger.debug("Could not sync strategy artifacts", exc_info=True)
+
+    @staticmethod
+    def _status_from_contract_error(contract_error: str) -> str:
+        text = contract_error.lower()
+        if "does not touch any required target symbol" in text:
+            return "target_not_touched"
+        if "helper without executing" in text:
+            return "helper_not_executed"
+        if "forbidden target scope" in text or "backup or temporary files" in text:
+            return "scope_violation"
+        if "layout_contract_status" in text or "gluon api contract" in text:
+            return "compile_or_layout_contract"
+        return "patch_contract_failed"
+
+    def _write_no_viable_patch_metadata(self, status: str, details: str, *, patch_name: str | None = None) -> None:
+        ctx = self.context
+        if not ctx or not ctx.patch_output_dir:
+            return
+        required_output = str(ctx.required_output_dialect or "").strip().lower()
+        if required_output not in {"amd_gluon", "mixed"}:
+            return
+        root = Path(ctx.patch_output_dir)
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "status": status,
+                "no_viable_patch": status
+                in {
+                    "no_viable_patch",
+                    "doc_gate_incomplete_before_patch",
+                    "route_proof_missing_before_patch",
+                    "patch_capture_failed",
+                },
+                "best_patch_id": None,
+                "best_patch_file": None,
+                "best_patch_speedup": 0.0,
+                "required_output_dialect": required_output,
+                "patch_name": patch_name,
+                "diagnostic": details,
+            }
+            (root / "no_viable_patch.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        except OSError:
+            logger.debug("Could not write no_viable_patch metadata", exc_info=True)
 
     def _generated_harness_helper_path(self) -> Path | None:
         """Return the generated worktree-root harness helper path, if any.
@@ -957,15 +1185,53 @@ class SaveAndTestTool:
                 ".git.bak/",
                 *self._generated_helper_excludes(),
             ]
-            exclude_args = " ".join(f"':(exclude){entry}'" for entry in excludes)
-            result = subprocess.run(
-                f"git add -N . && git diff --binary -- . {exclude_args}",
+            pathspecs = [".", *(f":(exclude){entry}" for entry in excludes)]
+            add_result = subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "submodule.recurse=false",
+                    "add",
+                    "-N",
+                    "--ignore-errors",
+                    "--",
+                    *pathspecs,
+                ],
                 cwd=cwd,
                 capture_output=True,
                 text=True,
                 timeout=30,
-                shell=True,
             )
+            if add_result.returncode != 0:
+                self._log(
+                    "[SaveAndTest] Warning: git add -N failed while preparing patch capture; "
+                    "continuing with tracked-file diff. "
+                    f"stderr={add_result.stderr.strip()[:300]}"
+                )
+            result = subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "submodule.recurse=false",
+                    "diff",
+                    "--no-ext-diff",
+                    "--ignore-submodules=all",
+                    "--binary",
+                    "--",
+                    *pathspecs,
+                ],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                details = (result.stderr or result.stdout or "").strip()
+                raise RuntimeError(
+                    "PATCH_CAPTURE_FAILED: git diff failed while capturing candidate patch. "
+                    "This is a tool/repo state failure, not an empty optimization patch. "
+                    f"Command used one-shot submodule-safe flags; stderr={details[:500]}"
+                )
             return result.stdout
 
         if ctx.base_repo_path and ctx.base_repo_path.exists():
@@ -1343,6 +1609,7 @@ class SaveAndTestTool:
         if ctx.patch_output_dir:
             self._save_patch_file(patch_name, patch_content)
             self._save_test_output(patch_name, error_msg)
+            self._sync_strategy_artifacts_to_output()
 
         output = self._format_output(patch_name, patch_content, error_msg, False, -1)
         return {"output": output, "returncode": 1}

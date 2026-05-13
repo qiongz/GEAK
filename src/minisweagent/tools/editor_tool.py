@@ -473,24 +473,21 @@ class EditTool:
             file_lines = file_content.split("\n")
             n_lines_file = len(file_lines)
             init_line, final_line = view_range
-            if init_line < 1 or init_line > n_lines_file:
-                print(
-                    f"Invalid `view_range`: {view_range}. Its first element `{init_line}` should be within the range of lines of the file: {[1, n_lines_file]}"
-                )
-                sys.exit(12)
-            if final_line > n_lines_file:
-                print(
-                    f"Invalid `view_range`: {view_range}. Its second element `{final_line}` should be smaller than the number of lines in the file: `{n_lines_file}`"
-                )
-                sys.exit(13)
-            if final_line != -1 and final_line < init_line:
-                print(
-                    f"Invalid `view_range`: {view_range}. Its second element `{final_line}` should be larger or equal than its first `{init_line}`"
-                )
-                sys.exit(14)
-
+            clamp_notes: list[str] = []
+            if init_line < 1:
+                clamp_notes.append(f"first element {init_line} was clamped to 1")
+                init_line = 1
+            elif init_line > n_lines_file:
+                clamp_notes.append(f"first element {init_line} was clamped to EOF line {n_lines_file}")
+                init_line = n_lines_file
             if final_line == -1:
                 final_line = n_lines_file
+            elif final_line > n_lines_file:
+                clamp_notes.append(f"second element {final_line} was clamped to EOF line {n_lines_file}")
+                final_line = n_lines_file
+            if final_line < init_line:
+                clamp_notes.append(f"second element {final_line} was raised to start line {init_line}")
+                final_line = init_line
 
             # Expand the viewport to include the whole function or class
             init_line, final_line = WindowExpander(suffix=path.suffix).expand_window(
@@ -498,6 +495,12 @@ class EditTool:
             )
 
             file_content = "\n".join(file_lines[init_line - 1 : final_line])
+            if clamp_notes:
+                print(
+                    "<NOTE>Requested `view_range` exceeded the available file range; "
+                    + "; ".join(clamp_notes)
+                    + ".</NOTE>"
+                )
         else:
             if path.suffix == ".py" and len(file_content) > MAX_RESPONSE_LEN and USE_FILEMAP:
                 try:

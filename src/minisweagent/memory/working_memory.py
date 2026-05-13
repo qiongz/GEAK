@@ -63,6 +63,8 @@ class WorkingMemory:
     failed_category_counts: dict[str, int] = field(default_factory=dict)
     current_action: str = ""
     kernel_category: str = "unknown"
+    gluon_route_priority_override: bool = False
+    gluon_failure_layers: str = ""
 
     # Insight buffer (rolling window)
     insights: list[Insight] = field(default_factory=list)
@@ -430,9 +432,17 @@ class WorkingMemory:
 
         parts.append(f"--- Working Memory (step {self.current_step}) ---")
         # Adaptive priorities based on bottleneck type
-        # Dispatch-path optimization is ALWAYS last resort
         bt = (self.bottleneck_type or "").lower()
-        if bt == "memory":
+        if self.gluon_route_priority_override:
+            suffix = f" Failure layers: {self.gluon_failure_layers}." if self.gluon_failure_layers else ""
+            parts.append(
+                "PRIORITY: (1) Route proof + wrapper dispatch/output feeding > "
+                "(2) temporary/reduce path skip-or-preserve > "
+                "(3) one named removable overhead after a correct executed route > "
+                "(4) kernel-body/MFMA/reduce algorithm rewrites only if explicitly allowed."
+                + suffix
+            )
+        elif bt == "memory":
             parts.append(
                 "PRIORITY: (1) Memory coalescing (vectorized loads, reduce bandwidth, improve locality) > "
                 "(2) Algorithmic kernel rewrites > (3) Operation fusion > "
