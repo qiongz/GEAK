@@ -13,6 +13,7 @@ from minisweagent.agents.heterogeneous.task_generator import (
     _BASE_FAMILY_SPLIT_K,
     _BASE_FAMILY_STREAMLINE,
     _BASE_FAMILY_SWIZZLE_TILE,
+    _build_gluon_task_generation_guidance,
     _SYSTEM_PROMPT,
     _base_triton_mandatory_families,
     _build_gluon_planning_traits_guidance,
@@ -22,6 +23,7 @@ from minisweagent.agents.heterogeneous.task_generator import (
     _extract_kernel_meta,
     _infer_gluon_planning_traits,
     _infer_required_patch_target_symbols,
+    _is_gluon_extension_task,
     _is_plain_competitor_task,
     _parse_llm_response,
     _previous_gluon_signal,
@@ -33,6 +35,7 @@ from minisweagent.agents.heterogeneous.task_generator import (
 )
 from minisweagent.agents.heterogeneous.prompts import TASKGEN_INSTANCE_TEMPLATE
 from minisweagent.agents.agent_spec import AgentTask
+from minisweagent.run.preprocess.discovery_types import build_gluon_feature_metadata
 from minisweagent.run.gluon_doc_profiles import GLUON_DOC_PROFILE_REQUIRED_KEYS
 from minisweagent.run.resource_paths import resolve_project_resource
 from minisweagent.run.task_file import read_task_file
@@ -135,13 +138,43 @@ def _gluon_overlay_prompt(
     return "\n".join(lines)
 
 
+def _existing_amd_gluon_refinement_prompt(
+    *,
+    task_type: str = "amd_gluon_in_dialect_refine",
+    target_component: str = "load_store_buffer",
+    target_symbol: str = "value_load_path",
+    allowed_change: str = "optimize one load_store_buffer path only",
+) -> str:
+    return "\n".join(
+        [
+            "Existing AMD Gluon refinement task",
+            "source_origin: existing_amd_gluon_operator",
+            f"Task type: {task_type}",
+            "Implementation layer: amd_gluon in-dialect refinement",
+            "required_output_dialect: amd_gluon",
+            "gluon_tl_policy: production_source_allowed",
+            "layout_construction_policy: source_preserve",
+            "Kernel family signal: memory_or_elementwise",
+            f"Target component: {target_component}",
+            f"Target symbol: {target_symbol}",
+            f"Allowed change: {allowed_change} in `{target_symbol}`",
+            "Failure layers: memory/load-store layer",
+            "Measurement boundary: kernel_only",
+            "Comparison target: true_baseline",
+            "Reject if: correctness fails or any benchmark shape regresses",
+        ]
+    )
+
+
 def test_overlay_direction_policy_lives_in_split_docs() -> None:
     repo = Path(__file__).resolve().parents[2]
     search_doc = (repo / "skills/triton-gluon/docs/10_search_policies.md").read_text()
     routing_doc = (repo / "skills/triton-gluon/docs/00_always_read.md").read_text()
     patterns_doc = (repo / "skills/triton-gluon/docs/60_real_patterns.md").read_text()
+    component_doc = (repo / "skills/triton-gluon/docs/20_component_traits.md").read_text()
 
     assert "### Search policy: overlay_direction_vs_mechanism" in search_doc
+    assert "### Search policy: existing_amd_gluon_refinement_policy" in search_doc
     assert "### Search policy: atomic_component_lattice" in search_doc
     assert "index_map" in search_doc
     assert "selection_update" in search_doc
@@ -164,6 +197,80 @@ def test_overlay_direction_policy_lives_in_split_docs() -> None:
     assert "topk/sampler/routing" in patterns_doc
     assert "overlay_direction_vs_mechanism" in routing_doc
     assert "atomic_component_lattice" in routing_doc
+    assert "source contract preserved" in routing_doc
+    assert "existing_amd_gluon_in_dialect_refinement" in patterns_doc
+    assert "layout_parent_slice" in component_doc
+    assert "matrix_operand_mfma" in component_doc
+
+
+def test_slow_l0_refinement_guidance_lives_in_split_docs_without_kernel_hardcoding() -> None:
+    repo = Path(__file__).resolve().parents[2]
+    routing_doc = (repo / "skills/triton-gluon/docs/00_always_read.md").read_text()
+    component_doc = (repo / "skills/triton-gluon/docs/20_component_traits.md").read_text()
+    patterns_doc = (repo / "skills/triton-gluon/docs/60_real_patterns.md").read_text()
+
+    assert "Slow L0 removable-overhead checklist" in patterns_doc
+    for token in (
+        "host_layout_construction",
+        "layout_padding",
+        "mask_path_overhead",
+        "typed_fallback_overhead",
+        "loop_invariant_overhead",
+        "small_stage_launch_params",
+    ):
+        assert token in patterns_doc
+        assert token in component_doc
+
+    assert "Next patch decision" in routing_doc
+    assert "try_one_removable_overhead:<name>" in routing_doc
+    assert "stop_not_viable_for_l1" in routing_doc
+    assert "Measurement boundary reconciliation" in routing_doc
+    assert "Base/plain Triton tasks are not forced into this Gluon state machine" in routing_doc
+    assert "Next patch decision" in patterns_doc
+    assert "tiny_stage_overhead` as an umbrella label" in patterns_doc
+    assert "host-side cache" in patterns_doc
+    assert "num_warps=4" in patterns_doc
+    assert "layout padding explicitly" in component_doc
+    assert "Loop-invariant hoists are follow-up experiments" in component_doc
+
+
+def test_gluon_task_generation_guidance_adds_l0_patch_evolution_without_plain_task_gate() -> None:
+    guidance = _build_gluon_task_generation_guidance(
+        {
+            **_gluon_feature_meta("plain_triton"),
+            "source_origin": "generated_overlay",
+        }
+    )
+
+    assert "patch_0` establishes a real executed anchor" in guidance
+    assert "try exactly one named removable overhead" in guidance
+    assert "host_layout_construction" in guidance
+    assert "Measurement boundary reconciliation" in guidance
+    assert "Do not inject this Gluon patch-evolution ladder into `required_output_dialect=plain_triton`" in guidance
+    assert "plain_subkernel_refine" in guidance
+
+
+def test_existing_amd_gluon_guidance_uses_same_l0_patch_evolution_and_plain_subkernel_escape() -> None:
+    guidance = _build_gluon_task_generation_guidance(
+        {
+            **_gluon_feature_meta("amd_gluon"),
+            "source_origin": "existing_amd_gluon_operator",
+        }
+    )
+
+    assert "existing-refinement tasks" in guidance
+    assert "patch_0` establishes a real executed anchor" in guidance
+    assert "tiny_stage_overhead` only as an umbrella label" in guidance
+    assert "plain_subkernel_refine" in guidance
+    assert "required_output_dialect=plain_triton" in guidance
+
+    repo = Path(__file__).resolve().parents[2]
+    routing_doc = (repo / "skills/triton-gluon/docs/00_always_read.md").read_text()
+    component_doc = (repo / "skills/triton-gluon/docs/20_component_traits.md").read_text()
+    patterns_doc = (repo / "skills/triton-gluon/docs/60_real_patterns.md").read_text()
+    docs_text = "\n".join([routing_doc, component_doc, patterns_doc])
+    for kernel_specific in ("mla_decode", "mqa_logits", "pa_decode", "arena_branch", "patch_3_test"):
+        assert kernel_specific not in docs_text
 
 
 def test_infer_gluon_planning_traits_for_plain_triton_dot() -> None:
@@ -214,6 +321,34 @@ def test_infer_required_patch_target_symbols_from_stage_scoped_allowed_change() 
     )
 
     assert _infer_required_patch_target_symbols(prompt) == ["stage1"]
+
+
+def test_infer_required_patch_target_symbols_ignores_abstract_atomic_components() -> None:
+    prompt = "\n".join(
+        [
+            "Existing AMD Gluon refinement task",
+            "Target component: state_update_softmax",
+            "Allowed change: optimize one state_update_softmax path only",
+        ]
+    )
+
+    assert _infer_required_patch_target_symbols(prompt) == []
+
+
+def test_infer_required_patch_target_symbols_keeps_concrete_target_symbol() -> None:
+    prompt = "\n".join(
+        [
+            "Existing AMD Gluon refinement task",
+            "Target component: state_update_softmax",
+            "Target symbol: paged_attention_decode_v2_gluon_dot_kernel",
+            "Allowed change: adjust `attention_accumulator` only",
+        ]
+    )
+
+    assert _infer_required_patch_target_symbols(prompt) == [
+        "paged_attention_decode_v2_gluon_dot_kernel",
+        "attention_accumulator",
+    ]
 
 
 def test_build_gluon_planning_traits_guidance_includes_candidate_slots(tmp_path: Path) -> None:
@@ -367,6 +502,61 @@ def test_existing_amd_gluon_operator_does_not_force_plain_base_families() -> Non
     }
 
     assert _base_triton_mandatory_families(meta, ["matrix_dot"], {"bottleneck": "latency"}) == []
+
+
+def test_build_gluon_feature_metadata_infers_existing_amd_gluon_origin(tmp_path: Path) -> None:
+    kernel = tmp_path / "kernel.py"
+    kernel.write_text(
+        "from triton.experimental import gluon\n"
+        "from triton.experimental.gluon import language as gl\n"
+        "@gluon.jit\n"
+        "def kernel_fwd(x):\n"
+        "    return x\n"
+    )
+
+    meta = build_gluon_feature_metadata(
+        kernel,
+        "triton",
+        input_dialect="amd_gluon",
+        gluon_feature_mode="auto",
+    )
+
+    assert meta["source_origin"] == "existing_amd_gluon_operator"
+
+    plainish = tmp_path / "plainish.py"
+    plainish.write_text("from triton.experimental import gluon\n# imported but no measured Gluon kernel\n")
+    unknown = build_gluon_feature_metadata(
+        plainish,
+        "triton",
+        input_dialect="amd_gluon",
+        gluon_feature_mode="auto",
+    )
+
+    assert unknown["source_origin"] == "unknown"
+
+
+def test_search_space_allocation_for_existing_amd_gluon_uses_refinement_taxonomy() -> None:
+    guidance = _build_search_space_allocation_guidance(
+        {
+            **_gluon_feature_meta("amd_gluon"),
+            "source_origin": "existing_amd_gluon_operator",
+            "shape_coverage_profile": "multi",
+        },
+        traits=["semantics_contract", "dialect_amd_gluon", "layout_basic", "memory_amd_buffer", "matrix_dot"],
+        num_gpus=8,
+        baseline_metrics={"bottleneck": "memory", "duration_us": 180.0},
+    )
+
+    assert "AMD Gluon in-dialect refinements" in guidance
+    assert "kernel_family_signal -> atomic_component_graph" in guidance
+    assert "amd_gluon_in_dialect_refine" in guidance
+    assert "plain_subkernel_refine" in guidance
+    assert "Plain Triton competitors: at least" not in guidance
+    assert "Existing AMD Gluon production operator anchors" in guidance
+    assert "Existing AMD Gluon lightweight planning recommendation" in guidance
+    assert "This recommendation is prompt guidance only" in guidance
+    assert "do not add new task metadata such as `gluon_depth`" in guidance
+    assert "Larger GPU budget does not imply maximum width" in guidance
 
 
 def test_search_space_allocation_lists_base_family_checklist() -> None:
@@ -569,6 +759,261 @@ def test_audit_accepts_main_like_five_base_plus_gluon_l0() -> None:
         expected_extension_slots=1,
     )
     assert [task.label for task in tasks][-1] == "amd-gluon-l0-viability"
+
+
+def test_audit_accepts_multiple_existing_amd_gluon_refinements_without_extension_cap() -> None:
+    feature_meta = {
+        **_gluon_feature_meta("amd_gluon"),
+        "source_origin": "existing_amd_gluon_operator",
+    }
+    payload = json.dumps(
+        [
+            {
+                "label": "gluon-refine-load-store",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": _existing_amd_gluon_refinement_prompt(),
+            },
+            {
+                "label": "gluon-refine-mfma-operand",
+                "priority": 1,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": _existing_amd_gluon_refinement_prompt(
+                    task_type="amd_gluon_layout_or_matrix_refine",
+                    target_component="matrix_operand_mfma",
+                    allowed_change="adjust one matrix_operand_mfma boundary only",
+                ),
+            },
+        ]
+    )
+
+    tasks = _parse_llm_response(
+        payload,
+        FakeAgentClass,
+        expected_extension_slots=0,
+        feature_meta=feature_meta,
+    )
+
+    assert len(tasks) == 2
+    assert all(task.config["source_origin"] == "existing_amd_gluon_operator" for task in tasks)
+    assert all(not _is_gluon_extension_task(task) for task in tasks)
+
+
+def test_existing_amd_gluon_feature_meta_fills_refinement_defaults() -> None:
+    feature_meta = {
+        **_gluon_feature_meta("amd_gluon"),
+        "source_origin": "existing_amd_gluon_operator",
+    }
+    payload = json.dumps(
+        [
+            {
+                "label": "gluon-refine-output-store",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "\n".join(
+                    [
+                        "Existing AMD Gluon refinement task",
+                        "required_output_dialect: amd_gluon",
+                        "Kernel family signal: memory_or_elementwise",
+                        "Target component: epilogue_output_store",
+                        "Target symbol: output_store_path",
+                        "Allowed change: optimize one epilogue_output_store expression in `output_store_path` only",
+                        "Failure layers: output store layer",
+                        "Measurement boundary: kernel_only",
+                        "Comparison target: true_baseline",
+                        "Reject if: correctness fails or any benchmark shape regresses",
+                    ]
+                ),
+            },
+        ]
+    )
+
+    tasks = _parse_llm_response(
+        payload,
+        FakeAgentClass,
+        expected_extension_slots=0,
+        feature_meta=feature_meta,
+    )
+    cfg = tasks[0].config
+
+    assert cfg["source_origin"] == "existing_amd_gluon_operator"
+    assert cfg["gluon_tl_policy"] == "production_source_allowed"
+    assert cfg["layout_construction_policy"] == "source_preserve"
+    assert cfg["implementation_layer"] == "amd_gluon in-dialect refinement"
+    assert cfg["task_type"] == "amd_gluon_in_dialect_refine"
+
+
+def test_existing_amd_gluon_refinement_requires_concrete_patch_target() -> None:
+    feature_meta = {
+        **_gluon_feature_meta("amd_gluon"),
+        "source_origin": "existing_amd_gluon_operator",
+    }
+    payload = json.dumps(
+        [
+            {
+                "label": "gluon-softmax-abstract-target",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": _existing_amd_gluon_refinement_prompt(
+                    target_component="state_update_softmax",
+                    target_symbol="",
+                    allowed_change="optimize one state_update_softmax path only",
+                ).replace("Target symbol: \n", ""),
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="missing concrete patch target"):
+        _parse_llm_response(
+            payload,
+            FakeAgentClass,
+            expected_extension_slots=0,
+            feature_meta=feature_meta,
+        )
+
+
+def test_existing_amd_gluon_portfolio_rejects_plain_dominated_force_l0_anchor() -> None:
+    feature_meta = {
+        **_gluon_feature_meta("amd_gluon"),
+        "source_origin": "existing_amd_gluon_operator",
+    }
+    plain_tasks = [
+        {
+            "label": f"triton-plain-{idx}",
+            "priority": 0,
+            "agent_type": "strategy_agent",
+            "kernel_language": "python",
+            "task_prompt": "\n".join(
+                [
+                    "Plain Triton comparison task",
+                    "Implementation layer: plain_triton",
+                    "required_output_dialect: plain_triton",
+                    "Base family: base_hot_path_streamline",
+                    f"Optimization direction: plain comparison {idx}",
+                    "Allowed change: one plain Triton comparison only",
+                ]
+            ),
+        }
+        for idx in range(4)
+    ]
+    payload = json.dumps(
+        [
+            *plain_tasks,
+            {
+                "label": "gluon-refine-load-store",
+                "priority": 5,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": _existing_amd_gluon_refinement_prompt(),
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="dominated by plain/shared"):
+        _parse_llm_response(
+            payload,
+            FakeAgentClass,
+            expected_extension_slots=0,
+            gluon_feature_mode="force_l0_anchor",
+            feature_meta=feature_meta,
+        )
+
+
+def test_existing_amd_gluon_portfolio_rules_do_not_affect_plain_triton_tasks() -> None:
+    payload = json.dumps(
+        [
+            {
+                "label": f"triton-plain-{idx}",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "\n".join(
+                    [
+                        "Base Set task",
+                        "Implementation layer: plain_triton",
+                        "required_output_dialect: plain_triton",
+                        "Base family: base_hot_path_streamline",
+                        f"Optimization direction: plain Triton direction {idx}",
+                        "Allowed change: one plain Triton optimization only",
+                    ]
+                ),
+            }
+            for idx in range(4)
+        ]
+    )
+
+    tasks = _parse_llm_response(
+        payload,
+        FakeAgentClass,
+        expected_extension_slots=0,
+        gluon_feature_mode="force_l0_anchor",
+        feature_meta=_gluon_feature_meta("plain_triton"),
+    )
+
+    assert len(tasks) == 4
+    assert all(_is_plain_competitor_task(task) for task in tasks)
+
+
+def test_generated_overlay_stays_strict_even_with_existing_amd_gluon_feature_meta() -> None:
+    feature_meta = {
+        **_gluon_feature_meta("amd_gluon"),
+        "source_origin": "existing_amd_gluon_operator",
+    }
+    payload = json.dumps(
+        [
+            {
+                "label": "generated-overlay",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": _gluon_overlay_prompt(extra=["source_origin: generated_overlay"]),
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match="expected at most 0 AMD Gluon Extension"):
+        _parse_llm_response(
+            payload,
+            FakeAgentClass,
+            expected_extension_slots=0,
+            feature_meta=feature_meta,
+        )
+
+
+def test_plain_subkernel_refine_is_not_gluon_extension_for_existing_source() -> None:
+    payload = json.dumps(
+        [
+            {
+                "label": "plain-reduce-subkernel",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": "\n".join(
+                    [
+                        "Existing AMD Gluon source contains a plain helper.",
+                        "source_origin: existing_amd_gluon_operator",
+                        "Task type: plain_subkernel_refine",
+                        "Implementation layer: plain_triton",
+                        "required_output_dialect: plain_triton",
+                        "Base family: base_split_k_or_multipass_reduce",
+                        "Optimization direction: refine the plain reduction helper",
+                        "Target component: reduction_accumulator",
+                        "Allowed change: optimize one reduction_accumulator path only",
+                    ]
+                ),
+            },
+        ]
+    )
+
+    tasks = _parse_llm_response(payload, FakeAgentClass, expected_extension_slots=0)
+
+    assert tasks[0].config["required_output_dialect"] == "plain_triton"
+    assert _is_plain_competitor_task(tasks[0])
+    assert not _is_gluon_extension_task(tasks[0])
 
 
 def test_audit_rejects_l0_overlay_missing_execution_boundary() -> None:

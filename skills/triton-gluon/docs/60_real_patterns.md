@@ -42,6 +42,7 @@ Use this as the worker-side "how to write this family" map. It complements
 | GEMM / FP8 / FP4 / scaled dot | `real_operator_patterns`, `optimization_paths_by_kernel_family`; `50_api_reference.md` matrix ladders | Result layout and operand layouts first; scales/epilogue before shared or scheduler tuning. |
 | preshuffled / descriptor / JIT-AOT artifact | `source_first_triggers`, `operator_local_support_matrix`, `repo_local_notes` | Preserve unshuffle/artifact/fallback wiring before changing kernel body details. |
 | wrapper-heavy / multi-stage pipeline | `benchmark_boundary_and_integration_costs` | State measurement boundary and same-ABI comparison before proposing Gluon as a win. |
+| existing AMD Gluon production source | `existing_amd_gluon_in_dialect_refinement`, then one row from `20_component_traits.md` | Preserve source contract and change one in-dialect atomic component. |
 | unknown or mixed family | `20_component_traits.md` `worker_atomic_component_routes` | Do not default to whole-kernel Gluon; choose one local atomic component or keep Base/plain Triton. |
 
 Do not read this whole file for every task. Pick one row, then jump to one or
@@ -182,6 +183,56 @@ first Gluon rewrite for scalar or simple vector paths. Move to
 `buffer_load` / `buffer_store` only when target family, existing AMD structure,
 or access pattern justifies it.
 
+## existing_amd_gluon_in_dialect_refinement
+
+Use this only for tasks with `source_origin=existing_amd_gluon_operator`.
+Preserve the measured production path before optimizing:
+
+- public wrapper ABI and import path;
+- target guards and JIT/AOT fallback;
+- prebuilt artifact or descriptor selection;
+- existing layout declarations and `gl.constexpr` contracts;
+- benchmark output feeding path.
+
+Start each task by writing a route check:
+
+```text
+Measured wrapper:
+Called AMD Gluon symbol:
+Fallback / shape / target guard:
+Target component:
+Output feeding path:
+Rollback condition:
+```
+
+Then modify one in-dialect atomic component. Good round-1 components include a
+single load/store path, one matrix operand or accumulator boundary, one softmax
+or reduction state update, one output store, or one explicit shape-dispatch
+decision. Do not combine wrapper dispatch, matrix layout, reduction state, and
+partition/scheduler policy in the same first patch.
+
+Use lightweight search-width judgment instead of new metadata. If the source is
+already deeply AMD Gluon or source-first/JIT-AOT heavy, spend the first width on
+1-3 in-dialect refinements and keep plain/shared tasks only for fallback, plain
+subkernels, portable comparison, mixed evidence, or a safe-anchor check. If the
+kernel is tiny, latency-bound, or semantically simple, start with one narrow
+refinement and stop on regression unless one named removable overhead is visible.
+If the input is mixed and a measured hot subkernel is still plain `@triton.jit`,
+route that task as `plain_subkernel_refine`; do not force it into AMD Gluon.
+High-coupling combinations stay as `defer_composition` until component evidence
+exists.
+
+Patch iteration:
+
+- `patch_0` proves correctness for one component, not a bundled rewrite.
+- If correctness passes and performance improves, keep the component and record
+  any later `compose_later:<component>` candidate.
+- If correctness passes but regresses, try at most one named removable overhead;
+  otherwise record `revert_or_stop_not_viable`.
+- If compile/layout fails, the next patch fixes only that failure layer.
+- If the route is helper-only or not measured, the next patch fixes wiring and
+  output feeding only.
+
 ## extension_l0_scope_for_layout_heavy_kernels
 
 For layout-heavy kernels, Extension L0 should establish a small compileable
@@ -248,16 +299,20 @@ Use this overhead record for slower correctness-passing L0 anchors:
 L0 overhead attribution:
 - observed_speedup:
 - not_viable_for_l1: true|false
-- overhead_source: layout_padding | layout_conversion | extra_launch_or_dispatch | tiny_stage_overhead | memory_path_overhead | unknown
+- overhead_source: host_layout_construction | layout_padding | layout_conversion | extra_launch_or_dispatch | mask_path_overhead | typed_fallback_overhead | loop_invariant_overhead | small_stage_launch_params | tiny_stage_overhead | memory_path_overhead | unknown
 - evidence: <which shape/path showed the cost>
-- removable_by_next_task: <named removable cost, or none>
+- removable_by_next_task: <named removable cost, or none after checking concrete sub-sources>
 ```
 
 Tiny whole-helper or 1D reduction anchors often regress because the work is too
 small to amortize layout/JIT costs, because the layout pads a short axis to
 wave64, or because the patch adds conversion/dispatch around an already short
-stage. Treat that as useful execution evidence, not a reason to queue MFMA,
-buffer, scheduler, or launch sweeps without a named removable overhead.
+stage. Treat `tiny_stage_overhead` as an umbrella label: first split it into
+concrete sub-sources such as host layout construction, layout padding, mask path,
+typed fallback, loop invariant, small launch params, or memory path overhead.
+Only record `removable_by_next_task: none` after those sub-sources have been
+checked or ruled out. Do not queue MFMA, buffer, scheduler, larger block, or
+larger warp experiments without a named removable overhead.
 
 If the selected scoped path cannot be implemented without touching forbidden
 paths, do not reinterpret the task as a larger Gluon rewrite. Use the task's
@@ -290,6 +345,34 @@ Low-latency / tiny-stage rule:
 - A later task may revisit the anchor only if it names the overhead it removes;
   otherwise spend the search width on Base or Shared candidates.
 
+Slow L0 removable-overhead checklist:
+
+- `host_layout_construction`: if the actual measured path includes the wrapper
+  or host dispatch and the patch introduced or calls a host layout factory on
+  every invocation, try this before widening block size or warps. Use a
+  host-side cache such as `functools.lru_cache` around the layout factory when
+  its key is only shape/config/target data and does not depend on tensors.
+- `layout_padding`: if the active dimension is smaller than the layout/block
+  dimension, record the padding ratio before treating the slowdown as
+  unavoidable.
+- `mask_path_overhead`: if the active dimension equals the block dimension or a
+  mask is statically true for a bucket, split one no-mask fast path from the
+  padded fallback path.
+- `typed_fallback_overhead`: for masked `gl.load`, prefer a typed
+  `gl.full(..., ptr.dtype.element_ty, layout=layout)` fallback over a bare
+  Python literal when dtype/layout are known.
+- `loop_invariant_overhead`: hoist shape-, split-, or sequence-derived values
+  out of a device loop only when they do not depend on that loop's index.
+- `small_stage_launch_params`: for a tiny 1D helper, verify small launch params
+  such as `num_warps=1` / `num_stages=1` instead of inheriting a main-kernel
+  config. Do not try `num_warps=4`, larger block dimensions, or padding-heavy
+  launch shapes first unless profile evidence says occupancy/layout coverage is
+  the named removable cost.
+
+Use exactly one named item per follow-up patch. This checklist is not permission
+to upgrade the task into L1, MFMA, buffer, scheduler, or whole-wrapper work. If
+no named overhead applies, record `stop_not_viable_for_l1`.
+
 Patch evolution model:
 
 - `patch_0`: smallest real executed Gluon path that can compile and pass
@@ -302,6 +385,8 @@ Patch evolution model:
   failure layer and must not add a new optimization.
 - Before the next patch, record `Changed component`, `Expected effect`,
   `Observed effect`, and `Keep / revert / compose later`.
+- For a slow correctness-passing L0, also record `Next patch decision` as either
+  `try_one_removable_overhead:<name>` or `stop_not_viable_for_l1`.
 - After helper-not-executed, fix only wiring/launch/output feeding. After a
   forbidden-scope failure, revert the forbidden change before any other edit.
   After a slow correctness pass, change only one named overhead source.

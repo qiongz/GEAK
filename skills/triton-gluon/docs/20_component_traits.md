@@ -29,6 +29,25 @@ the next patch.
 | `shape_dispatch` | shape coverage traits | Add an explicit host bucket or parametric layout under the same ABI. | Reject hidden heuristic mutation or single-shape hardcoding. |
 | `wrapper_integration` | `60_real_patterns.md` benchmark/source-first sections; launcher details in `50_api_reference.md` | Wire an already-scoped Gluon helper into the declared target path. | Treat this as integration evidence, not kernel-body tuning or a license to change public API. |
 
+Existing AMD Gluon production inputs use the same component routes, but the
+source is already the Gluon contract. Map planner components as follows:
+
+- `layout_parent_slice` -> `layout_basic` / `layout_slice_broadcast`.
+- `load_store_buffer` -> `memory_generic`, then `memory_amd_buffer` only with
+  source or benchmark evidence.
+- `matrix_operand_mfma` -> `matrix_dot` / `matrix_scaled_dot` /
+  `matrix_wmma_descriptor`.
+- `reduction_accumulator` and `state_update_softmax` -> reduction recipe plus
+  source-preserved accumulator state.
+- `epilogue_output_store` -> one store/epilogue expression after correctness.
+- `wrapper_shape_dispatch` and `source_contract_integration` -> route through
+  `60_real_patterns.md` before editing kernel body details.
+- `scheduler_launch_runtime` -> later-stage refinement after a component win.
+
+For existing AMD Gluon, preserve source-proven layout/MFMA/buffer/softmax
+structure before replacing it. Do not mechanically rebuild layouts or convert a
+plain family label into a new overlay task.
+
 Hard-case stops:
 
 - `matrix_operand`: if result layout, operand layouts, conversion boundary, and
@@ -51,6 +70,11 @@ Hard-case stops:
   overhead before claiming a performance candidate. If the first viable layout
   requires padding the active dimension to `64 * num_warps` or a larger wave64
   multiple, set `overhead_source=layout_padding` or `tiny_stage_overhead`.
+- `reduction_accumulator` / `load_store`: if a 1D reduction or small vector
+  anchor is correct but slower, check only named removable overheads before
+  widening scope: `mask_path_overhead`, `layout_padding`,
+  `typed_fallback_overhead`, `host_layout_construction`,
+  `loop_invariant_overhead`, and `small_stage_launch_params`.
 - `load_store`: a generic `gl.load` / `gl.store` rewrite on a tiny stage proves
   execution and API viability. Do not infer a memory-path win until the task
   names a hot memory path, removable transaction cost, or buffer-op precondition.
@@ -247,6 +271,27 @@ Rules:
 - For tiny or latency-bound stages, generic `gl.load` / `gl.store` is usually an
   execution anchor. Record `tiny_stage_overhead`, `layout_padding`, or
   `memory_path_overhead` if correctness passes but the path is slower.
+- For tiny 1D or whole-helper anchors that introduce a host-created layout
+  factory, check the measurement boundary before interpreting the slowdown. If
+  the measured path includes a Python wrapper, fair runner, or full operator,
+  layout construction can be on the timed path; try a host-side cache only when
+  the layout depends on shape/config/target constants and not tensors.
+- Masked vector paths should use typed Gluon fallback values such as
+  `gl.full(..., ptr.dtype.element_ty, layout=layout)` when dtype/layout are
+  known. A no-mask fast path is a single-variable follow-up candidate when the
+  active dimension equals the block dimension; it is not mandatory in patch 0.
+- Loop-invariant hoists are follow-up experiments, not semantic rewrites. Hoist
+  one expression only when it provably does not depend on the device loop index;
+  revert if correctness or any benchmark shape regresses.
+- If the stage is a small vector path, do not expand to matrix, buffer,
+  scheduler, or wrapper work just because generic memory is slower. First record
+  whether a single removable overhead exists: no-mask fast path
+  (`mask_path_overhead`), typed `gl.full` fallback
+  (`typed_fallback_overhead`), host layout cache
+  (`host_layout_construction`), loop invariant hoist
+  (`loop_invariant_overhead`), or `small_stage_launch_params`.
+- Record layout padding explicitly, including the active dimension versus padded
+  block/layout dimension, before using `tiny_stage_overhead` as the summary.
 - If a single load/store anchor cannot feed measured output without converting a
   matrix, reduction, wrapper, or whole helper, return to
   `10_search_policies.md::l0_scope_classification` instead of widening the
@@ -351,6 +396,12 @@ Do not treat gfx1250 as CDNA with renamed APIs.
 - If correctness passes but speed regresses on every shape, mark the anchor as
   `not_viable_for_l1=true` unless a later task names a removable reduction,
   padding, or conversion cost.
+- Slow tiny reductions should use the same named-overhead filter as small
+  load/store anchors: `mask_path_overhead`, `layout_padding`,
+  `typed_fallback_overhead`, `host_layout_construction`,
+  `loop_invariant_overhead`, or `small_stage_launch_params`. Try at most one
+  such source in a follow-up patch; otherwise stop instead of widening into
+  matrix, buffer, scheduler, or wrapper changes.
 
 ### Trait: shape_coverage_unknown
 

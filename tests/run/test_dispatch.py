@@ -962,6 +962,26 @@ def test_save_and_test_rejects_required_gluon_plain_fallback(tmp_path) -> None:
     assert "PATCH_CONTRACT_FAILED" in result["output"]
 
 
+def test_save_and_test_rejects_required_gluon_empty_patch_before_benchmark(tmp_path) -> None:
+    tool = SaveAndTestTool()
+    tool._get_patch_content = lambda: ""  # type: ignore[method-assign]
+    tool.set_context(
+        SaveAndTestContext(
+            cwd=str(tmp_path),
+            test_command="false",
+            timeout=5,
+            patch_output_dir=None,
+            required_output_dialect="amd_gluon",
+        )
+    )
+
+    result = tool(description="empty required gluon patch")
+
+    assert result["returncode"] == 1
+    assert "empty/no-change patch" in result["output"]
+    assert "Do not benchmark baseline noise" in result["output"]
+
+
 def test_save_and_test_allows_plain_config_only_patch(tmp_path) -> None:
     tool = SaveAndTestTool()
     tool._get_patch_content = lambda: "\n".join(  # type: ignore[method-assign]

@@ -26,6 +26,19 @@ NV_GLUON_DIALECT = "nv_gluon"
 AMD_GLUON_DIALECT = "amd_gluon"
 ALL_INPUT_DIALECTS = frozenset((PLAIN_TRITON_DIALECT, NV_GLUON_DIALECT, AMD_GLUON_DIALECT))
 
+SOURCE_ORIGIN_GENERATED_OVERLAY = "generated_overlay"
+SOURCE_ORIGIN_EXISTING_AMD_GLUON_OPERATOR = "existing_amd_gluon_operator"
+SOURCE_ORIGIN_NV_GLUON_TRANSLATION = "nv_gluon_translation"
+SOURCE_ORIGIN_UNKNOWN = "unknown"
+ALL_SOURCE_ORIGINS = frozenset(
+    (
+        SOURCE_ORIGIN_GENERATED_OVERLAY,
+        SOURCE_ORIGIN_EXISTING_AMD_GLUON_OPERATOR,
+        SOURCE_ORIGIN_NV_GLUON_TRANSLATION,
+        SOURCE_ORIGIN_UNKNOWN,
+    )
+)
+
 GLUON_FEATURE_MODE_OFF = "off"
 GLUON_FEATURE_MODE_AUTO = "auto"
 GLUON_FEATURE_MODE_FORCE = "force"
@@ -353,6 +366,61 @@ def infer_input_dialect(
     return AMD_GLUON_DIALECT
 
 
+def _normalize_source_origin(value: Any) -> str | None:
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    aliases = {
+        "generated": SOURCE_ORIGIN_GENERATED_OVERLAY,
+        "generated-overlay": SOURCE_ORIGIN_GENERATED_OVERLAY,
+        "generated_overlay": SOURCE_ORIGIN_GENERATED_OVERLAY,
+        "existing": SOURCE_ORIGIN_EXISTING_AMD_GLUON_OPERATOR,
+        "existing-amd-gluon": SOURCE_ORIGIN_EXISTING_AMD_GLUON_OPERATOR,
+        "existing_amd_gluon": SOURCE_ORIGIN_EXISTING_AMD_GLUON_OPERATOR,
+        "existing-amd-gluon-operator": SOURCE_ORIGIN_EXISTING_AMD_GLUON_OPERATOR,
+        "existing_amd_gluon_operator": SOURCE_ORIGIN_EXISTING_AMD_GLUON_OPERATOR,
+        "nv-translation": SOURCE_ORIGIN_NV_GLUON_TRANSLATION,
+        "nv_gluon_translation": SOURCE_ORIGIN_NV_GLUON_TRANSLATION,
+        "nvidia_gluon_translation": SOURCE_ORIGIN_NV_GLUON_TRANSLATION,
+        "unknown": SOURCE_ORIGIN_UNKNOWN,
+    }
+    text = aliases.get(text, text)
+    return text if text in ALL_SOURCE_ORIGINS else None
+
+
+def infer_source_origin(
+    kernel_path: Path,
+    kernel_type: str = "unknown",
+    *,
+    input_dialect: str,
+    content: str | None = None,
+) -> str:
+    """Infer task-planning source origin without weakening generated-overlay audit.
+
+    The existing AMD Gluon refinement path is enabled only when the normalized
+    input dialect is AMD Gluon and the measured source text contains an executed
+    Gluon kernel marker. Ambiguous files stay ``unknown`` so downstream audit
+    keeps the stricter generated-overlay assumptions.
+    """
+    normalized_kernel_type = str(kernel_type or "").strip().lower()
+    if normalized_kernel_type != "triton":
+        return SOURCE_ORIGIN_UNKNOWN
+    normalized_input = _normalize_input_dialect(input_dialect)
+    if normalized_input == NV_GLUON_DIALECT:
+        return SOURCE_ORIGIN_NV_GLUON_TRANSLATION
+    if normalized_input != AMD_GLUON_DIALECT:
+        return SOURCE_ORIGIN_UNKNOWN
+
+    text = _read_kernel_text(kernel_path, content).lower()
+    if "@gluon.jit" not in text:
+        return SOURCE_ORIGIN_UNKNOWN
+    if any(marker in text for marker in _NV_GLUON_MARKERS) and not any(
+        marker in text for marker in _AMD_GLUON_MARKERS
+    ):
+        return SOURCE_ORIGIN_UNKNOWN
+    return SOURCE_ORIGIN_EXISTING_AMD_GLUON_OPERATOR
+
+
 def derive_allowed_output_dialects(input_dialect: str, gluon_feature_mode: str) -> list[str]:
     """Derive the output search space from the input dialect and feature gate."""
     if gluon_feature_mode == GLUON_FEATURE_MODE_FORCE:
@@ -634,6 +702,7 @@ def build_gluon_feature_metadata(
     benchmark_shape_count: Any = None,
     benchmark_test_cases: Any = None,
     shape_coverage_profile: Any = None,
+    source_origin: Any = None,
     content: str | None = None,
 ) -> dict[str, Any]:
     """Build the shared Gluon feature metadata contract."""
@@ -697,10 +766,17 @@ def build_gluon_feature_metadata(
             benchmark_test_cases=normalized_test_cases,
         )
     )
+    normalized_source_origin = _normalize_source_origin(source_origin) or infer_source_origin(
+        kernel_path,
+        kernel_type,
+        input_dialect=normalized_input_dialect,
+        content=content,
+    )
 
     return {
         "kernel_type": str(kernel_type or "unknown").strip().lower() or "unknown",
         "input_dialect": normalized_input_dialect,
+        "source_origin": normalized_source_origin,
         "gluon_feature_mode": normalized_feature_mode,
         "gluon_baseline_profile": normalized_profile,
         "allowed_output_dialects": normalized_outputs,
@@ -924,6 +1000,7 @@ class KernelMeta:
     preferred_output_dialects: list[str] = field(default_factory=lambda: list(DEFAULT_ALLOWED_OUTPUT_DIALECTS))
     output_dialect_search_policy: str = PLAIN_TRITON_ONLY_SEARCH_POLICY
     target_backend: str = DEFAULT_TARGET_BACKEND
+    source_origin: str = SOURCE_ORIGIN_UNKNOWN
 
 
 @dataclass
@@ -962,6 +1039,7 @@ class KernelInfo(KernelMeta):
             preferred_output_dialects=list(self.preferred_output_dialects),
             output_dialect_search_policy=self.output_dialect_search_policy,
             target_backend=self.target_backend,
+            source_origin=self.source_origin,
         )
 
 
@@ -1259,6 +1337,7 @@ class DiscoveryResult:
                 benchmark_shape_count=kernel_info.get("benchmark_shape_count"),
                 benchmark_test_cases=kernel_info.get("benchmark_test_cases"),
                 shape_coverage_profile=kernel_info.get("shape_coverage_profile"),
+                source_origin=kernel_info.get("source_origin"),
             )
 
             _build_info: BuildInfo | None = None
@@ -1293,6 +1372,7 @@ class DiscoveryResult:
                     preferred_output_dialects=list(feature_meta["preferred_output_dialects"]),
                     output_dialect_search_policy=feature_meta["output_dialect_search_policy"],
                     target_backend=feature_meta["target_backend"],
+                    source_origin=feature_meta["source_origin"],
                 )
             )
         tests = [

@@ -755,6 +755,7 @@ def run_preprocessor(
             or os.getenv("GEAK_GLUON_BASELINE_PROFILE"),
             allowed_output_dialects=kernel_info.get("allowed_output_dialects"),
             target_backend=target_backend or kernel_info.get("target_backend") or os.getenv("GEAK_TARGET_BACKEND"),
+            source_origin=kernel_info.get("source_origin"),
         )
         kernel_info.setdefault("file", str(Path(kernel_path).resolve()))
         kernel_info.setdefault("name", Path(kernel_path).stem)

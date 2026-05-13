@@ -178,9 +178,19 @@ Planner task prompts and worker strategy notes have different contracts:
   (`optimization_direction_metadata_sets`, `dialect_contract_metadata`, and
   `gluon_doc_gate_metadata`). Workers should treat task metadata as the contract,
   but should not copy or extend planner schemas while editing.
-- Worker strategy notes must include `Gluon knowledge lookup plan`,
-  `Gluon implementation plan`, `Performance hypothesis`, `Same ABI comparison`,
-  and `Patch evolution` before the first edit.
+- Any task that enters Gluon worker docs/context must include `Gluon knowledge
+  lookup plan`, `Gluon implementation plan`, `Performance hypothesis`, `Same ABI
+  comparison`, and `Patch evolution` before the first edit. This includes
+  generated Gluon overlays, L1/Hybrid/mixed tasks that edit a Gluon path,
+  required `amd_gluon` tasks, and existing AMD Gluon in-dialect refinements.
+- Base/plain Triton tasks are not forced into this Gluon state machine. A
+  `plain_subkernel_refine` task with `required_output_dialect=plain_triton`
+  should keep ordinary strategy notes and no-regression benchmark comparison,
+  not Gluon lookup/layout/execution-route notes.
+- Strategy notes must be useful before and after each patch, not only as a final
+  summary. Preserve the fields needed to choose the next patch: `Required
+  execution route`, `Same ABI comparison`, `Layout plan`, `Overhead
+  attribution`, and `Next patch decision`.
 
 The worker implementation plan is intentionally concise in this entrypoint.
 It must name the scoped subpath/component, same-ABI comparison, freeze contract,
@@ -201,6 +211,34 @@ Required execution route:
 - Required target load/store or reduction path:
 - Output feeding path:
 - Proof after patch:
+```
+
+For any task where the declared measurement boundary may differ from the actual
+`save_and_test` or task-runner boundary, add this reconciliation before editing:
+
+```text
+Measurement boundary reconciliation:
+- Declared boundary: kernel_only | fair_make_inputs_run_kernel | full_operator
+- Actual save_and_test / task-runner path:
+- Host work included in measured timing: yes|no|unknown
+- Host layout / dispatch overhead risk:
+- Consequence for next patch:
+```
+
+If the actual runner goes through a Python wrapper or fair/full boundary, host
+layout factories, wrapper dispatch, and cache construction can be measured even
+when the task says `kernel_only`.
+
+For slow correctness-passing L0 anchors, add this post-patch decision block:
+
+```text
+Next patch decision:
+- measurement boundary:
+- same ABI / public wrapper preserved: yes|no
+- fair-boundary host overhead risk:
+- Layout plan: gl.arange / gl.zeros / masked load-store / store layout / dtype fallback
+- Overhead attribution: <one or more named sources>
+- Decision: try_one_removable_overhead:<name> | stop_not_viable_for_l1
 ```
 
 `required_patch_target_symbols` must be callable symbols or explicit route
@@ -234,15 +272,20 @@ Hard rules:
 - For `extension_intent=execution_anchor`, slower correctness-passing L0 is
   overhead evidence. Record the overhead source and do not expand the same scope
   into L1 unless a later task names a removable overhead.
+- `tiny_stage_overhead` is an umbrella label, not a stop condition. Before
+  writing `removable_by_next_task: none` or `stop_not_viable_for_l1`, check
+  whether a concrete single-variable overhead applies: host layout construction,
+  layout padding, mask path, typed fallback, loop invariant, small launch params,
+  or memory path overhead.
 - Use this compact overhead template for slower L0 anchors:
 
 ```text
 L0 overhead attribution:
 - observed_speedup:
 - not_viable_for_l1: true|false
-- overhead_source: layout_padding | layout_conversion | extra_launch_or_dispatch | tiny_stage_overhead | memory_path_overhead | unknown
+- overhead_source: layout_padding | layout_conversion | host_layout_construction | mask_path_overhead | typed_fallback_overhead | loop_invariant_overhead | small_stage_launch_params | tiny_stage_overhead | memory_path_overhead | unknown
 - evidence:
-- removable_by_next_task:
+- Next patch decision: try_one_removable_overhead:<name> | stop_not_viable_for_l1
 ```
 
 - If a scoped L0 cannot be implemented without touching forbidden paths, do not
@@ -396,6 +439,22 @@ Rules:
   defaults to host-created layouts; existing production source may preserve
   in-kernel `gl.constexpr` layout declarations. Runtime layout objects remain
   invalid.
+
+Existing AMD Gluon refinement notes:
+
+- Only tasks with `source_origin=existing_amd_gluon_operator` may use the
+  in-dialect refinement path.
+- Before editing, write `source contract preserved:` with the public wrapper,
+  target/JIT/AOT guard, fallback or artifact route, layout declarations, and
+  measured output feeding path.
+- Write `single primary component:` and keep `patch_0` to that component.
+- Write `rollback condition:` before changing wrapper dispatch, shape dispatch,
+  matrix layout, reduction state, or partition/scheduler policy.
+- After each patch, record `keep/revert/compose-later:`. Use
+  `compose_later:<components>` when multiple components are needed; do not
+  silently widen the current task.
+- If the target is a plain `@triton.jit` subkernel, report task correction to
+  `plain_subkernel_refine` instead of forcing AMD Gluon output.
 
 ## measurement_boundary_contract
 

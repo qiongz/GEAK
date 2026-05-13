@@ -232,6 +232,18 @@ class SaveAndTestTool:
 
             if not patch_content.strip():
                 self._log("[SaveAndTest] No changes detected, baseline running.")
+                required_output = str(ctx.required_output_dialect or "").strip().lower()
+                if required_output == "amd_gluon":
+                    contract_error = (
+                        "PATCH_CONTRACT_FAILED: required AMD Gluon task produced an empty/no-change patch. "
+                        "Do not benchmark baseline noise as a candidate; either edit the required Gluon target path "
+                        "or report `revert_or_stop_not_viable` / `no_viable_patch`."
+                    )
+                    self._log(f"\n[SaveAndTest] Patch contract failed:\n{contract_error}")
+                    if ctx.patch_output_dir:
+                        self._save_patch_file(patch_name, patch_content)
+                        self._save_test_output(patch_name, contract_error)
+                    return {"output": contract_error, "returncode": 1}
             else:
                 contract_error = self._check_patch_contract(patch_content)
                 if contract_error:

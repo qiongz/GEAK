@@ -10,6 +10,7 @@ Implementation details live in worker-routed docs (`20_component_traits.md`,
 
 - `### Search policy: optimization_direction_metadata_sets`
 - `### Search policy: optimization_direction_dialect_overlay`
+- `### Search policy: existing_amd_gluon_refinement_policy`
 - `### Search policy: overlay_direction_vs_mechanism`
 - `### Search policy: atomic_component_lattice`
 - `### Search policy: l0_scope_decision_before_emit`
@@ -105,6 +106,106 @@ Examples:
 Do not emit a generic "rewrite to Gluon" task. A Gluon task must name the
 optimization direction it implements and the single allowed component it changes
 in the next patch.
+
+### Search policy: existing_amd_gluon_refinement_policy
+
+Use this policy only when `input_dialect=amd_gluon` and
+`source_origin=existing_amd_gluon_operator`. Missing or unknown origin stays on
+the generated-overlay path.
+
+Plain Triton family names remain useful, but they become performance taxonomy
+labels rather than mandatory Base tasks. For production AMD Gluon input, plan by:
+
+```text
+kernel_family_signal
+-> atomic_component_graph
+-> coupling / execution-boundary decision
+-> task_type
+-> doc_profile + failure_layers
+```
+
+Search width is a planner recommendation, not a new metadata schema. Use source
+evidence, shape profile, prior Gluon signal, and component coupling to decide
+whether to emit one narrow refinement or up to three distinct refinements, but
+do not add persistent fields such as `gluon_depth`, `complexity_level`, or
+`recommended_slots`. Keep the task contract on existing fields: `Task type`,
+`Kernel family signal`, `Target component`, `Allowed change`,
+`required_output_dialect`, `gluon_doc_profile`, and concrete target symbols.
+
+Kernel family signals only route search focus:
+
+- `attention_decode_kv_cache`: paged KV, QK/PV, softmax, partition reduce, shape
+  or persistent dispatch.
+- `logits_or_small_reduction`: logits, tiny stages, row/block reductions, low
+  latency paths.
+- `gemm_or_scaled_dot`: GEMM, scaled dot, MFMA/WMMA, accumulator and epilogue.
+- `memory_or_elementwise`: load/store, masks, casts, dtype, output store.
+- `wrapper_shape_dispatch`: public ABI, shape bucket, partition, PS/persistent
+  path, fallback selection.
+- `descriptor_or_source_first`: descriptor, preshuffle/unshuffle, JIT/AOT,
+  artifact or target guard.
+
+Atomic components produce dispatchable tasks:
+
+- `wrapper_shape_dispatch`
+- `layout_parent_slice`
+- `load_store_buffer`
+- `matrix_operand_mfma`
+- `reduction_accumulator`
+- `state_update_softmax`
+- `epilogue_output_store`
+- `scheduler_launch_runtime`
+- `source_contract_integration`
+
+Task types:
+
+```text
+amd_gluon_in_dialect_refine
+amd_gluon_layout_or_matrix_refine
+amd_gluon_shape_dispatch_refine
+plain_subkernel_refine
+shared_or_plain_comparison
+defer_composition
+```
+
+Existing AMD Gluon refinement prompt contract:
+
+```text
+source_origin: existing_amd_gluon_operator
+Task type: amd_gluon_in_dialect_refine | amd_gluon_layout_or_matrix_refine | amd_gluon_shape_dispatch_refine
+Implementation layer: amd_gluon in-dialect refinement
+required_output_dialect: amd_gluon
+gluon_tl_policy: production_source_allowed
+layout_construction_policy: source_preserve
+Kernel family signal: <family signal>
+Target component: <one atomic component>
+Allowed change: <one component-local change>
+Failure layers: <route/layout/matrix/reduction/memory/wrapper as applicable>
+Measurement boundary: kernel_only | fair_make_inputs_run_kernel | full_operator
+Comparison target: true_baseline | safe_anchor
+Reject if: correctness fails or any benchmark shape regresses
+```
+
+`Target component` is a routing label, not a concrete diff target. Required patch
+targets must come from `Target symbol`, backticked local names, or scoped groups
+such as `components(...)`, `expressions(...)`, `loads(...)`, or `stores(...)`.
+Do not let abstract atomic components such as `state_update_softmax` or
+`load_store_buffer` become `required_patch_target_symbols`.
+
+Coupling rule:
+
+- Low coupling single-component changes may dispatch in round 1.
+- Medium coupling changes must state measurement boundary, ABI risk, and rollback
+  condition.
+- High coupling combinations that change wrapper dispatch, matrix layout,
+  softmax/reduction state, partition policy, or scheduler policy together should
+  become `defer_composition` until prior evidence exists.
+- If the target symbol is still a plain `@triton.jit` subkernel, use
+  `plain_subkernel_refine` and `required_output_dialect=plain_triton`.
+- For round 1, give each dispatchable refinement exactly one `Allowed change`.
+  If the prompt lists softmax state, MFMA accumulator, value-load reordering,
+  quant scale, scheduler, and shape policy together, it is a composition note,
+  not a dispatchable refinement.
 
 ### Search policy: overlay_direction_vs_mechanism
 
@@ -661,6 +762,10 @@ Round 1:
 
 - choose optimization directions from the standard Triton priority order;
 - fill mandatory plain Triton competitors for high-value directions;
+- for `source_origin=existing_amd_gluon_operator`, treat those same direction
+  names as taxonomy and emit 1-3 narrow in-dialect AMD Gluon refinements instead
+  of mandatory Base coverage. Plain/shared tasks are optional comparison,
+  fallback, portable-component, or plain-subkernel work;
 - include at most one Extension L0 when a concrete Gluon overlay reason exists;
   that L0 must name the exact same-batch Base/plain `Plain competitor` it
   overlays. Shared or paired tasks are not valid plain competitors;

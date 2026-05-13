@@ -70,6 +70,72 @@ def test_named_case_latencies_are_totaled_for_baseline_objective() -> None:
     assert extract_latency_ms(output) == pytest.approx(0.1124)
 
 
+def test_multi_shape_json_marker_overrides_single_latency_for_best_patch(tmp_path: Path) -> None:
+    root = tmp_path / "generic_kernel"
+    patch_dir = root / "results" / "round_1" / "gluon-l0-json-shapes"
+    patch_dir.mkdir(parents=True)
+    tasks_dir = root / "tasks" / "round_1"
+    tasks_dir.mkdir(parents=True)
+
+    from minisweagent.run.task_file import write_task_file
+
+    write_task_file(
+        tasks_dir / "05_gluon-l0-json-shapes.md",
+        {
+            "label": "gluon-l0-json-shapes",
+            "required_output_dialect": "amd_gluon",
+            "extension_intent": "execution_anchor",
+            "expected_outcome": "correctness_anchor_not_speedup",
+            "not_viable_for_l1_if_slower_than_base": True,
+            "overhead_source_to_record": "tiny_stage_overhead",
+        },
+        "Extension L0\n",
+    )
+    baseline_text = (
+        'GEAK_BENCHMARK_RESULTS_MS={"mqa-logits-512": 0.085759, '
+        '"mqa-logits-1024": 0.123999, "mqa-logits-2048": 0.108519}\n'
+    )
+    candidate_text = (
+        'GEAK_BENCHMARK_RESULTS_MS={"mqa-logits-512": 0.099018, '
+        '"mqa-logits-1024": 0.116379, "mqa-logits-2048": 0.153038}\n'
+        "GEAK_RESULT_LATENCY_MS=0.116379\n"
+    )
+    (root / "benchmark_baseline.txt").write_text(baseline_text)
+    (patch_dir / "patch_1.patch").write_text(
+        "diff --git a/kernel.py b/kernel.py\n+from triton.experimental import gluon\n+@gluon.jit\n+def kernel_gluon(x):\n+    return x\n+kernel_gluon[grid](x)\n"
+    )
+    (patch_dir / "patch_1_test.txt").write_text(candidate_text)
+
+    expected_candidate_shapes = {
+        "mqa-logits-512": 0.099018,
+        "mqa-logits-1024": 0.116379,
+        "mqa-logits-2048": 0.153038,
+    }
+    assert parse_shape_latencies_ms(candidate_text) == expected_candidate_shapes
+    assert preprocess_benchmark_parsing.parse_shape_latencies_ms(candidate_text) == expected_candidate_shapes
+    assert extract_latency_ms(candidate_text) == pytest.approx(0.116379)
+
+    post = compute_best_patch(patch_dir)
+    pre = preprocess_benchmark_parsing.compute_best_patch(patch_dir)
+
+    assert post is not None
+    assert pre is not None
+    for result in (post, pre):
+        assert result["baseline_latency_ms"] == pytest.approx(0.318277)
+        assert result["candidate_latency_ms"] == pytest.approx(0.368435)
+        assert result["best_patch_speedup"] == pytest.approx(0.863862)
+        assert result["candidate_shape_latency_ms"] == expected_candidate_shapes
+        assert result["per_shape_speedups"]
+        assert result["objective"] == "total_shape_latency_ms"
+        assert result["gluon_l1_anchor_viability"] != "viable_for_l1"
+        assert result["not_viable_for_l1"] is True
+        assert result["overhead_source"] == "tiny_stage_overhead"
+        assert result["overhead_attribution_incomplete"] is True
+        assert "concrete removable-overhead attribution" in result["overhead_attribution_warning"]
+        assert result["has_significant_shape_regression"] is True
+        assert result["gluon_evidence_summary"] == "executed_slower"
+
+
 def test_required_output_dialect_uses_layer_metadata_before_search_set() -> None:
     assert (
         _required_output_dialect(
@@ -897,6 +963,8 @@ def test_compute_best_patch_marks_slower_execution_anchor_not_viable_for_l1(tmp_
     assert result["gluon_l1_anchor_viability"] == "not_viable_for_l1"
     assert result["not_viable_for_l1"] is True
     assert result["overhead_source"] == "launch_layout_overhead"
+    assert result["overhead_attribution_incomplete"] is False
+    assert result["overhead_attribution_warning"] is None
 
 
 def test_compute_best_patch_rejects_forbidden_scope_patch(tmp_path: Path) -> None:

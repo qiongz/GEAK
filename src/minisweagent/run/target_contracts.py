@@ -13,6 +13,31 @@ _STAGE_SCOPE_RE = re.compile(
     re.IGNORECASE,
 )
 _DO_NOT_RE = re.compile(r"^\s*(?:do\s+not|don't)\s+(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
+_ABSTRACT_ATOMIC_COMPONENT_SYMBOLS = frozenset(
+    {
+        "wrapper_shape_dispatch",
+        "layout_parent_slice",
+        "load_store_buffer",
+        "matrix_operand_mfma",
+        "reduction_accumulator",
+        "state_update_softmax",
+        "epilogue_output_store",
+        "scheduler_launch_runtime",
+        "source_contract_integration",
+        "index_map",
+        "mask_boundary",
+        "load_store",
+        "layout_broadcast",
+        "matrix_operand",
+        "scale_dtype",
+        "selection_update",
+        "state_update",
+        "epilogue_fusion",
+        "shape_dispatch",
+        "wrapper_integration",
+        "scheduler_launch",
+    }
+)
 
 
 def _normalize_stage_symbol(value: str) -> str:
@@ -48,6 +73,20 @@ def target_symbols_from_scoped_text(value: str | None) -> list[str]:
         else:
             symbols.append(symbol.strip().lower())
     return symbols
+
+
+def filter_abstract_target_symbols(symbols: list[str]) -> list[str]:
+    """Drop abstract component labels from concrete patch target symbols."""
+    filtered: list[str] = []
+    for symbol in symbols:
+        normalized = str(symbol or "").strip()
+        if not normalized:
+            continue
+        if normalized.lower() in _ABSTRACT_ATOMIC_COMPONENT_SYMBOLS:
+            continue
+        if normalized not in filtered:
+            filtered.append(normalized)
+    return filtered
 
 
 def forbidden_symbols_from_scoped_text(value: str | None) -> list[str]:

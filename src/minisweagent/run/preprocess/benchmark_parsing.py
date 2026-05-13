@@ -23,6 +23,7 @@ from typing import Any
 
 from minisweagent.run.target_contracts import (
     do_not_clauses,
+    filter_abstract_target_symbols,
     forbidden_symbols_from_scoped_text,
     patch_touches_forbidden_target_symbol,
     target_symbols_from_scoped_text,
@@ -128,6 +129,34 @@ def parse_test_case_count(output: str) -> int | None:
             if value > 0:
                 return value
     return None
+
+
+def _parse_shape_latencies_json_marker(output: str) -> dict[str, float]:
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("GEAK_BENCHMARK_RESULTS_MS="):
+            continue
+        payload = stripped.split("=", 1)[1].strip()
+        try:
+            raw = json.loads(payload)
+        except ValueError:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        parsed: dict[str, float] = {}
+        for key, value in raw.items():
+            try:
+                latency = float(value)
+            except (TypeError, ValueError):
+                parsed = {}
+                break
+            if latency <= 0:
+                parsed = {}
+                break
+            parsed[str(key)] = latency
+        if parsed:
+            return parsed
+    return {}
 
 
 def parse_performance_report_json(path: Any) -> list[dict] | None:
@@ -367,9 +396,14 @@ def parse_shape_latencies_ms(output: str) -> dict[str, float]:
     """Extract per-shape latencies from harness benchmark output.
 
     Expected formats:
+        ``GEAK_BENCHMARK_RESULTS_MS={"case_a": 0.1, "case_b": 0.2}``
         ``(32,4096): 0.0503 ms``
         ``pa_decode_small: 0.1759 ms``
     """
+    marker_latencies = _parse_shape_latencies_json_marker(output)
+    if marker_latencies:
+        return marker_latencies
+
     shape_latencies: dict[str, float] = {}
     for m in re.finditer(r"^\s*(\([^)]*\)):\s*([\d.]+(?:e[+-]?\d+)?)\s*ms\s*$", output, re.MULTILINE):
         shape_latencies[m.group(1)] = float(m.group(2))
@@ -552,6 +586,13 @@ def _has_significant_shape_regression(
 ) -> bool:
     """Return True when any parsed shape regresses beyond the noise floor."""
     return any((info.get("speedup") or 0.0) < floor for info in shape_speedups.values())
+
+
+def _shape_latencies_comparable(
+    baseline_shapes_ms: dict[str, float],
+    candidate_shapes_ms: dict[str, float],
+) -> bool:
+    return bool(baseline_shapes_ms and candidate_shapes_ms and set(baseline_shapes_ms) == set(candidate_shapes_ms))
 
 
 def _added_lines(patch_text: str) -> list[str]:
@@ -822,6 +863,11 @@ def _metadata_list(value: Any) -> list[str]:
 
 def _infer_required_patch_target_symbols(task_body: str, task_meta: dict[str, Any]) -> list[str]:
     symbols = _metadata_list(task_meta.get("required_patch_target_symbols"))
+    for key in ("target_symbol", "target_component"):
+        value = task_meta.get(key)
+        if isinstance(value, str) and value.strip():
+            symbols.extend(part.strip().strip("`") for part in value.split(","))
+            symbols.extend(target_symbols_from_scoped_text(value))
     for match in re.finditer(
         r"^\s*(?:Target symbol|Target component|Required patch target symbols?)\s*:\s*(.+?)\s*$",
         task_body,
@@ -839,7 +885,7 @@ def _infer_required_patch_target_symbols(task_body: str, task_meta: dict[str, An
     for symbol in symbols:
         if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", symbol) and symbol not in unique:
             unique.append(symbol)
-    return unique
+    return filter_abstract_target_symbols(unique)
 
 
 def _infer_forbidden_patch_target_symbols(task_body: str, task_meta: dict[str, Any]) -> list[str]:
@@ -971,6 +1017,21 @@ def _gluon_l1_anchor_viability(
     return "neutral_or_slow_anchor"
 
 
+_COARSE_OR_MISSING_OVERHEAD_SOURCES = {"", "unknown", "tiny_stage_overhead"}
+
+
+def _overhead_attribution_incomplete(anchor_viability: str, overhead_source: Any) -> tuple[bool, str | None]:
+    if anchor_viability != "not_viable_for_l1":
+        return False, None
+    normalized = str(overhead_source or "").strip().lower()
+    if normalized not in _COARSE_OR_MISSING_OVERHEAD_SOURCES:
+        return False, None
+    return (
+        True,
+        "not_viable_for_l1 needs a concrete removable-overhead attribution before treating the L0 anchor as exhausted",
+    )
+
+
 def _find_original_baseline_ms(patch_dir: Path) -> float | None:
     """Walk up from patch_dir to find benchmark_baseline.txt (the canonical baseline).
 
@@ -1048,6 +1109,8 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
     best_candidate_shape_latencies: dict[str, float] = {}
     best_candidate_shape_geomean: float | None = None
     best_has_shape_regression = False
+    best_shape_evidence_missing = False
+    best_baseline_comparison_ms = baseline_ms
     baseline_shape_geomean = _geomean_ms(baseline_shape_latencies)
     task_meta = _find_task_metadata_for_patch_dir(patch_dir)
     required_patch_target_symbols = _metadata_list(task_meta.get("required_patch_target_symbols"))
@@ -1125,6 +1188,14 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
             continue
         shape_speedups = compute_shape_speedups(baseline_shape_latencies, candidate_shape_latencies)
         has_shape_regression = _has_significant_shape_regression(shape_speedups) if shape_speedups else False
+        shape_evidence_missing = bool(len(baseline_shape_latencies) > 1 and not candidate_shape_latencies)
+        baseline_comparison_ms = baseline_ms
+        candidate_comparison_ms = candidate_ms
+        if _shape_latencies_comparable(baseline_shape_latencies, candidate_shape_latencies):
+            baseline_comparison_ms = sum(baseline_shape_latencies.values())
+            candidate_comparison_ms = sum(candidate_shape_latencies.values())
+        elif shape_evidence_missing:
+            has_shape_regression = True
         if shape_speedups and has_shape_regression and not preserves_gluon_evidence:
             logger.info(
                 "Skipping %s due to per-shape regression below %.2fx: %s",
@@ -1134,10 +1205,11 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
             )
             continue
 
-        speedup = baseline_ms / candidate_ms
+        speedup = baseline_comparison_ms / candidate_comparison_ms
         if speedup > best_speedup:
             best_speedup = speedup
-            best_candidate_ms = candidate_ms
+            best_candidate_ms = candidate_comparison_ms
+            best_baseline_comparison_ms = baseline_comparison_ms
             best_patch_id = name
             best_patch_file = str(patch_file)
             best_test_file = str(test_file)
@@ -1150,6 +1222,7 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
             best_candidate_shape_geomean = _geomean_ms(candidate_shape_latencies)
             best_shape_speedups = shape_speedups
             best_has_shape_regression = has_shape_regression
+            best_shape_evidence_missing = shape_evidence_missing
 
     if best_patch_id is None:
         return None
@@ -1161,13 +1234,14 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         best_actual_output_dialect,
     )
     gluon_execution_ok = required_output_dialect in {"amd_gluon", "mixed"}
+    anchor_shape_regression = best_has_shape_regression or best_shape_evidence_missing
     anchor_viability = _gluon_l1_anchor_viability(
         required_output_dialect=required_output_dialect,
         actual_output_dialect=best_actual_output_dialect,
         dialect_contract_satisfied=dialect_ok,
         gluon_execution_contract_satisfied=gluon_execution_ok,
         speedup=best_speedup,
-        has_shape_regression=best_has_shape_regression,
+        has_shape_regression=anchor_shape_regression,
         task_meta=task_meta,
     )
     optional_meta = {
@@ -1175,13 +1249,18 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         for key, _tag in _OPTIONAL_GLUON_RESULT_METADATA
         if task_meta.get(key) not in (None, "")
     }
+    overhead_source = task_meta.get("overhead_source_to_record") if anchor_viability != "viable_for_l1" else None
+    overhead_attribution_incomplete, overhead_attribution_warning = _overhead_attribution_incomplete(
+        anchor_viability,
+        overhead_source,
+    )
     result = {
         "best_patch_id": best_patch_id,
         "best_patch_speedup": round(best_speedup, 6),
         "best_patch_file": best_patch_file,
         "best_patch_test_output": best_test_file,
         "best_patch_size_bytes": best_patch_size,
-        "baseline_latency_ms": round(baseline_ms, 6),
+        "baseline_latency_ms": round(best_baseline_comparison_ms, 6),
         "candidate_latency_ms": round(best_candidate_ms, 6),
         "baseline_source": baseline_source,
         "baseline_shape_latency_ms": baseline_shape_latencies,
@@ -1193,7 +1272,7 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         "per_shape_speedups": best_shape_speedups,
         "objective": "total_shape_latency_ms" if best_shape_speedups else "latency_ms",
         "improves_true_baseline": best_speedup > 1.0,
-        "has_significant_shape_regression": best_has_shape_regression,
+        "has_significant_shape_regression": anchor_shape_regression,
         "required_output_dialect": required_output_dialect,
         "actual_output_dialect": best_actual_output_dialect,
         "legacy_output_dialect_classification": best_legacy_output_dialect,
@@ -1209,13 +1288,15 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         "contract_schema_version": 2,
         "gluon_l1_anchor_viability": anchor_viability,
         "not_viable_for_l1": anchor_viability == "not_viable_for_l1",
-        "overhead_source": task_meta.get("overhead_source_to_record") if anchor_viability != "viable_for_l1" else None,
+        "overhead_source": overhead_source,
+        "overhead_attribution_incomplete": overhead_attribution_incomplete,
+        "overhead_attribution_warning": overhead_attribution_warning,
         "gluon_evidence_summary": _gluon_evidence_summary(
             required_output_dialect=required_output_dialect,
             actual_output_dialect=best_actual_output_dialect,
             gluon_execution_contract_satisfied=gluon_execution_ok,
             speedup=best_speedup,
-            has_shape_regression=best_has_shape_regression,
+            has_shape_regression=anchor_shape_regression,
             per_shape_speedups=best_shape_speedups,
         ),
         "scope_compliant": True,
@@ -1226,7 +1307,7 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
         "forbidden_patch_target_symbols": forbidden_patch_target_symbols,
         "fallback_used": required_output_dialect == "amd_gluon" and best_actual_output_dialect != "amd_gluon",
         "llm_selection_analysis": (
-            f"Deterministic: baseline={baseline_ms:.4f}ms ({baseline_source}), "
+            f"Deterministic: baseline={best_baseline_comparison_ms:.4f}ms ({baseline_source}), "
             f"candidate={best_candidate_ms:.4f}ms from {best_patch_id}. "
             f"Speedup={best_speedup:.4f}x. Patch={best_patch_size}B."
         ),
