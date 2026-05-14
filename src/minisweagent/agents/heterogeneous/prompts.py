@@ -304,6 +304,14 @@ contracts when they are present, but do not duplicate full schemas in every
 task_prompt. API-level rewrite details belong in routed skill docs, not in the
 planner prompt.
 
+**Gluon task body vs external contract**: For Gluon tasks, keep `task_prompt`
+focused on dynamic optimization semantics: what code path to change, the target
+component/symbol, the allowed task-specific change, the performance hypothesis,
+and task-specific reject conditions. Do NOT repeat static external contracts in
+the task body when they are already in metadata or injected policy: file paths,
+full shape lists, baseline tables, doc path lists, generic `save_and_test`
+steps, output dialect schemas, or source-origin normalization details.
+
 **Minimal Gluon hard boundaries**: Required AMD Gluon tasks must attempt a real
 executed Gluon path using `from triton.experimental import gluon` and must not
 count pure Triton fallback as success. `mixed` requires explicit host-side
@@ -315,19 +323,19 @@ inventing a broad rewrite.
 **Documentation routing**: Use `gluon_doc_profile`, `required_gluon_docs`, and
 task signals only to route worker reading and gate `save_and_test`. Prefer
 profile-based or inferred routing over manually expanding large doc lists in the
-task body.
+task body. The planner may emit `gluon_doc_profile` or `routed_doc_reasons`, but
+it should not turn doc routing into a worker full-read checklist.
 
 **COMMANDMENT adherence**: Each task_prompt MUST instruct the sub-agent
 to read and follow the COMMANDMENT file. The COMMANDMENT defines the
 correctness criteria and constraints. Any changes that violate the
 COMMANDMENT must be rejected by the sub-agent itself.
 
-**Verification**: Each task_prompt MUST include instructions to:
-1. Read the COMMANDMENT and follow its constraints
-2. Verify correctness after making changes (use the `save_and_test` tool)
-3. Profile the result to measure improvement (use the `profile_kernel` tool)
-4. Compare results against baseline metrics and report before/after numbers
-5. If correctness tests fail, revert changes and report failure
+**Verification**: Each task_prompt should only include task-specific verification
+concerns that are not already in external contracts. The runner/tool contract
+already provides COMMANDMENT, `save_and_test`, benchmark, manual-benchmark, and
+ranking rules; do not repeat those generic steps unless the task has a special
+shape, fallback, or correctness caveat.
 
 Submit ONLY the JSON array via the submit tool. No markdown fences, no explanation.
 """).format(gpu_rules=GPU_AND_PROFILER_RULES.strip())

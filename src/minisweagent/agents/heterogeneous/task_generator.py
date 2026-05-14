@@ -267,9 +267,13 @@ def _task_config_requires_gluon_worker_docs(
     task_body: str,
     label: str,
 ) -> bool:
+    task_type = str(cfg.get("task_type") or _parse_prompt_field_value(task_body, "Task type") or "").strip().lower()
+    required_output = str(cfg.get("required_output_dialect") or "").strip().lower()
+    if task_type == "plain_subkernel_refine" or required_output == "plain_triton":
+        return False
     return task_requires_gluon_worker_docs(
         kernel_type=kernel_type,
-        required_output=str(cfg.get("required_output_dialect") or ""),
+        required_output=required_output,
         implementation_layer=str(cfg.get("implementation_layer") or ""),
         extension_layer=str(cfg.get("extension_layer") or ""),
         doc_profile=str(cfg.get("gluon_doc_profile") or ""),
@@ -2513,7 +2517,10 @@ def _build_gluon_task_generation_guidance(feature_meta: dict[str, Any]) -> str:
         lines.extend(
             [
                 "- For `source_origin=existing_amd_gluon_operator`, do not force the plain overlay model. Generate `amd_gluon_in_dialect_refine`, `amd_gluon_layout_or_matrix_refine`, or `amd_gluon_shape_dispatch_refine` tasks.",
+                "- Do not use `search_set: Extension` / `Base` or `plain-triton-*` labels to describe existing AMD Gluon in-dialect refinements; those words are reserved for generated overlays or real plain Triton work.",
+                "- For `force_l0_anchor` with `source_origin=existing_amd_gluon_operator`, interpret the mode as `force_in_dialect_refinement_anchor`, not as a generated L0 Extension overlay.",
                 "- Use plain Triton family names as performance taxonomy labels only; they do not require mandatory plain Base task coverage for existing production Gluon input.",
+                "- If the target is a plain `@triton.jit` subkernel inside the AMD Gluon operator, emit `Task type: plain_subkernel_refine`, `required_output_dialect: plain_triton`, and `Implementation layer: plain_triton`.",
                 "- Each existing refinement task must choose one primary atomic component, preserve source contracts, include `Comparison target: true_baseline|safe_anchor`, and reject correctness failure or per-shape regression.",
                 "- Each dispatchable existing refinement task must provide exactly one `Allowed change` and one concrete patch target via `Target symbol`, backticked local names, or `components(...)` / `expressions(...)`; abstract atomic components are routing labels, not target symbols.",
                 "- If the planner cannot produce multiple safe in-dialect refinements, it should submit the smaller Gluon-first portfolio instead of filling the batch with untyped plain Triton tasks.",
@@ -2582,6 +2589,8 @@ def _build_gluon_planning_contract(feature_meta: dict[str, Any]) -> str:
             [
                 "- Existing AMD Gluon task contract: use `source_origin: existing_amd_gluon_operator`, `gluon_tl_policy: production_source_allowed`, `layout_construction_policy: source_preserve`, `required_output_dialect: amd_gluon`, and `Implementation layer: amd_gluon in-dialect refinement`.",
                 "- Existing refinement tasks must include `Task type`, `Kernel family signal`, `Target component`, `Allowed change`, `Failure layers`, `Measurement boundary`, `Comparison target`, and `Reject if`.",
+                "- Existing refinement tasks are not Extension overlays; do not emit `search_set: Extension` to mean in-dialect refinement.",
+                "- `plain_subkernel_refine` inside an AMD Gluon operator is a plain Triton task with `required_output_dialect: plain_triton`, not an AMD Gluon task.",
                 "- Pick exactly one primary atomic component for `patch_0`; put secondary components in blockers/failure layers or `compose_later`, not in the allowed change.",
             ]
         )
@@ -3283,6 +3292,17 @@ _TYPED_EXISTING_AMD_GLUON_PLAIN_TASK_TYPES = {
     "plain_subkernel_refine",
     "shared_or_plain_comparison",
 }
+_FAILURE_LAYERS_BY_COMPONENT = {
+    "matrix_operand_mfma": "matrix/reduction",
+    "load_store_buffer": "memory/matrix",
+    "state_update_softmax": "reduction/layout",
+    "epilogue_output_store": "epilogue/reduction",
+    "wrapper_shape_dispatch": "wrapper/layout",
+    "layout_parent_slice": "layout",
+    "reduction_accumulator": "reduction/layout",
+    "scheduler_launch_runtime": "scheduler/launch",
+    "source_contract_integration": "source_contract/wrapper",
+}
 
 
 def _task_source_origin(task: AgentTask) -> str:
@@ -3377,6 +3397,8 @@ def _ensure_mandatory_plain_families(
 
 
 def _is_gluon_extension_task(task: AgentTask) -> bool:
+    if _task_type(task) in _NON_REFINEMENT_TASK_TYPES:
+        return False
     if _is_existing_amd_gluon_refinement_task(task):
         return False
     if (
@@ -4204,6 +4226,13 @@ def _existing_amd_gluon_refinement_warnings(task: AgentTask, tasks: list[AgentTa
     )
     if bundled_markers > 2 and "defer_composition" not in lower:
         warnings.append(f"{task.label} appears to bundle high-coupling AMD Gluon components; prefer `Task type: defer_composition` for round 1")
+    label_lower = task.label.lower()
+    if label_lower.startswith(("plain-", "plain_triton", "plain-triton", "triton-")) and _task_type(task) in _EXISTING_AMD_GLUON_REFINEMENT_TASK_TYPES:
+        warnings.append(
+            f"{task.label} label/search naming looks plain but task_type is `{_task_type(task)}`; use an amd-gluon/refine label or a typed plain_subkernel_refine task"
+        )
+    for diagnostic in task.config.get("normalization_diagnostics") or []:
+        warnings.append(f"{task.label} normalization: {diagnostic}")
     return warnings
 
 
@@ -4522,6 +4551,7 @@ def _task_audit_summary(task: AgentTask) -> dict[str, Any]:
         or "",
         "required_patch_target_symbols": task.config.get("required_patch_target_symbols") or [],
         "forbidden_patch_target_symbols": _task_forbidden_symbols(task),
+        "normalization_diagnostics": task.config.get("normalization_diagnostics") or [],
         "soft_audit_diagnostics": _gluon_l0_soft_diagnostics(task),
         "first_lines": "\n".join(task.task.splitlines()[:18]),
     }
@@ -4776,8 +4806,41 @@ def _normalize_existing_amd_gluon_task_config(
         return
     if str(feature_meta.get("input_dialect") or "").strip().lower() != "amd_gluon":
         return
+    diagnostics = cfg.setdefault("normalization_diagnostics", [])
+    task_type = str(cfg.get("task_type") or _parse_prompt_field_value(task_prompt, "Task type") or "").strip().lower()
+    if task_type:
+        cfg["task_type"] = task_type
+    if task_type == "plain_subkernel_refine":
+        if str(cfg.get("required_output_dialect") or "").strip().lower() != "plain_triton":
+            diagnostics.append("normalized plain_subkernel_refine required_output_dialect to plain_triton")
+        cfg["required_output_dialect"] = "plain_triton"
+        cfg["implementation_layer"] = "plain_triton"
+        cfg.setdefault("source_origin", SOURCE_ORIGIN_EXISTING_AMD_GLUON_OPERATOR)
+        cfg["search_set"] = "base"
+        return
+    if task_type == "shared_or_plain_comparison":
+        if str(cfg.get("required_output_dialect") or "").strip().lower() not in {"plain_triton", "mixed"}:
+            diagnostics.append("normalized shared_or_plain_comparison required_output_dialect to plain_triton")
+            cfg["required_output_dialect"] = "plain_triton"
+        cfg.setdefault("implementation_layer", "plain_triton")
+        cfg.setdefault("source_origin", SOURCE_ORIGIN_EXISTING_AMD_GLUON_OPERATOR)
+        return
+    if task_type == "defer_composition":
+        cfg["required_output_dialect"] = "any"
+        cfg["search_set"] = "shared"
+        cfg.setdefault("source_origin", SOURCE_ORIGIN_EXISTING_AMD_GLUON_OPERATOR)
+        return
+
+    if _high_coupling_existing_amd_gluon_task(task_prompt):
+        cfg["task_type"] = "defer_composition"
+        cfg["required_output_dialect"] = "any"
+        cfg["search_set"] = "shared"
+        cfg.setdefault("source_origin", SOURCE_ORIGIN_EXISTING_AMD_GLUON_OPERATOR)
+        diagnostics.append("normalized high-coupling existing AMD Gluon task to defer_composition")
+        return
+
     required_output = str(cfg.get("required_output_dialect") or "").strip().lower()
-    if required_output != "amd_gluon":
+    if required_output != "amd_gluon" and task_type not in _EXISTING_AMD_GLUON_REFINEMENT_TASK_TYPES:
         return
     if str(cfg.get("source_origin") or "").strip().lower() in {
         SOURCE_ORIGIN_GENERATED_OVERLAY,
@@ -4791,6 +4854,22 @@ def _normalize_existing_amd_gluon_task_config(
     if not implementation_layer or implementation_layer.lower() in {"amd_gluon", "amd gluon"}:
         cfg["implementation_layer"] = "amd_gluon in-dialect refinement"
     cfg.setdefault("task_type", _infer_existing_amd_gluon_task_type(task_prompt))
+    cfg["required_output_dialect"] = "amd_gluon"
+    if str(cfg.get("search_set") or "").strip().lower() in {"base", "shared", "extension"}:
+        if str(cfg.get("search_set") or "").strip().lower() == "extension":
+            diagnostics.append("ignored raw search_set=Extension for existing AMD Gluon in-dialect refinement")
+        cfg["search_set"] = "extension"
+    if not cfg.get("kernel_family_signal"):
+        family = str(feature_meta.get("kernel_family_signal") or "").strip() or _infer_kernel_family_signal(task_prompt)
+        if family:
+            cfg["kernel_family_signal"] = family
+            diagnostics.append(f"inferred kernel_family_signal={family}")
+    if not cfg.get("failure_layers"):
+        component = str(cfg.get("target_component") or _parse_prompt_field_value(task_prompt, "Target component") or "").strip().lower()
+        inferred = _FAILURE_LAYERS_BY_COMPONENT.get(component)
+        if inferred:
+            cfg["failure_layers"] = inferred
+            diagnostics.append(f"inferred failure_layers={inferred}")
 
 
 def _infer_existing_amd_gluon_task_type(task_prompt: str) -> str:
@@ -4800,6 +4879,42 @@ def _infer_existing_amd_gluon_task_type(task_prompt: str) -> str:
     if any(marker in text for marker in ("matrix", "mfma", "wmma", "dotoperandlayout", "warp layout", "layout")):
         return "amd_gluon_layout_or_matrix_refine"
     return "amd_gluon_in_dialect_refine"
+
+
+def _infer_kernel_family_signal(task_prompt: str) -> str:
+    text = str(task_prompt or "").lower()
+    if any(marker in text for marker in ("attention", "decode", "kv cache", "paged_attention", "pa_decode")):
+        return "attention_decode_kv_cache"
+    if any(marker in text for marker in ("gemm", "mfma", "dot")):
+        return "gemm_or_scaled_dot"
+    if any(marker in text for marker in ("memory", "load", "store", "elementwise")):
+        return "memory_or_elementwise"
+    if any(marker in text for marker in ("wrapper", "dispatch", "shape")):
+        return "wrapper_shape_dispatch"
+    return ""
+
+
+def _high_coupling_existing_amd_gluon_task(task_prompt: str) -> bool:
+    text = str(task_prompt or "").lower()
+    if "bundle_allowed=true" in text or "task type: defer_composition" in text:
+        return False
+    touches_dot = any(marker in text for marker in ("dot kernel", "paged_attention_decode_v2_gluon_dot_kernel", "main dot"))
+    touches_reduce = any(marker in text for marker in ("reduce kernel", "paged_attention_decode_v2_reduce_kernel", "reduction kernel"))
+    touches_contract = any(
+        marker in text
+        for marker in (
+            "normalization contract",
+            "normalize",
+            "unnormalized",
+            "temporary_output",
+            "partial output",
+            "output feeding",
+            "abi",
+            "one_shot",
+            "one-shot",
+        )
+    )
+    return touches_dot and touches_reduce and touches_contract
 
 
 def _parse_llm_response(

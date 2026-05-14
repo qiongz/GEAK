@@ -76,6 +76,27 @@ def round_eval_candidate_ms(round_eval: dict[str, Any]) -> float | None:
     return None
 
 
+def _round_eval_payload_has_shape_regression(round_eval: dict[str, Any], *, floor: float = 1.0) -> bool:
+    for section_key in ("full_benchmark", "benchmark"):
+        section = round_eval.get(section_key)
+        if isinstance(section, dict):
+            if section.get("has_significant_shape_regression") is True:
+                return True
+            per_shape = section.get("per_shape_speedups")
+            if isinstance(per_shape, dict) and any(
+                isinstance(info, dict) and float(info.get("speedup") or 0.0) < floor
+                for info in per_shape.values()
+            ):
+                return True
+    per_shape = round_eval.get("per_shape_speedups")
+    if isinstance(per_shape, dict):
+        return any(
+            isinstance(info, dict) and float(info.get("speedup") or 0.0) < floor
+            for info in per_shape.values()
+        )
+    return False
+
+
 def select_best_verified_round_evaluation(output_dir: Path) -> Any:
     """Pick the best verified round deterministically from ``round_*_evaluation.json``.
 
@@ -100,6 +121,12 @@ def select_best_verified_round_evaluation(output_dir: Path) -> Any:
             logger.debug(
                 "select_best_verified: verified speedup %.4fx is not an improvement in %s; keeping as diagnosis only.",
                 verified,
+                eval_path.name,
+            )
+            continue
+        if _round_eval_payload_has_shape_regression(round_eval):
+            logger.debug(
+                "select_best_verified: %s has a required-shape regression; keeping as diagnosis only.",
                 eval_path.name,
             )
             continue
@@ -386,7 +413,7 @@ def _round_eval_has_significant_shape_regression(
     output_dir: Path,
     round_num: int,
     *,
-    floor: float = 0.95,
+    floor: float = 1.0,
 ) -> bool:
     eval_path = output_dir / f"round_{round_num}_evaluation.json"
     try:
@@ -528,6 +555,8 @@ def auto_finalize(
                 try:
                     br = json.loads(br_file.read_text())
                     speedup = float(br.get("best_patch_speedup", 0))
+                    if br.get("no_acceptable_patch") or _round_eval_payload_has_shape_regression(br):
+                        continue
                     if speedup > best_speedup:
                         best_speedup = speedup
                         best_overall = br

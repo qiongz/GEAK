@@ -570,7 +570,7 @@ def _required_gluon_docs_from_metadata(meta: dict[str, Any]) -> list[str]:
 
 
 def _gluon_doc_gate_required_paths(meta: dict[str, Any], task_body: str) -> list[str]:
-    """Return split-doc paths that a Gluon worker must view before save_and_test."""
+    """Return split-doc paths used by runner/tool doc gating for Gluon tasks."""
     if not _task_requires_gluon_worker_docs(meta, task_body):
         return []
 
@@ -605,6 +605,11 @@ def _gluon_doc_gate_required_paths(meta: dict[str, Any], task_body: str) -> list
             meta.get("extension_layer"),
             meta.get("source_base_family"),
             meta.get("plain_competitor"),
+            meta.get("target_component"),
+            meta.get("failure_layers"),
+            meta.get("routed_doc_reasons"),
+            meta.get("task_signals"),
+            meta.get("kernel_family_signal"),
         )
     ).lower()
 
@@ -783,6 +788,9 @@ def task_file_to_agent_task(task_file: Path):
     if gluon_doc_gate_paths:
         cfg["gluon_doc_gate_enabled"] = True
         cfg["gluon_doc_gate_required_paths"] = gluon_doc_gate_paths
+        cfg["gluon_doc_gate_runner_verified_paths"] = [
+            path for path in gluon_doc_gate_paths if Path(path).exists()
+        ]
     if required_output_dialect and required_output_dialect != "any":
         cfg["required_output_dialect"] = required_output_dialect
     required_amd_gluon_contract_tags = _task_required_amd_gluon_contract_tags(meta, body)

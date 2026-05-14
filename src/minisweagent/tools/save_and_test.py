@@ -138,6 +138,7 @@ class SaveAndTestContext:
     viewed_file_paths: set[str] | None = None
     gluon_doc_gate_enabled: bool = False
     gluon_doc_gate_required_paths: list[str] | None = None
+    gluon_doc_gate_runner_verified_paths: list[str] | None = None
     required_output_dialect: str | None = None
     required_patch_target_symbols: list[str] | None = None
     executed_route_symbols: list[str] | None = None
@@ -256,6 +257,12 @@ class SaveAndTestTool:
                     if ctx.patch_output_dir:
                         self._save_patch_file(patch_name, patch_content)
                         self._save_test_output(patch_name, contract_error)
+                        self._append_patch_evolution_ledger(
+                            patch_name,
+                            status="contract_failed",
+                            details=contract_error,
+                            description=description,
+                        )
                         self._write_no_viable_patch_metadata(
                             "no_viable_patch",
                             contract_error,
@@ -270,6 +277,12 @@ class SaveAndTestTool:
                     if ctx.patch_output_dir:
                         self._save_patch_file(patch_name, patch_content)
                         self._save_test_output(patch_name, contract_error)
+                        self._append_patch_evolution_ledger(
+                            patch_name,
+                            status="contract_failed",
+                            details=contract_error,
+                            description=description,
+                        )
                         self._write_no_viable_patch_metadata(
                             self._status_from_contract_error(contract_error),
                             contract_error,
@@ -290,6 +303,12 @@ class SaveAndTestTool:
             if ctx.patch_output_dir:
                 self._save_patch_file(patch_name, patch_content)
                 self._save_test_output(patch_name, test_output)
+                self._append_patch_evolution_ledger(
+                    patch_name,
+                    status="test_passed" if test_passed else "test_failed",
+                    details=test_output,
+                    description=description,
+                )
                 self._sync_strategy_artifacts_to_output()
 
             output = self._format_output(
@@ -333,6 +352,12 @@ class SaveAndTestTool:
         except Exception as e:
             if str(e).startswith("PATCH_CAPTURE_FAILED"):
                 self._write_no_viable_patch_metadata("patch_capture_failed", str(e), patch_name=patch_name)
+                self._append_patch_evolution_ledger(
+                    patch_name,
+                    status="patch_capture_failed",
+                    details=str(e),
+                    description=description,
+                )
                 self._sync_strategy_artifacts_to_output()
             return self._handle_error(patch_name, "", str(e), f"ERROR - {e}")
 
@@ -445,7 +470,14 @@ class SaveAndTestTool:
             patch_content,
             required_symbols=required_symbols,
             required_output_dialect=required_output,
+            task_meta=task_meta,
         ):
+            if (
+                str(task_meta.get("source_origin") or "").strip().lower() == "existing_amd_gluon_operator"
+                and required_symbols
+                and _patch_touches_any_target_symbol(patch_content, required_symbols)
+            ):
+                return None
             return (
                 "PATCH_CONTRACT_FAILED: patch defines a Gluon helper without executing it "
                 "for the required target path. NEXT_PATCH_SCOPE=wiring_only: the next patch "
@@ -515,6 +547,9 @@ class SaveAndTestTool:
             return None
         viewed_aliases: set[str] = set()
         for path in ctx.viewed_file_paths or set():
+            if str(path or "").strip():
+                viewed_aliases.update(self._gate_path_aliases(str(path)))
+        for path in ctx.gluon_doc_gate_runner_verified_paths or []:
             if str(path or "").strip():
                 viewed_aliases.update(self._gate_path_aliases(str(path)))
         missing = [path for path in required if not (self._gate_path_aliases(path) & viewed_aliases)]
@@ -662,6 +697,58 @@ class SaveAndTestTool:
                     dest.write_text(text, encoding="utf-8")
         except OSError:
             logger.debug("Could not sync strategy artifacts", exc_info=True)
+
+    def _append_patch_evolution_ledger(
+        self,
+        patch_name: str,
+        *,
+        status: str,
+        details: str,
+        description: str = "",
+    ) -> None:
+        ctx = self.context
+        if not ctx or not ctx.patch_output_dir:
+            return
+        output_dir = Path(ctx.patch_output_dir)
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            path = output_dir / "patch_evolution_ledger.md"
+            per_shape = compute_shape_speedups(
+                parse_shape_latencies_ms(self._find_true_baseline_file().read_text()) if self._find_true_baseline_file() else {},
+                parse_shape_latencies_ms(details),
+            )
+            lines = [
+                f"## {patch_name}",
+                f"- Description: {description or '<none>'}",
+                f"- Status: `{status}`",
+                f"- Changed component: {description or '<unknown>'}",
+                f"- Observed effect: {status}",
+                f"- Keep/Revert: {'keep_candidate' if status == 'test_passed' else 'reject'}",
+                f"- Next patch allowed scope: {'one_named_improvement' if status == 'test_passed' else self._next_scope_from_status(status, details)}",
+            ]
+            if per_shape:
+                lines.append("- Per-shape speedups:")
+                for shape, metrics in per_shape.items():
+                    lines.append(f"  - `{shape}`: {metrics['speedup']:.6f}x")
+            if status != "test_passed":
+                lines.append(f"- Diagnostic: {details.strip().splitlines()[0] if details.strip() else '<none>'}")
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write("\n".join(lines) + "\n\n")
+        except OSError:
+            logger.debug("Could not append patch evolution ledger", exc_info=True)
+
+    @staticmethod
+    def _next_scope_from_status(status: str, details: str) -> str:
+        text = f"{status}\n{details}".lower()
+        if "helper" in text and "execut" in text:
+            return "wiring_only"
+        if "target" in text and "touch" in text:
+            return "target_path_only"
+        if "scope" in text or "forbidden" in text:
+            return "revert_forbidden_scope_only"
+        if "patch_capture" in text:
+            return "tooling_or_report_only"
+        return "fix_current_failure_layer_only"
 
     @staticmethod
     def _status_from_contract_error(contract_error: str) -> str:

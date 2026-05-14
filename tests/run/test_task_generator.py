@@ -502,10 +502,13 @@ def test_search_space_allocation_for_two_gpus_preserves_base_without_weak_gluon(
 
 def test_taskgen_system_prompt_has_l0_final_submit_checklist() -> None:
     assert "Gluon contract source of truth" in _SYSTEM_PROMPT
+    assert "Gluon task body vs external contract" in _SYSTEM_PROMPT
+    assert "dynamic optimization semantics" in _SYSTEM_PROMPT
     assert "injected policy blocks" in _SYSTEM_PROMPT
     assert "Keep L0 overlays" in _SYSTEM_PROMPT
     assert "omit or downgrade the overlay" in _SYSTEM_PROMPT
     assert "Documentation routing" in _SYSTEM_PROMPT
+    assert "worker full-read checklist" in _SYSTEM_PROMPT
     assert "Plain Triton Base tasks are real no-regression" in _SYSTEM_PROMPT
     assert "synthetic anchors for Gluon" in _SYSTEM_PROMPT
 
@@ -877,6 +880,57 @@ def test_audit_accepts_multiple_existing_amd_gluon_refinements_without_extension
     assert all(not _is_gluon_extension_task(task) for task in tasks)
 
 
+def test_existing_amd_gluon_refinement_ignores_raw_extension_search_set() -> None:
+    feature_meta = {
+        **_gluon_feature_meta("amd_gluon"),
+        "source_origin": "existing_amd_gluon_operator",
+        "kernel_family_signal": "attention_decode_kv_cache",
+    }
+    payload = json.dumps(
+        [
+            {
+                "label": "gluon-pv-mfma-accumulator-fusion",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "search_set": "Extension",
+                "required_output_dialect": "amd_gluon",
+                "source_origin": "existing_amd_gluon_operator",
+                "task_type": "amd_gluon_in_dialect_refine",
+                "implementation_layer": "amd_gluon in-dialect refinement",
+                "target_component": "matrix_operand_mfma",
+                "target_symbol": "paged_attention_decode_v2_gluon_dot_kernel",
+                "required_patch_target_symbols": ["paged_attention_decode_v2_gluon_dot_kernel"],
+                "task_prompt": "\n".join(
+                    [
+                        "Task type: amd_gluon_in_dialect_refine",
+                        "Implementation layer: amd_gluon in-dialect refinement",
+                        "Kernel family signal: attention_decode_kv_cache",
+                        "Target component: matrix_operand_mfma",
+                        "Target symbol: paged_attention_decode_v2_gluon_dot_kernel",
+                        "Allowed change: optimize one matrix_operand_mfma path only",
+                        "Failure layers: matrix/reduction",
+                        "Comparison target: true_baseline",
+                        "Reject if: correctness fails or any benchmark shape regresses",
+                    ]
+                ),
+            }
+        ]
+    )
+
+    tasks = _parse_llm_response(
+        payload,
+        FakeAgentClass,
+        expected_extension_slots=0,
+        feature_meta=feature_meta,
+    )
+
+    assert len(tasks) == 1
+    assert _is_gluon_extension_task(tasks[0]) is False
+    assert tasks[0].config["required_output_dialect"] == "amd_gluon"
+    assert "ignored raw search_set=Extension" in " ".join(tasks[0].config["normalization_diagnostics"])
+
+
 def test_existing_amd_gluon_feature_meta_fills_refinement_defaults() -> None:
     feature_meta = {
         **_gluon_feature_meta("amd_gluon"),
@@ -920,6 +974,149 @@ def test_existing_amd_gluon_feature_meta_fills_refinement_defaults() -> None:
     assert cfg["layout_construction_policy"] == "source_preserve"
     assert cfg["implementation_layer"] == "amd_gluon in-dialect refinement"
     assert cfg["task_type"] == "amd_gluon_in_dialect_refine"
+
+
+def test_existing_amd_gluon_refinement_infers_family_and_failure_layers() -> None:
+    feature_meta = {
+        **_gluon_feature_meta("amd_gluon"),
+        "source_origin": "existing_amd_gluon_operator",
+        "kernel_family_signal": "attention_decode_kv_cache",
+    }
+    payload = json.dumps(
+        [
+            {
+                "label": "gluon-softmax-rescale-optimization",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "amd_gluon",
+                "source_origin": "existing_amd_gluon_operator",
+                "task_type": "amd_gluon_in_dialect_refine",
+                "implementation_layer": "amd_gluon in-dialect refinement",
+                "target_component": "state_update_softmax",
+                "target_symbol": "paged_attention_decode_v2_gluon_dot_kernel",
+                "task_prompt": "\n".join(
+                    [
+                        "Task type: amd_gluon_in_dialect_refine",
+                        "Implementation layer: amd_gluon in-dialect refinement",
+                        "Target component: state_update_softmax",
+                        "Target symbol: paged_attention_decode_v2_gluon_dot_kernel",
+                        "Allowed change: optimize one state_update_softmax path only",
+                        "Comparison target: true_baseline",
+                        "Reject if: correctness fails or any benchmark shape regresses",
+                    ]
+                ),
+            }
+        ]
+    )
+
+    tasks = _parse_llm_response(
+        payload,
+        FakeAgentClass,
+        expected_extension_slots=0,
+        feature_meta=feature_meta,
+    )
+    cfg = tasks[0].config
+
+    assert cfg["kernel_family_signal"] == "attention_decode_kv_cache"
+    assert cfg["failure_layers"] == "reduction/layout"
+    assert "inferred kernel_family_signal=attention_decode_kv_cache" in cfg["normalization_diagnostics"]
+    assert "inferred failure_layers=reduction/layout" in cfg["normalization_diagnostics"]
+
+
+def test_existing_amd_gluon_plain_subkernel_normalizes_to_plain_triton() -> None:
+    feature_meta = {
+        **_gluon_feature_meta("amd_gluon"),
+        "source_origin": "existing_amd_gluon_operator",
+    }
+    payload = json.dumps(
+        [
+            {
+                "label": "triton-reduce-kernel-single-pass",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "amd_gluon",
+                "source_origin": "existing_amd_gluon_operator",
+                "task_type": "plain_subkernel_refine",
+                "task_prompt": "\n".join(
+                    [
+                        "Task type: plain_subkernel_refine",
+                        "Target symbol: paged_attention_decode_v2_reduce_kernel",
+                        "Target component: reduction_accumulator",
+                        "Allowed change: optimize `paged_attention_decode_v2_reduce_kernel` only",
+                    ]
+                ),
+            }
+        ]
+    )
+
+    tasks = _parse_llm_response(
+        payload,
+        FakeAgentClass,
+        expected_extension_slots=0,
+        feature_meta=feature_meta,
+    )
+    cfg = tasks[0].config
+
+    assert cfg["task_type"] == "plain_subkernel_refine"
+    assert cfg["required_output_dialect"] == "plain_triton"
+    assert cfg["implementation_layer"] == "plain_triton"
+    assert _is_gluon_extension_task(tasks[0]) is False
+
+
+def test_existing_amd_gluon_high_coupling_task_is_deferred() -> None:
+    feature_meta = {
+        **_gluon_feature_meta("amd_gluon"),
+        "source_origin": "existing_amd_gluon_operator",
+    }
+    payload = json.dumps(
+        [
+            {
+                "label": "gluon-refine-load",
+                "priority": 0,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "task_prompt": _existing_amd_gluon_refinement_prompt(target_symbol="value_load_path"),
+            },
+            {
+                "label": "triton-eliminate-final-division",
+                "priority": 2,
+                "agent_type": "strategy_agent",
+                "kernel_language": "python",
+                "required_output_dialect": "amd_gluon",
+                "source_origin": "existing_amd_gluon_operator",
+                "task_type": "amd_gluon_in_dialect_refine",
+                "implementation_layer": "amd_gluon in-dialect refinement",
+                "target_component": "epilogue_output_store",
+                "target_symbol": "paged_attention_decode_v2_gluon_dot_kernel",
+                "task_prompt": "\n".join(
+                    [
+                        "Task type: amd_gluon_in_dialect_refine",
+                        "Implementation layer: amd_gluon in-dialect refinement",
+                        "Target component: epilogue_output_store",
+                        "Target symbol: paged_attention_decode_v2_gluon_dot_kernel",
+                        "Allowed change: remove normalization from dot kernel and modify reduce kernel ABI",
+                        "This touches dot kernel, reduce kernel, temporary_output, output normalization contract, and one_shot path.",
+                        "Comparison target: true_baseline",
+                        "Reject if: correctness fails or any benchmark shape regresses",
+                    ]
+                ),
+            },
+        ]
+    )
+
+    tasks = _parse_llm_response(
+        payload,
+        FakeAgentClass,
+        expected_extension_slots=0,
+        gluon_feature_mode="force_l0_anchor",
+        feature_meta=feature_meta,
+    )
+    by_label = {task.label: task for task in tasks}
+
+    assert by_label["triton-eliminate-final-division"].config["task_type"] == "defer_composition"
+    assert by_label["triton-eliminate-final-division"].config["required_output_dialect"] == "any"
 
 
 def test_existing_amd_gluon_refinement_requires_concrete_patch_target() -> None:

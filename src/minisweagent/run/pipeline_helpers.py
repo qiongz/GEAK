@@ -914,9 +914,13 @@ def _task_needs_gluon_worker_context(
 ) -> bool:
     """Return whether this dispatched task should receive Gluon worker guidance."""
     feature_metadata = feature_metadata or {}
+    required_output = str(feature_metadata.get("required_output_dialect") or "").strip().lower()
+    task_type = str(feature_metadata.get("task_type") or _task_body_field(task_body, "Task type")).strip().lower()
+    if required_output == "plain_triton" or task_type == "plain_subkernel_refine":
+        return False
     return task_requires_gluon_worker_docs(
         kernel_type=str(feature_metadata.get("kernel_type") or ""),
-        required_output=str(feature_metadata.get("required_output_dialect") or ""),
+        required_output=required_output,
         implementation_layer=str(feature_metadata.get("implementation_layer") or ""),
         extension_layer=str(feature_metadata.get("extension_layer") or ""),
         doc_profile=str(feature_metadata.get("gluon_doc_profile") or ""),
@@ -1170,6 +1174,9 @@ def _task_requires_amd_gluon_output(feature_metadata: dict[str, Any] | None) -> 
     """Return whether the task contract requires a real AMD Gluon patch."""
     if not feature_metadata:
         return False
+    task_type = str(feature_metadata.get("task_type") or "").strip().lower()
+    if task_type == "plain_subkernel_refine":
+        return False
     return (
         str(feature_metadata.get("kernel_type") or "").strip().lower() == "triton"
         and str(feature_metadata.get("required_output_dialect") or "").strip().lower() == "amd_gluon"
@@ -1275,6 +1282,23 @@ def _partition_hints_from_cases(feature_metadata: dict[str, Any] | None) -> list
     return hints
 
 
+def _path_status(path: str | None) -> str:
+    if not path:
+        return "missing"
+    try:
+        return "verified" if Path(path).exists() else "missing"
+    except OSError:
+        return "missing"
+
+
+def _doc_gate_status(required_paths: list[str] | None) -> tuple[str, list[str]]:
+    paths = [str(path).strip() for path in (required_paths or []) if str(path).strip()]
+    missing = [path for path in paths if _path_status(path) != "verified"]
+    if not paths:
+        return "not_required", []
+    return ("verified_by_runner" if not missing else "missing"), missing
+
+
 def _candidate_config_lines(task_body: str) -> list[str]:
     lines: list[str] = []
     for line in str(task_body or "").splitlines():
@@ -1285,6 +1309,62 @@ def _candidate_config_lines(task_body: str) -> list[str]:
         ):
             lines.append(stripped)
     return lines
+
+
+def _compact_benchmark_baseline(benchmark_baseline: str, *, limit: int = 8) -> list[str]:
+    """Return a short benchmark excerpt for worker orientation, not ranking."""
+    selected: list[str] = []
+    for raw_line in benchmark_baseline.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if (
+            "geak_result_latency_ms" in lowered
+            or "geomean latency" in lowered
+            or "total" in lowered
+            or " ms" in lowered
+        ):
+            selected.append(line)
+        if len(selected) >= limit:
+            break
+    if selected:
+        return selected
+    return [line.strip() for line in benchmark_baseline.splitlines() if line.strip()][:limit]
+
+
+def _gluon_doc_heading_hints(feature_metadata: dict[str, Any]) -> list[str]:
+    """Return a tiny, profile-based heading hint list for worker fallback reads."""
+    profile = str(feature_metadata.get("gluon_doc_profile") or "").strip().lower()
+    component = str(feature_metadata.get("target_component") or "").strip().lower()
+    failure_layers = str(feature_metadata.get("failure_layers") or "").strip().lower()
+    text = " ".join(part for part in (profile, component, failure_layers) if part)
+    hints: list[str] = []
+    if any(marker in text for marker in ("matrix", "dot", "mfma", "wmma")):
+        hints.extend(
+            [
+                "20_component_traits.md::matrix_dot",
+                "50_api_reference.md::dot_lowering_minimal_recipe",
+            ]
+        )
+    if any(marker in text for marker in ("layout", "broadcast", "convert_layout")):
+        hints.append("20_component_traits.md::layout_broadcast")
+    if any(marker in text for marker in ("reduction", "softmax", "accumulator", "state_update")):
+        hints.append("20_component_traits.md::reduction_accumulator")
+    if any(marker in text for marker in ("memory", "load", "store", "buffer")):
+        hints.extend(
+            [
+                "20_component_traits.md::load_store",
+                "50_api_reference.md::buffer_ops",
+            ]
+        )
+    if any(marker in text for marker in ("attention", "decode", "aiter", "existing")):
+        hints.append("60_real_patterns.md::existing_amd_gluon_in_dialect_refinement")
+    unique: list[str] = []
+    for hint in hints:
+        if hint not in unique:
+            unique.append(hint)
+    return unique[:4]
 
 
 def _build_gluon_clean_task_packet(
@@ -1307,51 +1387,42 @@ def _build_gluon_clean_task_packet(
     required_symbols = _as_list(feature_metadata.get("required_patch_target_symbols"))
     executed_route_symbols = _as_list(feature_metadata.get("executed_route_symbols"))
     forbidden_symbols = _as_list(feature_metadata.get("forbidden_patch_target_symbols"))
-    allowed_change = _first_nonempty(feature_metadata.get("allowed_change"), _task_body_field(task_body, "Allowed change"))
-    reject_if = _first_nonempty(feature_metadata.get("reject_if"), _task_body_field(task_body, "Reject if"))
-    recommended = _first_nonempty(
-        feature_metadata.get("recommended_option"),
-        feature_metadata.get("recommended_path"),
-        feature_metadata.get("allowed_execution_path"),
-        _task_body_field(task_body, "Recommended option"),
-        _task_body_field(task_body, "Route hint"),
-    )
-    objective = _first_nonempty(
-        feature_metadata.get("objective"),
-        feature_metadata.get("optimization_direction"),
-        _task_body_field(task_body, "Objective"),
-        _task_body_field(task_body, "Optimization direction"),
-        task_body.splitlines()[0] if task_body.strip() else "",
-    )
     harness = _extract_commandment_harness(commandment_text, test_command)
-    paths = [str(path).strip() for path in (gluon_doc_gate_required_paths or []) if str(path).strip()]
+    doc_status, missing_docs = _doc_gate_status(gluon_doc_gate_required_paths)
     cases = feature_metadata.get("benchmark_test_cases") or []
+    required_output = str(feature_metadata.get("required_output_dialect") or "<derive from task>").strip()
+    source_origin = str(feature_metadata.get("source_origin") or "<derive from task>").strip()
+    task_type = str(feature_metadata.get("task_type") or "<derive from task>").strip()
+    doc_profile = str(feature_metadata.get("gluon_doc_profile") or "<none>").strip()
+    target_component = str(feature_metadata.get("target_component") or "<read original task body>").strip()
+    failure_layers = str(feature_metadata.get("failure_layers") or "<read original task body>").strip()
+    doc_heading_hints = _gluon_doc_heading_hints(feature_metadata)
 
     lines = [
-        "## Clean Gluon Task Packet",
-        "Read this packet before auto-injected policy. Task/source/harness evidence wins over generic memory.",
+        "## Minimal Gluon Worker Packet",
+        "Original task body/frontmatter is the single source of task semantics. Runner supplies compact evidence only.",
         "",
-        "### Task Objective Extraction",
-        f"- Objective: {objective or '<read original task body below>'}",
+        "### External Contract Evidence",
+        f"- Task file: {task_file_path or '<current task file>'} ({_path_status(task_file_path)})",
+        f"- COMMANDMENT.md: {commandment_path or '<derive from task metadata>'} ({_path_status(commandment_path)})",
+        f"- Baseline metrics: {baseline_metrics_path or '<derive from task metadata>'} ({_path_status(baseline_metrics_path)})",
+        f"- Benchmark baseline: {benchmark_baseline_path or '<derive from task metadata>'} ({_path_status(benchmark_baseline_path)})",
+        f"- Target source: {kernel_path or '<unknown>'} ({_path_status(kernel_path)})",
+        f"- Gluon docs: profile={doc_profile}; status={doc_status}; docs are runner/tool contract, not a worker full-read list.",
+        "",
+        "### Machine Index (Do Not Treat As A Second Task)",
+        f"- Required output dialect: {required_output}",
+        f"- Source origin: {source_origin}",
+        f"- Task type: {task_type}",
         f"- Patch target symbols: {', '.join(required_symbols) if required_symbols else '<none declared>'}",
         f"- Executed route symbols: {', '.join(executed_route_symbols) if executed_route_symbols else '<derive from source/harness>'}",
-        f"- Recommended route: {recommended or '<derive from task/source/harness>'}",
-        f"- Allowed change: {allowed_change or '<not declared>'}",
-        f"- Reject if: {reject_if or '<not declared>'}",
+        f"- Target component: {target_component}",
+        f"- Failure layers: {failure_layers}",
     ]
     if forbidden_symbols:
         lines.append(f"- Forbidden target symbols: {', '.join(forbidden_symbols)}")
     lines.extend(
         [
-            "",
-            "### Artifact-First Reading Order",
-            "Read these artifacts in order before implementation. Do not substitute injected context for the source files.",
-            f"1. Task file: {task_file_path or '<current task file>'}",
-            f"2. COMMANDMENT.md: {commandment_path or '<derive from task metadata>'}",
-            f"3. Baseline metrics: {baseline_metrics_path or '<derive from task metadata>'}",
-            f"4. Benchmark baseline: {benchmark_baseline_path or '<derive from task metadata>'}",
-            "5. Required docs listed below.",
-            f"6. Target source: {kernel_path or '<unknown>'}",
             "",
             "### Route-Proof Inputs",
             f"- KERNEL FILE TO EDIT: {kernel_path or '<unknown>'}",
@@ -1361,7 +1432,7 @@ def _build_gluon_clean_task_packet(
         ]
     )
     if benchmark_baseline:
-        lines.extend(["- Benchmark baseline:", "```", benchmark_baseline.strip(), "```"])
+        lines.extend(["- Benchmark baseline excerpt:", "```", "\n".join(_compact_benchmark_baseline(benchmark_baseline)), "```"])
     if cases:
         lines.append("- Benchmark cases:")
         for case in list(cases)[:6]:
@@ -1373,6 +1444,12 @@ def _build_gluon_clean_task_packet(
     if partition_hints:
         lines.append("- Partition/shape hints:")
         lines.extend(f"  - {hint}" for hint in partition_hints)
+    if missing_docs:
+        lines.append("- Missing required doc paths:")
+        lines.extend(f"  - {path}" for path in missing_docs[:5])
+    if doc_heading_hints:
+        lines.append("- Optional doc heading hints for implementation details:")
+        lines.extend(f"  - {hint}" for hint in doc_heading_hints)
     candidate_lines = _candidate_config_lines(task_body)
     if candidate_lines:
         lines.extend(
@@ -1388,15 +1465,11 @@ def _build_gluon_clean_task_packet(
     lines.extend(
         [
             "",
-            "### Required Docs (Lazy Read)",
-            "- These are route-proof/doc-gate inputs, not long prompt content. Read only the needed headings, but every listed path must be viewed before save_and_test.",
-        ]
-    )
-    lines.extend(f"- {path}" for path in paths)
-    if not paths:
-        lines.append("- <none>")
-    lines.extend(
-        [
+            "### Minimal Execution Contract",
+            "- Write `strategy_notes.md` or `route_proof.md` before the first edit.",
+            "- Route proof fields: current route, target route, guards, output feeding, reduce/temporary preserve-or-skip, same ABI, measurement boundary.",
+            "- Use `save_and_test`; raw bash benchmark output is diagnostic only and is not ranked.",
+            "- For existing AMD Gluon, in-place edits to the executed target body are valid if no new unexecuted helper/fallback is introduced.",
             "",
             "### Original Task Body",
             task_body.strip() or "<empty task body>",
@@ -1631,20 +1704,21 @@ def inject_pipeline_context(
                 gluon_doc_gate_required_paths=gluon_doc_gate_required_paths,
             )
         )
-    ctx: list[str] = [
-        "## Pipeline Context (auto-injected from task metadata)",
-        "",
-    ]
+    ctx: list[str] = []
+    if not gluon_worker_context:
+        ctx = [
+            "## Pipeline Context (auto-injected from task metadata)",
+            "",
+        ]
+        if kernel_path:
+            ctx.append(f"KERNEL FILE TO EDIT: {kernel_path}")
+        if repo_root:
+            ctx.append(f"REPO ROOT: {repo_root}")
+        if test_command:
+            ctx.append(f"TEST COMMAND: {test_command}")
+        ctx.append("")
 
-    if kernel_path:
-        ctx.append(f"KERNEL FILE TO EDIT: {kernel_path}")
-    if repo_root:
-        ctx.append(f"REPO ROOT: {repo_root}")
-    if test_command:
-        ctx.append(f"TEST COMMAND: {test_command}")
-    ctx.append("")
-
-    if feature_metadata:
+    if feature_metadata and not gluon_worker_context:
         ctx.append(
             build_gluon_feature_prompt_block(
                 feature_metadata,
@@ -1652,34 +1726,25 @@ def inject_pipeline_context(
             )
         )
         ctx.append("")
-        if gluon_worker_context:
-            # Keep paths available but avoid the old long reference/working-set
-            # stack that buried the task objective behind repeated policy.
-            ctx.extend(
-                _build_gluon_protocol_working_set(
-                    feature_metadata,
-                    gluon_always_read_path=gluon_always_read_path,
-                )
-            )
-            ctx.extend(_build_required_gluon_doc_gate_block(gluon_doc_gate_required_paths))
         if _task_requires_amd_gluon_output(feature_metadata):
             ctx.extend(_build_required_gluon_contract_context())
         # Apply shape-coverage rules to ALL kernel types, not only Gluon paths.
         ctx.extend(_build_shape_coverage_working_set(feature_metadata))
 
-    ctx.append(
-        "IMPORTANT: Only edit files within your REPO ROOT directory. "
-        "Do NOT search or modify files outside of it. "
-        "The KERNEL FILE TO EDIT path above is the exact file you should optimize."
-    )
-    ctx.append("")
+    if not gluon_worker_context:
+        ctx.append(
+            "IMPORTANT: Only edit files within your REPO ROOT directory. "
+            "Do NOT search or modify files outside of it. "
+            "The KERNEL FILE TO EDIT path above is the exact file you should optimize."
+        )
+        ctx.append("")
 
-    if commandment_text:
+    if commandment_text and not gluon_worker_context:
         ctx.append("## COMMANDMENT (evaluation contract -- you MUST follow these rules)")
         ctx.append(commandment_text.strip())
         ctx.append("")
 
-    if baseline_metrics:
+    if baseline_metrics and not gluon_worker_context:
         dur = baseline_metrics.get("duration_us", "unknown")
         bn = baseline_metrics.get("bottleneck", "unknown")
         ctx.append("## Baseline Performance (your optimization must improve on these)")
@@ -1707,14 +1772,14 @@ def inject_pipeline_context(
         else:
             ctx.extend(_bottleneck_guidance(str(bn), baseline_metrics, arch=detect_gpu_arch()))
 
-    if profiling_path and Path(profiling_path).exists():
+    if profiling_path and Path(profiling_path).exists() and not gluon_worker_context:
         ctx.append(f"PROFILING DATA: {profiling_path}")
         ctx.append("(Read this file for detailed per-kernel profiling metrics)")
         ctx.append("")
 
         ctx.extend(_gpu_arch_context(profiling_path))
 
-    if benchmark_baseline:
+    if benchmark_baseline and not gluon_worker_context:
         ctx.append("## Benchmark Baseline (compare your save_and_test output against this)")
         ctx.append(
             "This is the original kernel's canonical benchmark output from the same full benchmark contract used for patch testing."
@@ -1723,7 +1788,7 @@ def inject_pipeline_context(
         ctx.append(f"```\n{benchmark_baseline.strip()}\n```")
         ctx.append("")
 
-    if codebase_context:
+    if codebase_context and not gluon_worker_context:
         ctx.append("## Codebase Context (kernel dependency tree)")
         ctx.append(
             "The dependency tree below shows in-repo files the target kernel "
@@ -1734,12 +1799,13 @@ def inject_pipeline_context(
         ctx.append("")
         cfg["codebase_context"] = codebase_context.strip()
 
-    ctx.append(
-        "IMPORTANT: Baseline profiling and performance metrics are already "
-        "established and provided above. Do NOT run save_and_test for a "
-        "baseline run. Start optimizing immediately."
-    )
-    ctx.append("")
+    if not gluon_worker_context:
+        ctx.append(
+            "IMPORTANT: Baseline profiling and performance metrics are already "
+            "established and provided above. Do NOT run save_and_test for a "
+            "baseline run. Start optimizing immediately."
+        )
+        ctx.append("")
 
     try:
         integration = importlib.import_module("minisweagent.memory.integration")

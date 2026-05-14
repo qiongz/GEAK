@@ -288,25 +288,18 @@ def test_multi_shape_json_marker_overrides_single_latency_for_best_patch(tmp_pat
     assert preprocess_benchmark_parsing.parse_shape_latencies_ms(candidate_text) == expected_candidate_shapes
     assert extract_latency_ms(candidate_text) == pytest.approx(0.116379)
 
-    post = compute_best_patch(patch_dir)
-    pre = preprocess_benchmark_parsing.compute_best_patch(patch_dir)
+    assert compute_best_patch(patch_dir) is None
+    assert preprocess_benchmark_parsing.compute_best_patch(patch_dir) is None
 
-    assert post is not None
-    assert pre is not None
+    post = rewrite_best_results(patch_dir)
+    pre = preprocess_benchmark_parsing.rewrite_best_results(patch_dir)
     for result in (post, pre):
-        assert result["baseline_latency_ms"] == pytest.approx(0.318277)
-        assert result["candidate_latency_ms"] == pytest.approx(0.368435)
-        assert result["best_patch_speedup"] == pytest.approx(0.863862)
-        assert result["candidate_shape_latency_ms"] == expected_candidate_shapes
-        assert result["per_shape_speedups"]
-        assert result["objective"] == "total_shape_latency_ms"
-        assert result["gluon_l1_anchor_viability"] != "viable_for_l1"
-        assert result["not_viable_for_l1"] is True
-        assert result["overhead_source"] == "tiny_stage_overhead"
-        assert result["overhead_attribution_incomplete"] is True
-        assert "concrete removable-overhead attribution" in result["overhead_attribution_warning"]
-        assert result["has_significant_shape_regression"] is True
-        assert result["gluon_evidence_summary"] == "executed_slower"
+        assert result is not None
+        assert result["status"] == "no_acceptable_patch"
+        assert result["no_acceptable_patch"] is True
+        assert result["best_patch_id"] is None
+        assert result["best_patch_speedup"] == 0.0
+        assert result["overhead_source_to_record"] == "tiny_stage_overhead"
 
 
 def test_required_output_dialect_uses_layer_metadata_before_search_set() -> None:
@@ -839,16 +832,14 @@ def test_compute_best_patch_reports_regression_against_true_baseline(tmp_path: P
         "case_small: 0.0633 ms\ncase_medium: 0.0628 ms\n"
     )
 
-    result = compute_best_patch(patch_dir)
+    assert compute_best_patch(patch_dir) is None
+    result = rewrite_best_results(patch_dir)
 
     assert result is not None
-    assert result["best_patch_id"] == "patch_1"
+    assert result["status"] == "no_acceptable_patch"
+    assert result["best_patch_id"] is None
     assert result["baseline_source"] == "benchmark_baseline.txt"
     assert result["baseline_latency_ms"] == pytest.approx(0.1124)
-    assert result["candidate_latency_ms"] == pytest.approx(0.1261)
-    assert result["best_patch_speedup"] == pytest.approx(0.891356)
-    assert result["improves_true_baseline"] is False
-    assert result["objective"] == "total_shape_latency_ms"
 
 
 def test_compute_best_patch_uses_safe_anchor_for_composition_tasks(tmp_path: Path) -> None:
@@ -1122,22 +1113,20 @@ def test_compute_best_patch_marks_slower_execution_anchor_not_viable_for_l1(tmp_
     )
     (patch_dir / "patch_1_test.txt").write_text("case_a: 1.2 ms\ncase_b: 1.2 ms\n")
 
-    result = compute_best_patch(patch_dir)
+    assert compute_best_patch(patch_dir) is None
+    result = rewrite_best_results(patch_dir)
 
     assert result is not None
+    assert result["status"] == "no_acceptable_patch"
     assert result["extension_intent"] == "execution_anchor"
     assert result["expected_outcome"] == "correctness_anchor_not_speedup"
     assert result["target_component"] == "one 1D subpath"
     assert result["minimum_executable_unit"] == "separate_gluon_kernel"
     assert result["allowed_execution_path"] == "separate_gluon_kernel"
     assert result["scope_infeasible_policy"] == "separate_kernel_if_allowed"
-    assert result["scope_infeasible_reported"] is False
-    assert result["scope_compliant"] is True
-    assert result["gluon_l1_anchor_viability"] == "not_viable_for_l1"
-    assert result["not_viable_for_l1"] is True
-    assert result["overhead_source"] == "launch_layout_overhead"
-    assert result["overhead_attribution_incomplete"] is False
-    assert result["overhead_attribution_warning"] is None
+    assert result["best_patch_id"] is None
+    assert result["best_patch_speedup"] == 0.0
+    assert result["overhead_source_to_record"] == "launch_layout_overhead"
 
 
 def test_compute_best_patch_rejects_forbidden_scope_patch(tmp_path: Path) -> None:
@@ -1260,13 +1249,15 @@ def test_compute_best_patch_keeps_performance_candidate_as_evidence_not_global_b
     )
     (patch_dir / "patch_1_test.txt").write_text("case_a: 1.1 ms\ncase_b: 1.1 ms\n")
 
-    result = compute_best_patch(patch_dir)
+    assert compute_best_patch(patch_dir) is None
+    result = rewrite_best_results(patch_dir)
 
     assert result is not None
+    assert result["status"] == "no_acceptable_patch"
     assert result["extension_intent"] == "performance_candidate"
-    assert result["gluon_l1_anchor_viability"] == "neutral_or_slow_anchor"
-    assert result["not_viable_for_l1"] is False
-    assert result["overhead_source"] == "conversion_overhead"
+    assert result["best_patch_id"] is None
+    assert result["best_patch_speedup"] == 0.0
+    assert result["overhead_source_to_record"] == "conversion_overhead"
 
 
 def test_compute_best_patch_plain_task_has_no_positive_gluon_execution_contract(tmp_path: Path) -> None:
@@ -1348,7 +1339,7 @@ def test_preprocess_and_postprocess_preserve_gluon_anchor_metadata(tmp_path: Pat
         assert result["gluon_l1_anchor_viability"] == "viable_for_l1"
 
 
-def test_preprocess_preserves_slower_gluon_execution_anchor_evidence(tmp_path: Path) -> None:
+def test_preprocess_marks_slower_gluon_execution_anchor_as_no_acceptable_patch(tmp_path: Path) -> None:
     root = tmp_path / "generic_kernel"
     patch_dir = root / "results" / "round_1" / "extension-l0-gluon-anchor"
     patch_dir.mkdir(parents=True)
@@ -1376,17 +1367,15 @@ def test_preprocess_preserves_slower_gluon_execution_anchor_evidence(tmp_path: P
     )
     (patch_dir / "patch_1_test.txt").write_text("case_a: 1.2 ms\ncase_b: 1.2 ms\n")
 
-    result = preprocess_benchmark_parsing.compute_best_patch(patch_dir)
+    assert preprocess_benchmark_parsing.compute_best_patch(patch_dir) is None
+    result = preprocess_benchmark_parsing.rewrite_best_results(patch_dir)
 
     assert result is not None
-    assert result["best_patch_speedup"] == pytest.approx(0.833333, rel=1e-5)
-    assert result["improves_true_baseline"] is False
-    assert result["has_significant_shape_regression"] is True
+    assert result["status"] == "no_acceptable_patch"
+    assert result["best_patch_speedup"] == 0.0
+    assert result["best_patch_id"] is None
     assert result["extension_intent"] == "execution_anchor"
-    assert result["gluon_execution_contract_satisfied"] is True
-    assert result["gluon_l1_anchor_viability"] == "not_viable_for_l1"
-    assert result["not_viable_for_l1"] is True
-    assert result["overhead_source"] == "launch_layout_overhead"
+    assert result["overhead_source_to_record"] == "launch_layout_overhead"
 
 
 def test_compute_best_patch_rejects_definition_only_gluon_helper(tmp_path: Path) -> None:

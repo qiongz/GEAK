@@ -86,7 +86,8 @@ def test_task_file_to_agent_task_keeps_mi3xx_gluon_context_inline(tmp_path) -> N
     task = task_file_to_agent_task(task_path)
 
     assert task.config["allowed_skill_tiers"] == ["general"]
-    assert "## Gluon Feature Context" in task.task
+    assert "## Minimal Gluon Worker Packet" in task.task
+    assert "## Gluon Feature Context" not in task.task
 
 
 def test_plain_base_task_with_gluon_run_meta_does_not_enable_doc_gate(tmp_path) -> None:
@@ -167,8 +168,9 @@ def test_required_block_matches_gluon_doc_gate_even_when_run_guidance_off(tmp_pa
     task = task_file_to_agent_task(task_path)
 
     assert task.config["gluon_doc_gate_enabled"] is True
-    assert "## Gluon Working Set" in task.task
-    assert "## REQUIRED BEFORE EDITING OR SAVE_AND_TEST" in task.task
+    assert "## Minimal Gluon Worker Packet" in task.task
+    assert "## Gluon Working Set" not in task.task
+    assert "## REQUIRED BEFORE EDITING OR SAVE_AND_TEST" not in task.task
 
 
 def test_label_only_gluon_variant_gate_also_injects_required_block(tmp_path) -> None:
@@ -192,8 +194,9 @@ def test_label_only_gluon_variant_gate_also_injects_required_block(tmp_path) -> 
     task = task_file_to_agent_task(task_path)
 
     assert task.config["gluon_doc_gate_enabled"] is True
-    assert "## Gluon Working Set" in task.task
-    assert "## REQUIRED BEFORE EDITING OR SAVE_AND_TEST" in task.task
+    assert "## Minimal Gluon Worker Packet" in task.task
+    assert "## Gluon Working Set" not in task.task
+    assert "## REQUIRED BEFORE EDITING OR SAVE_AND_TEST" not in task.task
 
 
 def test_task_file_to_agent_task_keeps_general_skill_tiers_for_raw_profile(tmp_path) -> None:
@@ -245,30 +248,28 @@ def test_required_gluon_task_uses_clean_packet_without_skill_selector(tmp_path) 
     assert task.config["gluon_route_proof_required"] is True
     assert task.config["gluon_strategy_artifacts_required"] is True
     assert task.config["suppress_cross_session_memory"] is True
-    assert task.task.index("## Clean Gluon Task Packet") < task.task.index("## Pipeline Context")
+    assert "## Minimal Gluon Worker Packet" in task.task
+    assert "## Pipeline Context" not in task.task
+    assert "### External Contract Evidence" in task.task
+    assert "### Machine Index (Do Not Treat As A Second Task)" in task.task
+    assert "### Task Objective Extraction" not in task.task
     assert "### Original Task Body" in task.task
-    assert "## Required AMD Gluon Contract" in task.task
+    assert "## Required AMD Gluon Contract" not in task.task
     assert "## Forced Triton-Gluon Skill Context" not in task.task
-    assert "from triton.experimental import gluon" in task.task
-    assert "from triton import gluon" in task.task
-    assert "not the supported import path" in task.task
-    assert "Gluon knowledge lookup plan" in task.task
-    assert "Required execution route proof" in task.task
-    assert "Patch evolution ledger" in task.task
-    assert "strategy_notes.md" in task.task
-    assert "Task compat_search_set: extension" in task.task
-    assert "Task required_output_dialect: amd_gluon" in task.task
-    assert "viewed=no" in task.task
-    assert "If the implementation plan cannot satisfy the scoped path fields" in task.task
-    assert "Same ABI comparison" in task.task
-    assert "broad `try/except Exception` fallback" in task.task
+    assert "from triton.experimental import gluon" not in task.task
+    assert "Route proof fields" in task.task
+    assert "- Objective:" not in task.task
+    assert "- Allowed change:" not in task.task
+    assert "- Reject if:" not in task.task
     assert "### triton-gluon/SKILL.md" not in task.task
     assert "### triton-gluon/docs/00_always_read.md" not in task.task
     assert task.config["gluon_doc_gate_enabled"] is True
     assert any(path.endswith("skills/triton-gluon/docs/00_always_read.md") for path in task.config["gluon_doc_gate_required_paths"])
     assert any(path.endswith("skills/triton-gluon/docs/50_api_reference.md") for path in task.config["gluon_doc_gate_required_paths"])
-    assert "## REQUIRED BEFORE EDITING OR SAVE_AND_TEST" in task.task
-    assert "GLUON_DOC_GATE_FAILED" in task.task
+    assert "## REQUIRED BEFORE EDITING OR SAVE_AND_TEST" not in task.task
+    assert "GLUON_DOC_GATE_FAILED" not in task.task
+    assert "Gluon doc gate" not in task.task
+    assert "docs are runner/tool contract" in task.task
 
 
 def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
@@ -322,68 +323,14 @@ def test_worker_context_includes_gluon_contract_metadata(tmp_path) -> None:
 
     task = task_file_to_agent_task(task_path)
 
-    assert "Task compat_search_set: extension" in task.task
-    assert "Task required_output_dialect: amd_gluon" in task.task
-    assert "Task gluon_doc_profile: memory_lowering" in task.task
-    assert "Task required_gluon_docs: gluon_skill_path, gluon_always_read_path" in task.task
-    assert "Task source_base_family: base_hot_path_streamline" in task.task
-    assert "Task plain_competitor: triton-eliminate-redundant-ops-streamline" in task.task
-    assert "Task implementation_layer: amd_gluon overlay" in task.task
-    assert "Task extension_layer: L1" in task.task
-    assert "Task required_patch_target_symbols: target_stage" in task.task
-    assert "Task extension_intent: execution_anchor" in task.task
-    assert "Task expected_outcome: correctness_anchor_not_speedup" in task.task
-    assert "Task overhead_source_to_record: launch_layout_overhead" in task.task
-    assert "Task l0_scope_classification: low_coupling" in task.task
-    assert "Task l0_coupling_reasons: single memory subpath" in task.task
-    assert "Task expected_failure_layers: memory/load-store layer" in task.task
-    assert "Task first_patch_compile_goal: compile a minimal memory anchor" in task.task
-    assert "Task do_not_optimize_before_compile: True" in task.task
-    assert "Task matrix_lowering_required: False" in task.task
-    assert "Task task_signals: layout, memory, l0" in task.task
-    assert "Task routed_doc_reasons: layout signal -> component traits; api signal -> api reference" in task.task
-    assert "Task kernel_family_signal: generic_memory_layout" in task.task
-    assert "Task failure_layers: broadcast/layout layer, memory/load-store layer" in task.task
-    assert "Task minimum_executable_unit: separate_gluon_kernel" in task.task
-    assert "Task target_symbol: target_stage" in task.task
-    assert "Task target_component: one memory subpath" in task.task
-    assert "Task allowed_execution_path: separate_gluon_kernel" in task.task
-    assert "Task scope_infeasible_policy: separate_kernel_if_allowed" in task.task
-    assert "Task whole_kernel_required_reason: not needed for separate kernel" in task.task
-    assert "Task source_origin: existing_amd_gluon_operator" in task.task
-    assert "Task gluon_tl_policy: production_source_allowed" in task.task
-    assert "Task layout_construction_policy: source_preserve" in task.task
-    assert "Task execution_mode: mixed_jit_aot" in task.task
-    assert "## Patch Evolution Working Set" in task.task
-    assert "atomic_component_lattice" in task.task
-    assert "l0_scope_decision_before_emit" in task.task
-    assert "primary_component" in task.task
-    assert "patch_evolution_by_task_type" in task.task
-    assert "failure_to_next_patch_map" in task.task
-    assert "Branch A local smoke/probe stays local" in task.task
-    assert "Branch B whole-helper skeleton starts as compile/wiring/layout evidence" in task.task
-    assert "## Task consistency check" in task.task
-    assert "overlay_direction_vs_mechanism" in task.task
-    assert "l0_scope_by_kernel_family" in task.task
-    assert "parent-layout map" in task.task
-    assert "Task correction" in task.task
+    assert "## Minimal Gluon Worker Packet" in task.task
+    assert "## Gluon Feature Context" not in task.task
+    assert "## Patch Evolution Working Set" not in task.task
+    assert task.config["required_patch_target_symbols"] == ["target_stage"]
     assert task.config["source_origin"] == "existing_amd_gluon_operator"
     assert task.config["gluon_tl_policy"] == "production_source_allowed"
     assert task.config["layout_construction_policy"] == "source_preserve"
     assert task.config["execution_mode"] == "mixed_jit_aot"
-    assert "Extension intent: `execution_anchor`" in task.task
-    assert "L0 scope classification: `low_coupling`" in task.task
-    assert "L0 coupling reasons: single memory subpath" in task.task
-    assert "60_real_patterns.md::patch_evolution_by_task_type" in task.task
-    assert "60_real_patterns.md::Task consistency check" in task.task
-    assert "Whole-kernel L0 comparison anchor" in task.task
-    assert "Task signals: layout, memory, l0" in task.task
-    assert "Routed doc reasons: layout signal -> component traits; api signal -> api reference" in task.task
-    assert "Kernel family signal: `generic_memory_layout`" in task.task
-    assert "Failure layers: broadcast/layout layer, memory/load-store layer" in task.task
-    assert "Minimum executable unit: `separate_gluon_kernel`" in task.task
-    assert "Allowed execution path: `separate_gluon_kernel`" in task.task
-    assert "Scope infeasible policy: `separate_kernel_if_allowed`" in task.task
 
 
 def test_worker_context_infers_local_target_components_from_allowed_change(tmp_path) -> None:
@@ -415,7 +362,7 @@ def test_worker_context_infers_local_target_components_from_allowed_change(tmp_p
 
     task = task_file_to_agent_task(task_path)
 
-    assert "Task required_patch_target_symbols: tile_load_a, tile_load_b, tile_load_c" in task.task
+    assert task.config["required_patch_target_symbols"] == ["tile_load_a", "tile_load_b", "tile_load_c"]
 
 
 def test_worker_context_warns_inline_scoped_helper_not_to_reroute_whole_kernel(tmp_path) -> None:
@@ -445,9 +392,8 @@ def test_worker_context_warns_inline_scoped_helper_not_to_reroute_whole_kernel(t
 
     task = task_file_to_agent_task(task_path)
 
-    assert "Inline scoped helper boundary" in task.task
-    assert "do not add a replacement whole-kernel `@gluon.jit`" in task.task
-    assert "do not reroute the wrapper's main path" in task.task
+    assert task.config["gluon_route_proof_required"] is True
+    assert task.config["required_output_dialect"] == "amd_gluon"
 
 
 def test_worker_context_infers_stage_scope_from_allowed_change(tmp_path) -> None:
@@ -479,7 +425,6 @@ def test_worker_context_infers_stage_scope_from_allowed_change(tmp_path) -> None
 
     task = task_file_to_agent_task(task_path)
 
-    assert "Task required_patch_target_symbols: stage1" in task.task
     assert task.config["required_patch_target_symbols"] == ["stage1"]
 
 
@@ -593,9 +538,8 @@ def test_worker_context_infers_required_gluon_from_body_layer_contract(tmp_path)
     assert task.config["use_skills"] is False
     assert task.config["gluon_route_proof_required"] is True
     assert task.config["required_output_dialect"] == "amd_gluon"
-    assert "Task required_output_dialect: amd_gluon" in task.task
-    assert "Task implementation_layer: amd_gluon overlay" in task.task
-    assert "Task extension_layer: L0" in task.task
+    assert "## Minimal Gluon Worker Packet" in task.task
+    assert "## Gluon Feature Context" not in task.task
 
 
 def test_route_priority_gluon_task_suppresses_generic_bottleneck_guidance(tmp_path) -> None:
@@ -631,7 +575,7 @@ def test_route_priority_gluon_task_suppresses_generic_bottleneck_guidance(tmp_pa
 
     task = task_file_to_agent_task(task_path)
 
-    assert "Optimization Guidance (Gluon route-priority task)" in task.task
+    assert "Minimal Execution Contract" in task.task
     assert "INCREASE ARITHMETIC INTENSITY" not in task.task
     assert "s512: max_context_partition_num=ceil(512/256)=2" in task.task
     assert "s1024: max_context_partition_num=ceil(1024/256)=4" in task.task
@@ -818,6 +762,29 @@ def test_gluon_doc_gate_not_enabled_for_hip_task(tmp_path) -> None:
     task = task_file_to_agent_task(task_path)
 
     assert "gluon_doc_gate_enabled" not in task.config
+    assert "## Minimal Gluon Worker Packet" not in task.task
+
+
+def test_gluon_clean_packet_not_enabled_for_flydsl_task(tmp_path) -> None:
+    task_path = tmp_path / "flydsl.md"
+    write_task_file(
+        task_path,
+        {
+            "label": "flydsl",
+            "priority": 5,
+            "kernel_type": "flydsl",
+            "kernel_path": str(tmp_path / "kernel.py"),
+            "repo_root": str(tmp_path),
+            "use_skills": True,
+        },
+        "Optimize the FlyDSL kernel.",
+    )
+
+    task = task_file_to_agent_task(task_path)
+
+    assert "gluon_doc_gate_enabled" not in task.config
+    assert "gluon_route_proof_required" not in task.config
+    assert "## Minimal Gluon Worker Packet" not in task.task
 
 
 def test_gluon_doc_gate_routes_aot_compile_terms_to_arch_and_api_docs(tmp_path) -> None:
@@ -918,6 +885,36 @@ def test_gluon_doc_gate_routes_translator_descriptor_terms_to_arch_and_real_docs
     assert any(path.endswith("skills/triton-gluon/docs/60_real_patterns.md") for path in paths)
 
 
+def test_gluon_doc_gate_uses_planner_semantic_doc_signals_from_metadata(tmp_path) -> None:
+    task_path = tmp_path / "planner-signals.md"
+    write_task_file(
+        task_path,
+        {
+            "label": "gluon-planner-signals",
+            "priority": 6,
+            "kernel_type": "triton",
+            "kernel_path": str(tmp_path / "kernel.py"),
+            "repo_root": str(tmp_path),
+            "input_dialect": "amd_gluon",
+            "gluon_feature_mode": "auto",
+            "allowed_output_dialects": ["plain_triton", "amd_gluon"],
+            "required_output_dialect": "amd_gluon",
+            "target_component": "matrix_operand_mfma",
+            "failure_layers": "matrix,reduction",
+            "routed_doc_reasons": "matrix signal -> component traits and API reference",
+        },
+        "Optimize the original task-specific MFMA path.",
+    )
+
+    task = task_file_to_agent_task(task_path)
+    paths = task.config["gluon_doc_gate_required_paths"]
+    assert _has_doc(paths, "skills/triton-gluon/docs/20_component_traits.md")
+    assert _has_doc(paths, "skills/triton-gluon/docs/50_api_reference.md")
+    assert "Optional doc heading hints" in task.task
+    assert "dot_lowering_minimal_recipe" in task.task
+    assert "gluon_skill_path" not in task.task
+
+
 def test_save_and_test_rejects_missing_gluon_doc_views(tmp_path) -> None:
     required = tmp_path / "skills" / "triton-gluon" / "docs" / "00_always_read.md"
     required.parent.mkdir(parents=True)
@@ -960,6 +957,30 @@ def test_save_and_test_allows_after_required_gluon_doc_views(tmp_path) -> None:
     )
 
     result = tool(description="docs viewed")
+
+    assert result["returncode"] == 0
+    assert "GLUON_DOC_GATE_FAILED" not in result["output"]
+
+
+def test_save_and_test_allows_runner_verified_gluon_doc_gate(tmp_path) -> None:
+    required = tmp_path / "skills" / "triton-gluon" / "docs" / "00_always_read.md"
+    required.parent.mkdir(parents=True)
+    required.write_text("# always read\n")
+    tool = SaveAndTestTool()
+    tool.set_context(
+        SaveAndTestContext(
+            cwd=str(tmp_path),
+            test_command="true",
+            timeout=5,
+            patch_output_dir=None,
+            viewed_file_paths=set(),
+            gluon_doc_gate_enabled=True,
+            gluon_doc_gate_required_paths=[str(required)],
+            gluon_doc_gate_runner_verified_paths=[str(required)],
+        )
+    )
+
+    result = tool(description="runner verified docs")
 
     assert result["returncode"] == 0
     assert "GLUON_DOC_GATE_FAILED" not in result["output"]
@@ -1033,6 +1054,37 @@ def test_save_and_test_allows_complete_gluon_route_proof(tmp_path) -> None:
     assert "ROUTE_PROOF_CONTRACT_FAILED" not in result["output"]
     assert (patch_dir / "strategy_notes.md").is_file()
     assert "Required execution route proof" in (patch_dir / "strategy_notes.md").read_text()
+
+
+def test_save_and_test_accepts_existing_gluon_inplace_target_edit(tmp_path) -> None:
+    patch_dir = tmp_path / "patches"
+    tool = SaveAndTestTool()
+    tool._get_patch_content = lambda: "\n".join(  # type: ignore[method-assign]
+        [
+            "diff --git a/aiter/ops/triton/gluon/pa_decode_gluon.py b/aiter/ops/triton/gluon/pa_decode_gluon.py",
+            "@@ def paged_attention_decode_v2_gluon_dot_kernel():",
+            " def paged_attention_decode_v2_gluon_dot_kernel():",
+            "-    attention_accumulator += attention_output",
+            "+    attention_accumulator = gl.amd.cdna3.mfma(probs, values, attention_accumulator)",
+        ]
+    )
+    tool.set_context(
+        SaveAndTestContext(
+            cwd=str(tmp_path),
+            test_command="true",
+            timeout=5,
+            patch_output_dir=str(patch_dir),
+            required_output_dialect="amd_gluon",
+            required_patch_target_symbols=["paged_attention_decode_v2_gluon_dot_kernel"],
+            source_origin="existing_amd_gluon_operator",
+        )
+    )
+
+    result = tool(description="existing gluon in-place edit")
+
+    assert result["returncode"] == 0
+    assert "helper without executing" not in result["output"]
+    assert (patch_dir / "patch_evolution_ledger.md").is_file()
 
 
 def test_save_and_test_syncs_complete_strategy_notes_over_diagnostic(tmp_path) -> None:

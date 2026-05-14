@@ -925,14 +925,48 @@ def evaluate_round_best(
                 )
                 break
 
+    acceptable_candidates: list[dict[str, Any]] = []
+    for candidate in candidates:
+        speedup = float(candidate.get("speedup") or 0.0)
+        if speedup <= 1.0:
+            logger.info(
+                "Round %d: rejecting %s as round best because speedup %.4fx is not an improvement.",
+                round_num,
+                candidate.get("task"),
+                speedup,
+            )
+            continue
+        per_shape = candidate.get("per_shape_speedups") or {}
+        baseline_shapes = candidate.get("baseline_shape_latency_ms") or {}
+        candidate_shapes = candidate.get("candidate_shape_latency_ms") or {}
+        if baseline_shapes and not candidate_shapes:
+            logger.info(
+                "Round %d: rejecting %s as round best because per-shape evidence is missing.",
+                round_num,
+                candidate.get("task"),
+            )
+            continue
+        if isinstance(per_shape, dict) and any(
+            isinstance(info, dict) and float(info.get("speedup") or 0.0) < 1.0
+            for info in per_shape.values()
+        ):
+            logger.info(
+                "Round %d: rejecting %s as round best because a required shape regressed.",
+                round_num,
+                candidate.get("task"),
+            )
+            continue
+        acceptable_candidates.append(candidate)
+    candidates = acceptable_candidates
+
     if not candidates:
-        logger.info("Round %d: no valid candidates for evaluation", round_num)
+        logger.info("Round %d: no acceptable candidates for evaluation", round_num)
         no_improvement_eval = {
             "round": round_num,
             "best_patch": None,
             "best_task": None,
             "benchmark_speedup": 1.0,
-            "status": "no_candidates",
+            "status": "no_acceptable_candidates",
         }
         eval_path = output_dir / f"round_{round_num}_evaluation.json"
         eval_path.write_text(json.dumps(no_improvement_eval, indent=2))

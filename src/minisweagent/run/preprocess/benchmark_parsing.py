@@ -41,7 +41,7 @@ from minisweagent.run.postprocess.benchmark_parsing import (
 )
 
 logger = logging.getLogger(__name__)
-_PER_SHAPE_REGRESSION_SPEEDUP_FLOOR = 0.95
+_PER_SHAPE_REGRESSION_SPEEDUP_FLOOR = 1.0
 _AMD_GLUON_PATCH_MARKERS = (
     "triton.experimental.gluon",
     "from triton.experimental import gluon",
@@ -1147,8 +1147,6 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
     required_patch_target_symbols = _metadata_list(task_meta.get("required_patch_target_symbols"))
     forbidden_patch_target_symbols = _metadata_list(task_meta.get("forbidden_patch_target_symbols"))
     required_output_dialect = _required_output_dialect(task_meta, label=patch_dir.name)
-    preserves_gluon_evidence = required_output_dialect in {"amd_gluon", "mixed"}
-
     for test_file in sorted(patch_dir.glob("patch_*_test.txt")):
         name = test_file.stem.replace("_test", "")
 
@@ -1231,9 +1229,9 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
             candidate_comparison_ms = sum(candidate_shape_latencies.values())
         elif shape_evidence_missing:
             has_shape_regression = True
-        if shape_speedups and has_shape_regression and not preserves_gluon_evidence:
+        if has_shape_regression or shape_evidence_missing:
             logger.info(
-                "Skipping %s due to per-shape regression below %.2fx: %s",
+                "Skipping %s due to required-shape regression or missing shape evidence below %.2fx: %s",
                 name,
                 _PER_SHAPE_REGRESSION_SPEEDUP_FLOOR,
                 shape_speedups,
@@ -1241,6 +1239,13 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
             continue
 
         speedup = baseline_comparison_ms / candidate_comparison_ms
+        if speedup <= 1.0:
+            logger.info(
+                "Skipping %s because it does not beat the comparison baseline (speedup=%.4fx).",
+                name,
+                speedup,
+            )
+            continue
         if speedup > best_speedup:
             best_speedup = speedup
             best_candidate_ms = candidate_comparison_ms
@@ -1260,8 +1265,6 @@ def compute_best_patch(patch_dir: Path) -> dict[str, Any] | None:
             best_shape_evidence_missing = shape_evidence_missing
 
     if best_patch_id is None:
-        return None
-    if best_speedup <= 1.0 and not preserves_gluon_evidence:
         return None
 
     dialect_ok = _dialect_contract_satisfied(
@@ -1435,6 +1438,47 @@ def _no_viable_patch_result(
         "forbidden_patch_target_symbols": forbidden_patch_target_symbols,
         "gluon_evidence_summary": "no_viable_patch",
         "llm_selection_analysis": f"Deterministic: no viable patch artifact ({reason}).",
+    }
+    for key, _tag in _OPTIONAL_GLUON_RESULT_METADATA:
+        if task_meta.get(key) not in (None, ""):
+            result[key] = task_meta.get(key)
+    return result
+
+
+def _no_acceptable_patch_result(
+    patch_dir: Path,
+    *,
+    reason: str,
+    task_meta: dict[str, Any] | None = None,
+    original_bl: float | None = None,
+) -> dict[str, Any]:
+    task_meta = task_meta or _find_task_metadata_for_patch_dir(patch_dir)
+    required_output_dialect = _required_output_dialect(task_meta, label=patch_dir.name)
+    required_patch_target_symbols = _metadata_list(task_meta.get("required_patch_target_symbols"))
+    forbidden_patch_target_symbols = _metadata_list(task_meta.get("forbidden_patch_target_symbols"))
+    result: dict[str, Any] = {
+        "status": "no_acceptable_patch",
+        "no_acceptable_patch": True,
+        "invalidated": True,
+        "invalid_reason": reason,
+        "best_patch_id": None,
+        "best_patch_file": None,
+        "best_patch_test_output": None,
+        "best_patch_speedup": 0.0,
+        "best_patch_size_bytes": 0,
+        "baseline_latency_ms": round(original_bl, 6) if original_bl else None,
+        "baseline_source": "benchmark_baseline.txt" if original_bl else None,
+        "candidate_latency_ms": None,
+        "required_output_dialect": required_output_dialect,
+        "actual_output_dialect": "none",
+        "dialect_contract_satisfied": False,
+        "gluon_execution_contract_satisfied": False,
+        "fallback_used": required_output_dialect == "amd_gluon",
+        "scope_compliant": False,
+        "required_patch_target_symbols": required_patch_target_symbols,
+        "forbidden_patch_target_symbols": forbidden_patch_target_symbols,
+        "gluon_evidence_summary": "no_acceptable_patch",
+        "llm_selection_analysis": f"Deterministic: no acceptable improving patch ({reason}).",
     }
     for key, _tag in _OPTIONAL_GLUON_RESULT_METADATA:
         if task_meta.get(key) not in (None, ""):
@@ -1641,17 +1685,32 @@ def rewrite_best_results(patch_dir: Path) -> dict[str, Any] | None:
                 return invalid
 
             if original_bl is not None:
-                existing["best_patch_speedup"] = 1.0
+                existing["best_patch_speedup"] = 0.0
+                existing["best_patch_id"] = None
+                existing["best_patch_file"] = None
                 existing["baseline_latency_ms"] = original_bl
                 existing["baseline_source"] = "benchmark_baseline.txt"
+                existing["status"] = "no_acceptable_patch"
+                existing["no_acceptable_patch"] = True
+                existing["invalidated"] = True
+                existing["invalid_reason"] = "no patch beat comparison baseline without required-shape regression"
                 existing["llm_selection_analysis"] = (
                     existing.get("llm_selection_analysis") or ""
-                ) + f" [Clamped: no patch beat true baseline {original_bl:.4f}ms]"
+                ) + f" [Invalidated: no patch beat true baseline {original_bl:.4f}ms]"
                 existing_path.write_text(json.dumps(existing, indent=2))
+                _write_selection_summary(patch_dir, existing)
                 return existing
 
             return existing
         except (json.JSONDecodeError, ValueError):
             pass
 
-    return None
+    no_acceptable = _no_acceptable_patch_result(
+        patch_dir,
+        reason="no patch beat comparison baseline without required-shape regression",
+        task_meta=task_meta,
+        original_bl=original_bl,
+    )
+    existing_path.write_text(json.dumps(no_acceptable, indent=2))
+    _write_selection_summary(patch_dir, no_acceptable)
+    return no_acceptable
