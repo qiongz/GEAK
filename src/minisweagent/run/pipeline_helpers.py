@@ -1707,16 +1707,16 @@ def inject_pipeline_context(
     ctx: list[str] = []
     if not gluon_worker_context:
         ctx = [
-            "## Pipeline Context (auto-injected from task metadata)",
-            "",
-        ]
-        if kernel_path:
-            ctx.append(f"KERNEL FILE TO EDIT: {kernel_path}")
-        if repo_root:
-            ctx.append(f"REPO ROOT: {repo_root}")
-        if test_command:
-            ctx.append(f"TEST COMMAND: {test_command}")
-        ctx.append("")
+        "## Pipeline Context (auto-injected from task metadata)",
+        "",
+    ]
+    if kernel_path:
+        ctx.append(f"KERNEL FILE TO EDIT: {kernel_path}")
+    if repo_root:
+        ctx.append(f"REPO ROOT: {repo_root}")
+    if test_command:
+        ctx.append(f"TEST COMMAND: {test_command}")
+    ctx.append("")
 
     if feature_metadata and not gluon_worker_context:
         ctx.append(
@@ -1732,12 +1732,12 @@ def inject_pipeline_context(
         ctx.extend(_build_shape_coverage_working_set(feature_metadata))
 
     if not gluon_worker_context:
-        ctx.append(
-            "IMPORTANT: Only edit files within your REPO ROOT directory. "
-            "Do NOT search or modify files outside of it. "
-            "The KERNEL FILE TO EDIT path above is the exact file you should optimize."
-        )
-        ctx.append("")
+    ctx.append(
+        "IMPORTANT: Only edit files within your REPO ROOT directory. "
+        "Do NOT search or modify files outside of it. "
+        "The KERNEL FILE TO EDIT path above is the exact file you should optimize."
+    )
+    ctx.append("")
 
     if commandment_text and not gluon_worker_context:
         ctx.append("## COMMANDMENT (evaluation contract -- you MUST follow these rules)")
@@ -1770,7 +1770,7 @@ def inject_pipeline_context(
                 ]
             )
         else:
-            ctx.extend(_bottleneck_guidance(str(bn), baseline_metrics, arch=detect_gpu_arch()))
+        ctx.extend(_bottleneck_guidance(str(bn), baseline_metrics, arch=detect_gpu_arch()))
 
     if profiling_path and Path(profiling_path).exists() and not gluon_worker_context:
         ctx.append(f"PROFILING DATA: {profiling_path}")
@@ -1800,12 +1800,12 @@ def inject_pipeline_context(
         cfg["codebase_context"] = codebase_context.strip()
 
     if not gluon_worker_context:
-        ctx.append(
-            "IMPORTANT: Baseline profiling and performance metrics are already "
-            "established and provided above. Do NOT run save_and_test for a "
-            "baseline run. Start optimizing immediately."
-        )
-        ctx.append("")
+    ctx.append(
+        "IMPORTANT: Baseline profiling and performance metrics are already "
+        "established and provided above. Do NOT run save_and_test for a "
+        "baseline run. Start optimizing immediately."
+    )
+    ctx.append("")
 
     try:
         integration = importlib.import_module("minisweagent.memory.integration")
@@ -1827,7 +1827,7 @@ def inject_pipeline_context(
     if front_ctx:
         enriched = "\n".join(front_ctx + ctx)
     else:
-        enriched = "\n".join(ctx) + "\n" + task_body
+    enriched = "\n".join(ctx) + "\n" + task_body
     return enriched, cfg
 
 
